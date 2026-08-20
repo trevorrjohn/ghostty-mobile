@@ -45,6 +45,9 @@ The implementation architecture, staged delivery, and acceptance tests for this 
 - One interactive SSH shell per terminal tab
 - Clear connecting, verifying, connected, disconnected, and failed states
 - Manual reconnect and safe automatic retry after brief network interruption
+- Keep an active shell running while the app is backgrounded using a policy-compliant foreground service
+- Show an ongoing connection notification with reopen and disconnect actions
+- Send periodic SSH keepalives while connected
 - Honest Android lifecycle behavior; no promise of indefinite background execution
 
 ## Out of scope

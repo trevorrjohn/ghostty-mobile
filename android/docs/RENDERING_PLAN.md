@@ -82,6 +82,8 @@ SSHJ writer
 
 The SSH transport must never know how cells are rendered. The View must never write directly to an SSH stream. `TerminalSessionController` owns the relationship between them.
 
+On Android, the active session controller is hosted by a bound `connectedDevice` foreground service. The service owns both the SSH transport and Ghostty terminal across activity stops and recreation. The activity attaches a listener while visible, renders a fresh snapshot on return, and never owns or closes the live native terminal. Explicit disconnect and the notification action stop the service; process death still ends the shell and is not presented as recoverable state.
+
 ## Repository layout
 
 Planned structure:
@@ -334,17 +336,22 @@ Minimum key coverage:
 
 Gesture priority:
 
-1. Active selection handles.
-2. Mouse-reporting mode when enabled by the remote application.
-3. Scrollback navigation.
-4. Tap to focus and show the keyboard.
+1. Two-finger pinch to resize terminal text and the remote PTY grid.
+2. Active selection handles.
+3. Mouse-reporting mode when enabled by the remote application.
+4. Scrollback navigation.
+5. Tap to focus and show the keyboard.
 
 MVP scroll behavior:
 
 - vertical drag moves through Ghostty's scrollback;
+- drag distance accumulates at sub-row precision and flings decelerate naturally;
 - new output follows the bottom only when already at the bottom;
-- a visible affordance returns to live output;
+- a visible `Live` affordance returns to current output;
+- typing returns to live output so the active prompt remains above the resized keyboard;
+- the Android window resizes for the IME, preserving system swipe/back keyboard dismissal;
 - resize preserves a sensible viewport anchor through reflow.
+- pinch zoom scales from 9sp to 30sp and keeps glyph and cell metrics synchronized.
 
 Selection behavior:
 

@@ -83,6 +83,9 @@ Java_dev_ghostty_connect_terminal_bridge_GhosttyTerminal_nativeCreate(
         GHOSTTY_TERMINAL_OPT_COLOR_BACKGROUND, &background), "background color");
     require_success(ghostty_terminal_set(instance->terminal,
         GHOSTTY_TERMINAL_OPT_COLOR_CURSOR, &cursor), "cursor color");
+    const size_t scrollback_lines = 10000;
+    require_success(ghostty_terminal_set(instance->terminal,
+        GHOSTTY_TERMINAL_OPT_SCROLLBACK_MAX_LINES, &scrollback_lines), "scrollback limit");
 
     require_success(ghostty_render_state_new(nullptr, &instance->render), "render create");
     require_success(ghostty_render_state_row_iterator_new(nullptr, &instance->rows), "row iterator create");
@@ -143,10 +146,13 @@ Java_dev_ghostty_connect_terminal_bridge_GhosttyTerminal_nativeSnapshot(
     uint16_t row_count = 0;
     auto cursor = GHOSTTY_INIT_SIZED(GhosttyRenderStateCursor);
     auto colors = GHOSTTY_INIT_SIZED(GhosttyRenderStateColors);
+    GhosttyTerminalScrollbar scrollbar{};
     require_success(ghostty_render_state_get(instance->render, GHOSTTY_RENDER_STATE_DATA_COLS, &columns), "read columns");
     require_success(ghostty_render_state_get(instance->render, GHOSTTY_RENDER_STATE_DATA_ROWS, &row_count), "read rows");
     require_success(ghostty_render_state_get(instance->render, GHOSTTY_RENDER_STATE_DATA_CURSOR, &cursor), "read cursor");
     require_success(ghostty_render_state_get(instance->render, GHOSTTY_RENDER_STATE_DATA_COLORS, &colors), "read colors");
+    require_success(ghostty_terminal_get(instance->terminal,
+        GHOSTTY_TERMINAL_DATA_SCROLLBAR, &scrollbar), "read scrollbar");
     require_success(ghostty_render_state_get(instance->render,
         GHOSTTY_RENDER_STATE_DATA_ROW_ITERATOR, &instance->rows), "populate rows");
 
@@ -161,6 +167,9 @@ Java_dev_ghostty_connect_terminal_bridge_GhosttyTerminal_nativeSnapshot(
     append_i32(result, cursor.viewport_has_value ? cursor.viewport_x : -1);
     append_i32(result, cursor.viewport_has_value ? cursor.viewport_y : -1);
     append_i32(result, cursor.visible ? cursor.visual_style + 1 : 0);
+    append_i32(result, static_cast<int32_t>(std::min<uint64_t>(scrollbar.total, INT32_MAX)));
+    append_i32(result, static_cast<int32_t>(std::min<uint64_t>(scrollbar.offset, INT32_MAX)));
+    append_i32(result, static_cast<int32_t>(std::min<uint64_t>(scrollbar.len, INT32_MAX)));
 
     std::vector<uint8_t> grapheme(32);
     int rows_written = 0;
@@ -228,6 +237,35 @@ Java_dev_ghostty_connect_terminal_bridge_GhosttyTerminal_nativeSnapshot(
   } catch (const std::exception& error) {
     throw_java(env, error);
     return nullptr;
+  }
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_dev_ghostty_connect_terminal_bridge_GhosttyTerminal_nativeScroll(
+    JNIEnv* env, jobject, jlong handle, jint deltaRows) {
+  try {
+    NativeTerminal* instance = from_handle(handle);
+    std::lock_guard lock(instance->mutex);
+    GhosttyTerminalScrollViewport behavior{};
+    behavior.tag = GHOSTTY_SCROLL_VIEWPORT_DELTA;
+    behavior.value.delta = deltaRows;
+    ghostty_terminal_scroll_viewport(instance->terminal, behavior);
+  } catch (const std::exception& error) {
+    throw_java(env, error);
+  }
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_dev_ghostty_connect_terminal_bridge_GhosttyTerminal_nativeScrollToBottom(
+    JNIEnv* env, jobject, jlong handle) {
+  try {
+    NativeTerminal* instance = from_handle(handle);
+    std::lock_guard lock(instance->mutex);
+    GhosttyTerminalScrollViewport behavior{};
+    behavior.tag = GHOSTTY_SCROLL_VIEWPORT_BOTTOM;
+    ghostty_terminal_scroll_viewport(instance->terminal, behavior);
+  } catch (const std::exception& error) {
+    throw_java(env, error);
   }
 }
 

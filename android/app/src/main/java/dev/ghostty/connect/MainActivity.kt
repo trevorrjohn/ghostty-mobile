@@ -1,16 +1,25 @@
 package dev.ghostty.connect
 
+import android.Manifest
 import android.app.Activity
 import android.app.AlertDialog
+import android.annotation.SuppressLint
 import android.content.Intent
+import android.content.ComponentName
+import android.content.Context
+import android.content.ServiceConnection
 import android.graphics.Color
 import android.graphics.Typeface
 import android.os.Bundle
+import android.os.IBinder
+import android.os.Build
+import android.content.pm.PackageManager
 import android.text.InputType
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowInsets
+import android.window.OnBackInvokedDispatcher
 import android.widget.ArrayAdapter
 import android.widget.Button
 import android.widget.EditText
@@ -22,21 +31,71 @@ import android.widget.Toast
 import dev.ghostty.connect.data.HostStore
 import dev.ghostty.connect.data.SshKeyStore
 import dev.ghostty.connect.model.Host
-import dev.ghostty.connect.terminal.SshConnection
+import dev.ghostty.connect.terminal.SshSessionService
 import dev.ghostty.connect.terminal.bridge.GhosttyTerminal
 import dev.ghostty.connect.terminal.view.GhosttyTerminalView
 
 class MainActivity : Activity() {
     private lateinit var hostStore: HostStore
     private lateinit var keyStore: SshKeyStore
-    private var connection: SshConnection? = null
+    private var sessionService: SshSessionService? = null
+    private var sessionBound = false
+    private var shouldBindSession = false
+    private var pendingConnection: Pair<Host, String>? = null
+    private var terminalStatus: TextView? = null
+    private var terminalView: GhosttyTerminalView? = null
+    private var terminalKeys: List<Button> = emptyList()
     private var previewTerminal: GhosttyTerminal? = null
-    private var liveTerminal: GhosttyTerminal? = null
     private val surface = Color.rgb(17, 19, 24)
     private val raised = Color.rgb(26, 29, 36)
     private val primary = Color.rgb(241, 243, 248)
     private val secondary = Color.rgb(174, 182, 198)
     private val accent = Color.rgb(139, 233, 179)
+    private val sessionListener = object : SshSessionService.Listener {
+        override fun onSessionStatus(status: String) {
+            val service = sessionService ?: return
+            terminalStatus?.text = "$status · ${service.host?.destination.orEmpty()}"
+            setTerminalEnabled(status == "Connected")
+        }
+
+        override fun onTerminalChanged() {
+            terminalView?.refresh()
+        }
+
+        override fun onHostKeyVerification(fingerprint: String, changed: Boolean, answer: (Boolean) -> Unit) {
+            AlertDialog.Builder(this@MainActivity)
+                .setTitle(if (changed) "Host key changed" else "Unknown host")
+                .setMessage((if (changed) "The saved host key does not match. This could indicate an attack.\n\n" else "Verify this fingerprint with the server administrator:\n\n") + fingerprint)
+                .setNegativeButton("Reject") { _, _ -> answer(false) }
+                .setPositiveButton(if (changed) "Accept new key" else "Trust host") { _, _ -> answer(true) }
+                .setOnCancelListener { answer(false) }
+                .show()
+        }
+
+        override fun onSessionClosed(error: String?) {
+            terminalStatus?.text = if (error == null) "Disconnected" else "Connection failed"
+            setTerminalEnabled(false)
+        }
+    }
+    private val serviceConnection = object : ServiceConnection {
+        override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
+            val service = (binder as SshSessionService.LocalBinder).service
+            sessionService = service
+            sessionBound = true
+            service.attach(sessionListener)
+            pendingConnection?.let { (host, credential) ->
+                pendingConnection = null
+                service.connect(host, credential)
+            }
+            service.host?.let { renderTerminal(service) }
+        }
+
+        override fun onServiceDisconnected(name: ComponentName?) {
+            sessionBound = false
+            sessionService = null
+            setTerminalEnabled(false)
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -57,16 +116,40 @@ class MainActivity : Activity() {
         }
         hostStore = HostStore(this)
         keyStore = SshKeyStore(this)
-        showHosts()
+        shouldBindSession = intent?.action == SshSessionService.ACTION_OPEN_SESSION || SshSessionService.active
+        showHosts(disconnect = false)
+        if (Build.VERSION.SDK_INT >= 33) {
+            onBackInvokedDispatcher.registerOnBackInvokedCallback(OnBackInvokedDispatcher.PRIORITY_DEFAULT) {
+                handleBackNavigation()
+            }
+        }
     }
 
-    private fun showHosts() {
-        connection?.disconnect()
-        connection = null
+    override fun onStart() {
+        super.onStart()
+        if (shouldBindSession && !sessionBound) bindSessionService()
+    }
+
+    override fun onStop() {
+        if (sessionBound) {
+            sessionService?.detach(sessionListener)
+            unbindService(serviceConnection)
+            sessionBound = false
+            sessionService = null
+        }
+        super.onStop()
+    }
+
+    private fun showHosts(disconnect: Boolean = true) {
+        if (disconnect) {
+            sessionService?.disconnect()
+            shouldBindSession = false
+        }
+        terminalStatus = null
+        terminalView = null
+        terminalKeys = emptyList()
         previewTerminal?.close()
         previewTerminal = null
-        liveTerminal?.close()
-        liveTerminal = null
         val root = vertical(24)
         root.addView(label("Ghostty Connect", 28f, primary, Typeface.BOLD))
         root.addView(label("A fast, native SSH terminal", 15f, secondary).margins(bottom = 28))
@@ -195,6 +278,10 @@ class MainActivity : Activity() {
     }
 
     private fun requestCredentialAndConnect(host: Host) {
+        if (Build.VERSION.SDK_INT >= 33 &&
+            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), NOTIFICATION_PERMISSION)
+        }
         val credential = field(
             if (host.keyName == null) "Password" else "Key passphrase (blank if none)",
             "",
@@ -204,7 +291,7 @@ class MainActivity : Activity() {
             .setTitle(if (host.keyName == null) "Authenticate" else "Unlock ${host.keyName}")
             .setView(credential)
             .setNegativeButton("Cancel", null)
-            .setPositiveButton("Connect") { _, _ -> showTerminal(host, credential.text.toString()) }
+            .setPositiveButton("Connect") { _, _ -> startSession(host, credential.text.toString()) }
             .show()
     }
 
@@ -232,76 +319,68 @@ class MainActivity : Activity() {
         setContentView(root)
     }
 
-    private fun showTerminal(host: Host, credential: String) {
+    private fun startSession(host: Host, credential: String) {
+        pendingConnection = host to credential
+        shouldBindSession = true
+        startForegroundService(Intent(this, SshSessionService::class.java))
+        if (!sessionBound) bindSessionService() else {
+            pendingConnection = null
+            sessionService?.connect(host, credential)
+        }
+    }
+
+    private fun bindSessionService() {
+        bindService(Intent(this, SshSessionService::class.java), serviceConnection, Context.BIND_AUTO_CREATE)
+    }
+
+    private fun renderTerminal(service: SshSessionService) {
+        val host = service.host ?: return
+        val terminal = service.terminal ?: return
         val root = vertical(0)
-        val status = label("Connecting…", 13f, accent)
+        val status = label("Connecting…", 13f, accent).also { terminalStatus = it }
         val toolbar = vertical(16).apply { setBackgroundColor(raised) }
         toolbar.addView(label(host.name, 18f, primary, Typeface.BOLD))
         toolbar.addView(status)
         root.addView(toolbar)
 
-        val terminal = GhosttyTerminal().also { liveTerminal = it }
-        val terminalView = GhosttyTerminalView(this, terminal).apply {
+        val view = GhosttyTerminalView(this, terminal).apply {
             isEnabled = false
-            onInput = { connection?.send(it) }
+            onInput = { sessionService?.send(it) }
             onResize = { columns, rows, pixelWidth, pixelHeight ->
-                connection?.resize(columns, rows, pixelWidth, pixelHeight)
+                sessionService?.resize(columns, rows, pixelWidth, pixelHeight)
             }
-        }
-        root.addView(terminalView, LinearLayout.LayoutParams(-1, 0, 1f))
+        }.also { terminalView = it }
+        root.addView(view, LinearLayout.LayoutParams(-1, 0, 1f))
         val keys = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setBackgroundColor(raised) }
         val keyButtons = mutableListOf<Button>()
         listOf("Esc" to "\u001b", "Ctrl-C" to "\u0003", "Tab" to "\t", "↑" to "\u001b[A", "↓" to "\u001b[B").forEach { (name, bytes) ->
-            val keyButton = button(name, secondary) { connection?.send(bytes) }.apply { isEnabled = false }
+            val keyButton = button(name, secondary) { sessionService?.send(bytes) }.apply { isEnabled = false }
             keyButtons += keyButton
             keys.addView(keyButton, LinearLayout.LayoutParams(0, dp(44), 1f))
         }
+        terminalKeys = keyButtons
         root.addView(keys)
         root.addView(button("Disconnect", secondary) { showHosts() })
         setContentView(root)
-
-        connection = SshConnection(this, keyStore, object : SshConnection.Callbacks {
-            override fun status(message: String) = runOnUiThread {
-                status.text = "$message · ${host.destination}"
-                val connected = message == "Connected"
-                keyButtons.forEach { it.isEnabled = connected }
-                terminalView.isEnabled = connected
-                if (connected) terminalView.requestFocus()
-            }
-            override fun output(bytes: ByteArray) {
-                terminal.write(bytes)
-                runOnUiThread { terminalView.refresh() }
-            }
-            override fun verifyHostKey(fingerprint: String, changed: Boolean, answer: (Boolean) -> Unit) {
-                runOnUiThread {
-                    AlertDialog.Builder(this@MainActivity)
-                        .setTitle(if (changed) "Host key changed" else "Unknown host")
-                        .setMessage((if (changed) "The saved host key does not match. This could indicate an attack.\n\n" else "Verify this fingerprint with the server administrator:\n\n") + fingerprint)
-                        .setNegativeButton("Reject") { _, _ -> answer(false) }
-                        .setPositiveButton(if (changed) "Accept new key" else "Trust host") { _, _ -> answer(true) }
-                        .setOnCancelListener { answer(false) }
-                        .show()
-                }
-            }
-            override fun closed(error: String?) = runOnUiThread {
-                status.text = if (error == null) "Disconnected" else "Connection failed"
-                terminalView.isEnabled = false
-                keyButtons.forEach { it.isEnabled = false }
-                error?.let {
-                    terminal.write("\r\n\r\n\u001b[31mConnection failed:\u001b[0m $it\r\n")
-                    terminalView.refresh()
-                }
-            }
-        }).also { it.connect(host, credential) }
+        sessionListener.onSessionStatus(service.run { statusText() })
     }
 
-    @Deprecated("Android framework callback; retained for API 29 compatibility")
-    override fun onBackPressed() = showHosts()
+    private fun setTerminalEnabled(enabled: Boolean) {
+        terminalView?.isEnabled = enabled
+        terminalKeys.forEach { it.isEnabled = enabled }
+        if (enabled) terminalView?.requestFocus()
+    }
+
+    private fun handleBackNavigation() {
+        if (terminalView != null || previewTerminal != null) showHosts() else finish()
+    }
+
+    @SuppressLint("GestureBackNavigation")
+    @Deprecated("Fallback for Android 10 through 12")
+    override fun onBackPressed() = handleBackNavigation()
 
     override fun onDestroy() {
-        connection?.disconnect()
         previewTerminal?.close()
-        liveTerminal?.close()
         super.onDestroy()
     }
 
@@ -327,5 +406,8 @@ class MainActivity : Activity() {
     private fun toast(message: String) = Toast.makeText(this, message, Toast.LENGTH_LONG).show()
     private fun dp(value: Int) = (value * resources.displayMetrics.density).toInt()
 
-    companion object { const val IMPORT_KEY = 1001 }
+    companion object {
+        const val IMPORT_KEY = 1001
+        const val NOTIFICATION_PERMISSION = 1002
+    }
 }

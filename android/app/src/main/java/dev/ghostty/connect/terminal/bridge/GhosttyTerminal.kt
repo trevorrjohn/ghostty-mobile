@@ -23,6 +23,17 @@ class GhosttyTerminal(columns: Int = 80, rows: Int = 24) : AutoCloseable {
         return decode(nativeSnapshot(handle))
     }
 
+    fun scrollRows(deltaRows: Int) {
+        if (deltaRows == 0) return
+        check(handle != 0L) { "Ghostty terminal is closed" }
+        nativeScroll(handle, deltaRows)
+    }
+
+    fun scrollToBottom() {
+        check(handle != 0L) { "Ghostty terminal is closed" }
+        nativeScrollToBottom(handle)
+    }
+
     override fun close() {
         val current = handle
         handle = 0
@@ -41,6 +52,9 @@ class GhosttyTerminal(columns: Int = 80, rows: Int = 24) : AutoCloseable {
         val cursorX = input.int
         val cursorY = input.int
         val cursorStyle = input.int
+        val scrollTotal = input.int
+        val scrollOffset = input.int
+        val scrollVisible = input.int
         val cells = ArrayList<TerminalCell>(columns * rows)
         repeat(columns * rows) {
             val cellForeground = input.int
@@ -71,6 +85,9 @@ class GhosttyTerminal(columns: Int = 80, rows: Int = 24) : AutoCloseable {
             cursorX = cursorX,
             cursorY = cursorY,
             cursorStyle = cursorStyle,
+            scrollTotal = scrollTotal,
+            scrollOffset = scrollOffset,
+            scrollVisible = scrollVisible,
             cells = cells,
         )
     }
@@ -79,6 +96,8 @@ class GhosttyTerminal(columns: Int = 80, rows: Int = 24) : AutoCloseable {
     private external fun nativeWrite(handle: Long, data: ByteArray, offset: Int, length: Int)
     private external fun nativeResize(handle: Long, columns: Int, rows: Int, cellWidth: Int, cellHeight: Int)
     private external fun nativeSnapshot(handle: Long): ByteArray
+    private external fun nativeScroll(handle: Long, deltaRows: Int)
+    private external fun nativeScrollToBottom(handle: Long)
     private external fun nativeDestroy(handle: Long)
 
     companion object {
@@ -99,8 +118,13 @@ data class TerminalSnapshot(
     val cursorX: Int,
     val cursorY: Int,
     val cursorStyle: Int,
+    val scrollTotal: Int,
+    val scrollOffset: Int,
+    val scrollVisible: Int,
     val cells: List<TerminalCell>,
-)
+) {
+    val isAtBottom: Boolean get() = scrollOffset + scrollVisible >= scrollTotal
+}
 
 data class TerminalCell(
     val text: String,
@@ -113,4 +137,3 @@ data class TerminalCell(
     val strikeThrough: Boolean,
     val invisible: Boolean,
 )
-

@@ -45,6 +45,7 @@ class SshConnection(
             client = ssh
             ssh.addHostKeyVerifier(verifier(host))
             ssh.connect(host.hostname, host.port)
+            ssh.connection.keepAlive.keepAliveInterval = 30
             callbacks.status("Authenticating…")
             if (host.keyName != null) {
                 temporaryKey = File.createTempFile("identity-", ".key", context.cacheDir).apply {
@@ -68,7 +69,7 @@ class SshConnection(
                 if (count < 0) break
                 callbacks.output(buffer.copyOf(count))
             }
-            callbacks.closed(null)
+            if (!stopping) callbacks.closed(null)
         } catch (error: Exception) {
             if (!stopping) callbacks.closed(error.message ?: error.javaClass.simpleName)
         } finally {

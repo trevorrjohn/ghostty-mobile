@@ -14,6 +14,8 @@ This repository contains a runnable API 36 SSH client with:
 - a pinned `libghostty-vt` native terminal engine for arm64 and x86_64;
 - a JNI snapshot bridge and Android Canvas terminal renderer;
 - live SSH output rendered through Ghostty with colors, cursor state, and direct keyboard input;
+- foreground-service session ownership so an active SSH shell survives activity backgrounding and recreation;
+- a persistent connection notification with reopen and disconnect actions;
 
 Host metadata is stored in private app preferences. Private keys are encrypted with a non-exportable Android Keystore AES key. Passwords and key passphrases are requested per connection and are not persisted.
 
@@ -39,6 +41,6 @@ mise install
 2. Route all special keys through Ghostty's mode-aware key encoder.
 3. Add scrollback, selection, copy, and bracketed paste.
 4. Add biometric unlock for imported identities.
-5. Add lifecycle-safe reconnect and a policy-compliant foreground-service experience.
+5. Add explicit reconnect controls and lifecycle/process-death test coverage.
 
 The agreed product boundaries are documented in [docs/PRODUCT_SCOPE.md](docs/PRODUCT_SCOPE.md). The native terminal architecture and delivery sequence are documented in [docs/RENDERING_PLAN.md](docs/RENDERING_PLAN.md).
