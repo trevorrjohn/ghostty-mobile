@@ -15,6 +15,9 @@ This repository contains a runnable API 36 SSH client with:
 - a JNI snapshot bridge and Android Canvas terminal renderer;
 - live SSH output rendered through Ghostty with colors, cursor state, and direct keyboard input;
 - a configurable, horizontally scrolling terminal modifier bar with reusable key combinations;
+- Ghostty-native key, paste, mouse, selection, hyperlink, and terminal-effect handling;
+- incremental dirty-row rendering and encrypted read-only snapshots of the last terminal session;
+- selectable Ghostty, Dracula, Nord, and Solarized Dark terminal themes;
 - foreground-service session ownership so an active SSH shell survives activity backgrounding and recreation;
 - a persistent connection notification with reopen and disconnect actions;
 

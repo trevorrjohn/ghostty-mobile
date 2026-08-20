@@ -1,6 +1,10 @@
 #include <jni.h>
 #include <ghostty/vt.h>
 
+#define STB_IMAGE_IMPLEMENTATION
+#define STBI_ONLY_PNG
+#include <stb_image.h>
+
 #include <algorithm>
 #include <cstdint>
 #include <cstdlib>
@@ -9,11 +13,45 @@
 #include <mutex>
 #include <stdexcept>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace {
 
 constexpr int32_t kSnapshotMagic = 0x47565431; // GVT1
+constexpr size_t kKittyStorageLimit = 32 * 1024 * 1024;
+constexpr size_t kKittyApcLimit = 8 * 1024 * 1024;
+
+bool decode_png(void*, const GhosttyAllocator* allocator, const uint8_t* data,
+    size_t data_len, GhosttySysImage* out) {
+  if (data_len == 0 || data_len > kKittyApcLimit || data_len > INT32_MAX) return false;
+  int width = 0;
+  int height = 0;
+  int channels = 0;
+  stbi_uc* decoded = stbi_load_from_memory(
+      data, static_cast<int>(data_len), &width, &height, &channels, 4);
+  if (decoded == nullptr || width <= 0 || height <= 0 || width > 4096 || height > 4096) {
+    stbi_image_free(decoded);
+    return false;
+  }
+  const size_t output_len = static_cast<size_t>(width) * static_cast<size_t>(height) * 4;
+  if (output_len > kKittyStorageLimit) {
+    stbi_image_free(decoded);
+    return false;
+  }
+  uint8_t* output = ghostty_alloc(allocator, output_len);
+  if (output == nullptr) {
+    stbi_image_free(decoded);
+    return false;
+  }
+  std::memcpy(output, decoded, output_len);
+  stbi_image_free(decoded);
+  out->width = static_cast<uint32_t>(width);
+  out->height = static_cast<uint32_t>(height);
+  out->data = output;
+  out->data_len = output_len;
+  return true;
+}
 
 struct NativeTerminal {
   GhosttyTerminal terminal = nullptr;
@@ -24,6 +62,16 @@ struct NativeTerminal {
   GhosttyRenderState render = nullptr;
   GhosttyRenderStateRowIterator rows = nullptr;
   GhosttyRenderStateRowCells cells = nullptr;
+  GhosttyKittyGraphicsPlacementIterator kitty_placements = nullptr;
+  bool first_snapshot = true;
+  int pending_bells = 0;
+  int pending_progress_state = -1;
+  int pending_progress_value = -1;
+  int pending_unknown_sequences = 0;
+  std::string pending_clipboard;
+  std::string pending_notification_title;
+  std::string pending_notification_body;
+  std::string pending_pty_write;
   std::mutex mutex;
 
   ~NativeTerminal() {
@@ -32,11 +80,70 @@ struct NativeTerminal {
     ghostty_mouse_event_free(mouse_event);
     ghostty_mouse_encoder_free(mouse_encoder);
     ghostty_render_state_row_cells_free(cells);
+    ghostty_kitty_graphics_placement_iterator_free(kitty_placements);
     ghostty_render_state_row_iterator_free(rows);
     ghostty_render_state_free(render);
     ghostty_terminal_free(terminal);
   }
 };
+
+void terminal_bell(GhosttyTerminal, void* userdata) {
+  auto* instance = static_cast<NativeTerminal*>(userdata);
+  instance->pending_bells = std::min(instance->pending_bells + 1, 10);
+}
+
+void terminal_write_pty(GhosttyTerminal, void* userdata, const uint8_t* data, size_t len) {
+  auto* instance = static_cast<NativeTerminal*>(userdata);
+  const size_t available = 64 * 1024 - std::min<size_t>(instance->pending_pty_write.size(), 64 * 1024);
+  instance->pending_pty_write.append(
+      reinterpret_cast<const char*>(data), std::min(len, available));
+}
+
+GhosttyClipboardWriteResult terminal_clipboard(
+    GhosttyTerminal, void* userdata, const GhosttyClipboardWrite* write) {
+  auto* instance = static_cast<NativeTerminal*>(userdata);
+  for (size_t index = 0; index < write->contents_len; index++) {
+    const GhosttyClipboardContent& content = write->contents[index];
+    const std::string mime(reinterpret_cast<const char*>(content.mime.ptr), content.mime.len);
+    if ((mime == "text/plain" || mime == "text/plain;charset=utf-8") && content.data.len <= 1024 * 1024) {
+      instance->pending_clipboard.assign(
+          reinterpret_cast<const char*>(content.data.ptr), content.data.len);
+      return GHOSTTY_CLIPBOARD_WRITE_RESULT_SUCCESS;
+    }
+  }
+  return GHOSTTY_CLIPBOARD_WRITE_RESULT_UNSUPPORTED;
+}
+
+void terminal_notification(GhosttyTerminal, void* userdata,
+    const GhosttyTerminalDesktopNotification* notification) {
+  auto* instance = static_cast<NativeTerminal*>(userdata);
+  instance->pending_notification_title.assign(
+      reinterpret_cast<const char*>(notification->title.ptr),
+      std::min<size_t>(notification->title.len, 256));
+  instance->pending_notification_body.assign(
+      reinterpret_cast<const char*>(notification->body.ptr),
+      std::min<size_t>(notification->body.len, 4096));
+}
+
+void terminal_progress(GhosttyTerminal, void* userdata,
+    const GhosttyTerminalProgressReport* report) {
+  auto* instance = static_cast<NativeTerminal*>(userdata);
+  instance->pending_progress_state = report->state;
+  instance->pending_progress_value = report->progress;
+}
+
+void terminal_unknown_sequence(GhosttyTerminal, void* userdata,
+    const GhosttyTerminalUnknownSequence*) {
+  auto* instance = static_cast<NativeTerminal*>(userdata);
+  instance->pending_unknown_sequences = std::min(instance->pending_unknown_sequences + 1, 100);
+}
+
+void append_i32(std::vector<uint8_t>& bytes, int32_t value);
+
+void append_string(std::vector<uint8_t>& bytes, const std::string& value) {
+  append_i32(bytes, static_cast<int32_t>(value.size()));
+  bytes.insert(bytes.end(), value.begin(), value.end());
+}
 
 void require_success(GhosttyResult result, const char* operation) {
   if (result != GHOSTTY_SUCCESS) {
@@ -150,6 +257,19 @@ void append_i32(std::vector<uint8_t>& bytes, int32_t value) {
   bytes.push_back(static_cast<uint8_t>(raw >> 24));
 }
 
+void append_i64(std::vector<uint8_t>& bytes, uint64_t value) {
+  append_i32(bytes, static_cast<int32_t>(value));
+  append_i32(bytes, static_cast<int32_t>(value >> 32));
+}
+
+void replace_i32(std::vector<uint8_t>& bytes, size_t offset, int32_t value) {
+  const uint32_t raw = static_cast<uint32_t>(value);
+  bytes[offset] = static_cast<uint8_t>(raw);
+  bytes[offset + 1] = static_cast<uint8_t>(raw >> 8);
+  bytes[offset + 2] = static_cast<uint8_t>(raw >> 16);
+  bytes[offset + 3] = static_cast<uint8_t>(raw >> 24);
+}
+
 void throw_java(JNIEnv* env, const std::exception& error) {
   jclass type = env->FindClass("java/lang/IllegalStateException");
   env->ThrowNew(type, error.what());
@@ -164,23 +284,55 @@ NativeTerminal* from_handle(jlong handle) {
 
 extern "C" JNIEXPORT jlong JNICALL
 Java_dev_ghostty_connect_terminal_bridge_GhosttyTerminal_nativeCreate(
-    JNIEnv* env, jobject, jint columns, jint rows) {
+    JNIEnv* env, jobject, jint columns, jint rows, jint foregroundArgb,
+    jint backgroundArgb, jint cursorArgb) {
   try {
     if (columns <= 0 || rows <= 0 || columns > UINT16_MAX || rows > UINT16_MAX) {
       throw std::invalid_argument("Invalid terminal dimensions");
     }
     auto instance = std::make_unique<NativeTerminal>();
+    require_success(ghostty_sys_set(
+        GHOSTTY_SYS_OPT_DECODE_PNG, reinterpret_cast<const void*>(decode_png)), "PNG decoder");
     require_success(ghostty_terminal_new(
         nullptr, &instance->terminal,
         static_cast<uint16_t>(columns), static_cast<uint16_t>(rows)), "terminal create");
+    const uint64_t kitty_storage_limit = kKittyStorageLimit;
+    const size_t kitty_apc_limit = kKittyApcLimit;
+    require_success(ghostty_terminal_set(instance->terminal,
+        GHOSTTY_TERMINAL_OPT_KITTY_IMAGE_STORAGE_LIMIT, &kitty_storage_limit), "Kitty storage limit");
+    require_success(ghostty_terminal_set(instance->terminal,
+        GHOSTTY_TERMINAL_OPT_APC_MAX_BYTES_KITTY, &kitty_apc_limit), "Kitty APC limit");
+    require_success(ghostty_terminal_set(instance->terminal,
+        GHOSTTY_TERMINAL_OPT_USERDATA, instance.get()), "effect userdata");
+    require_success(ghostty_terminal_set(instance->terminal,
+        GHOSTTY_TERMINAL_OPT_BELL, reinterpret_cast<const void*>(terminal_bell)), "bell callback");
+    require_success(ghostty_terminal_set(instance->terminal,
+        GHOSTTY_TERMINAL_OPT_WRITE_PTY, reinterpret_cast<const void*>(terminal_write_pty)), "PTY write callback");
+    require_success(ghostty_terminal_set(instance->terminal,
+        GHOSTTY_TERMINAL_OPT_CLIPBOARD_WRITE, reinterpret_cast<const void*>(terminal_clipboard)), "clipboard callback");
+    require_success(ghostty_terminal_set(instance->terminal,
+        GHOSTTY_TERMINAL_OPT_DESKTOP_NOTIFICATION, reinterpret_cast<const void*>(terminal_notification)), "notification callback");
+    require_success(ghostty_terminal_set(instance->terminal,
+        GHOSTTY_TERMINAL_OPT_PROGRESS_REPORT, reinterpret_cast<const void*>(terminal_progress)), "progress callback");
+    require_success(ghostty_terminal_set(instance->terminal,
+        GHOSTTY_TERMINAL_OPT_UNKNOWN_SEQUENCE, reinterpret_cast<const void*>(terminal_unknown_sequence)), "unknown callback");
+    const size_t unknown_sequence_limit = 256;
+    require_success(ghostty_terminal_set(instance->terminal,
+        GHOSTTY_TERMINAL_OPT_UNKNOWN_MAX_BYTES, &unknown_sequence_limit), "unknown sequence limit");
     require_success(ghostty_key_encoder_new(nullptr, &instance->key_encoder), "key encoder create");
     require_success(ghostty_key_event_new(nullptr, &instance->key_event), "key event create");
     require_success(ghostty_mouse_encoder_new(nullptr, &instance->mouse_encoder), "mouse encoder create");
     require_success(ghostty_mouse_event_new(nullptr, &instance->mouse_event), "mouse event create");
 
-    const GhosttyColorRgb foreground{0xf1, 0xf3, 0xf8};
-    const GhosttyColorRgb background{0x0a, 0x0c, 0x10};
-    const GhosttyColorRgb cursor{0x8b, 0xe9, 0xb3};
+    const auto color = [](jint value) -> GhosttyColorRgb {
+      return GhosttyColorRgb{
+          static_cast<uint8_t>(value >> 16),
+          static_cast<uint8_t>(value >> 8),
+          static_cast<uint8_t>(value)};
+    };
+    const GhosttyColorRgb foreground = color(foregroundArgb);
+    const GhosttyColorRgb background = color(backgroundArgb);
+    const GhosttyColorRgb cursor = color(cursorArgb);
     require_success(ghostty_terminal_set(instance->terminal,
         GHOSTTY_TERMINAL_OPT_COLOR_FOREGROUND, &foreground), "foreground color");
     require_success(ghostty_terminal_set(instance->terminal,
@@ -190,14 +342,135 @@ Java_dev_ghostty_connect_terminal_bridge_GhosttyTerminal_nativeCreate(
     const size_t scrollback_lines = 10000;
     require_success(ghostty_terminal_set(instance->terminal,
         GHOSTTY_TERMINAL_OPT_SCROLLBACK_MAX_LINES, &scrollback_lines), "scrollback limit");
+    const size_t continuation_limit = 4096;
+    require_success(ghostty_terminal_set(instance->terminal,
+        GHOSTTY_TERMINAL_OPT_CONTINUATION_MAX_BYTES, &continuation_limit), "continuation limit");
 
     require_success(ghostty_render_state_new(nullptr, &instance->render), "render create");
     require_success(ghostty_render_state_row_iterator_new(nullptr, &instance->rows), "row iterator create");
     require_success(ghostty_render_state_row_cells_new(nullptr, &instance->cells), "cell iterator create");
+    require_success(ghostty_kitty_graphics_placement_iterator_new(
+        nullptr, &instance->kitty_placements), "Kitty placement iterator create");
     return reinterpret_cast<jlong>(instance.release());
   } catch (const std::exception& error) {
     throw_java(env, error);
     return 0;
+  }
+}
+
+extern "C" JNIEXPORT jbyteArray JNICALL
+Java_dev_ghostty_connect_terminal_bridge_GhosttyTerminal_nativeEncodeState(
+    JNIEnv* env, jobject, jlong handle) {
+  try {
+    NativeTerminal* instance = from_handle(handle);
+    std::lock_guard lock(instance->mutex);
+    uint8_t* bytes = nullptr;
+    size_t length = 0;
+    require_success(ghostty_snapshot_encode_alloc(instance->terminal, nullptr, &bytes, &length),
+        "snapshot encode");
+    if (length > 32 * 1024 * 1024) {
+      ghostty_free(nullptr, bytes, length);
+      throw std::runtime_error("Terminal snapshot exceeds 32 MB");
+    }
+    jbyteArray result = byte_array(env, reinterpret_cast<const char*>(bytes), length);
+    ghostty_free(nullptr, bytes, length);
+    return result;
+  } catch (const std::exception& error) {
+    throw_java(env, error);
+    return nullptr;
+  }
+}
+
+extern "C" JNIEXPORT jlong JNICALL
+Java_dev_ghostty_connect_terminal_bridge_GhosttyTerminal_nativeRestore(
+    JNIEnv* env, jobject, jbyteArray data) {
+  try {
+    const jsize length = env->GetArrayLength(data);
+    if (length <= 0 || length > 32 * 1024 * 1024) throw std::invalid_argument("Invalid terminal snapshot size");
+    std::vector<uint8_t> bytes(static_cast<size_t>(length));
+    env->GetByteArrayRegion(data, 0, length, reinterpret_cast<jbyte*>(bytes.data()));
+    GhosttySnapshotDecoder decoder = nullptr;
+    require_success(ghostty_snapshot_decoder_new_buf(nullptr, &decoder, bytes.data(), bytes.size()),
+        "snapshot decoder create");
+    GhosttyTerminal restored = nullptr;
+    const GhosttyResult decode_result = ghostty_snapshot_decoder_decode(decoder, &restored);
+    ghostty_snapshot_decoder_free(decoder);
+    require_success(decode_result, "snapshot decode");
+
+    auto instance = std::make_unique<NativeTerminal>();
+    instance->terminal = restored;
+    require_success(ghostty_sys_set(
+        GHOSTTY_SYS_OPT_DECODE_PNG, reinterpret_cast<const void*>(decode_png)), "PNG decoder");
+    const uint64_t kitty_storage_limit = kKittyStorageLimit;
+    const size_t kitty_apc_limit = kKittyApcLimit;
+    require_success(ghostty_terminal_set(instance->terminal,
+        GHOSTTY_TERMINAL_OPT_KITTY_IMAGE_STORAGE_LIMIT, &kitty_storage_limit), "Kitty storage limit");
+    require_success(ghostty_terminal_set(instance->terminal,
+        GHOSTTY_TERMINAL_OPT_APC_MAX_BYTES_KITTY, &kitty_apc_limit), "Kitty APC limit");
+    require_success(ghostty_terminal_set(instance->terminal,
+        GHOSTTY_TERMINAL_OPT_USERDATA, instance.get()), "effect userdata");
+    require_success(ghostty_terminal_set(instance->terminal,
+        GHOSTTY_TERMINAL_OPT_BELL, reinterpret_cast<const void*>(terminal_bell)), "bell callback");
+    require_success(ghostty_terminal_set(instance->terminal,
+        GHOSTTY_TERMINAL_OPT_WRITE_PTY, reinterpret_cast<const void*>(terminal_write_pty)), "PTY write callback");
+    require_success(ghostty_terminal_set(instance->terminal,
+        GHOSTTY_TERMINAL_OPT_CLIPBOARD_WRITE, reinterpret_cast<const void*>(terminal_clipboard)), "clipboard callback");
+    require_success(ghostty_terminal_set(instance->terminal,
+        GHOSTTY_TERMINAL_OPT_DESKTOP_NOTIFICATION, reinterpret_cast<const void*>(terminal_notification)), "notification callback");
+    require_success(ghostty_terminal_set(instance->terminal,
+        GHOSTTY_TERMINAL_OPT_PROGRESS_REPORT, reinterpret_cast<const void*>(terminal_progress)), "progress callback");
+    require_success(ghostty_terminal_set(instance->terminal,
+        GHOSTTY_TERMINAL_OPT_UNKNOWN_SEQUENCE, reinterpret_cast<const void*>(terminal_unknown_sequence)), "unknown callback");
+    const size_t unknown_sequence_limit = 256;
+    require_success(ghostty_terminal_set(instance->terminal,
+        GHOSTTY_TERMINAL_OPT_UNKNOWN_MAX_BYTES, &unknown_sequence_limit), "unknown sequence limit");
+    require_success(ghostty_key_encoder_new(nullptr, &instance->key_encoder), "key encoder create");
+    require_success(ghostty_key_event_new(nullptr, &instance->key_event), "key event create");
+    require_success(ghostty_mouse_encoder_new(nullptr, &instance->mouse_encoder), "mouse encoder create");
+    require_success(ghostty_mouse_event_new(nullptr, &instance->mouse_event), "mouse event create");
+    require_success(ghostty_render_state_new(nullptr, &instance->render), "render create");
+    require_success(ghostty_render_state_row_iterator_new(nullptr, &instance->rows), "row iterator create");
+    require_success(ghostty_render_state_row_cells_new(nullptr, &instance->cells), "cell iterator create");
+    require_success(ghostty_kitty_graphics_placement_iterator_new(
+        nullptr, &instance->kitty_placements), "Kitty placement iterator create");
+    return reinterpret_cast<jlong>(instance.release());
+  } catch (const std::exception& error) {
+    throw_java(env, error);
+    return 0;
+  }
+}
+
+extern "C" JNIEXPORT jbyteArray JNICALL
+Java_dev_ghostty_connect_terminal_bridge_GhosttyTerminal_nativeDrainEffects(
+    JNIEnv* env, jobject, jlong handle) {
+  try {
+    NativeTerminal* instance = from_handle(handle);
+    std::lock_guard lock(instance->mutex);
+    std::vector<uint8_t> result;
+    bool processing_error = false;
+    require_success(ghostty_terminal_get(instance->terminal,
+        GHOSTTY_TERMINAL_DATA_VT_PROCESSING_ERROR, &processing_error), "read processing health");
+    append_i32(result, instance->pending_bells);
+    append_i32(result, instance->pending_progress_state);
+    append_i32(result, instance->pending_progress_value);
+    append_string(result, instance->pending_clipboard);
+    append_string(result, instance->pending_notification_title);
+    append_string(result, instance->pending_notification_body);
+    append_i32(result, instance->pending_unknown_sequences);
+    append_i32(result, processing_error ? 1 : 0);
+    append_string(result, instance->pending_pty_write);
+    instance->pending_bells = 0;
+    instance->pending_progress_state = -1;
+    instance->pending_progress_value = -1;
+    instance->pending_unknown_sequences = 0;
+    instance->pending_clipboard.clear();
+    instance->pending_notification_title.clear();
+    instance->pending_notification_body.clear();
+    instance->pending_pty_write.clear();
+    return byte_array(env, reinterpret_cast<const char*>(result.data()), result.size());
+  } catch (const std::exception& error) {
+    throw_java(env, error);
+    return nullptr;
   }
 }
 
@@ -464,6 +737,123 @@ Java_dev_ghostty_connect_terminal_bridge_GhosttyTerminal_nativeResize(
 }
 
 extern "C" JNIEXPORT jbyteArray JNICALL
+Java_dev_ghostty_connect_terminal_bridge_GhosttyTerminal_nativeKittyFrame(
+    JNIEnv* env, jobject, jlong handle, jlong knownGeneration) {
+  try {
+    struct Image {
+      uint32_t id;
+      uint32_t width;
+      uint32_t height;
+      GhosttyKittyImageFormat format;
+      uint64_t generation;
+      const uint8_t* data;
+      size_t data_len;
+    };
+    struct Placement {
+      uint32_t image_id;
+      int32_t z;
+      uint32_t x_offset;
+      uint32_t y_offset;
+      GhosttyKittyGraphicsPlacementRenderInfo render;
+    };
+
+    NativeTerminal* instance = from_handle(handle);
+    std::lock_guard lock(instance->mutex);
+    GhosttyKittyGraphics graphics = nullptr;
+    if (ghostty_terminal_get(instance->terminal,
+        GHOSTTY_TERMINAL_DATA_KITTY_GRAPHICS, &graphics) != GHOSTTY_SUCCESS || graphics == nullptr) {
+      std::vector<uint8_t> empty;
+      append_i64(empty, 0);
+      append_i32(empty, 0);
+      append_i32(empty, 0);
+      return byte_array(env, reinterpret_cast<const char*>(empty.data()), empty.size());
+    }
+    uint64_t generation = 0;
+    require_success(ghostty_kitty_graphics_get(
+        graphics, GHOSTTY_KITTY_GRAPHICS_DATA_GENERATION, &generation), "Kitty generation");
+    require_success(ghostty_kitty_graphics_get(graphics,
+        GHOSTTY_KITTY_GRAPHICS_DATA_PLACEMENT_ITERATOR, &instance->kitty_placements),
+        "Kitty placements");
+
+    std::unordered_map<uint32_t, Image> images;
+    std::vector<Placement> placements;
+    while (ghostty_kitty_graphics_placement_next(instance->kitty_placements)) {
+      uint32_t image_id = 0;
+      uint32_t x_offset = 0;
+      uint32_t y_offset = 0;
+      int32_t z = 0;
+      bool is_virtual = false;
+      require_success(ghostty_kitty_graphics_placement_get(instance->kitty_placements,
+          GHOSTTY_KITTY_GRAPHICS_PLACEMENT_DATA_IMAGE_ID, &image_id), "Kitty placement image");
+      require_success(ghostty_kitty_graphics_placement_get(instance->kitty_placements,
+          GHOSTTY_KITTY_GRAPHICS_PLACEMENT_DATA_IS_VIRTUAL, &is_virtual), "Kitty placement type");
+      if (is_virtual) continue;
+      require_success(ghostty_kitty_graphics_placement_get(instance->kitty_placements,
+          GHOSTTY_KITTY_GRAPHICS_PLACEMENT_DATA_X_OFFSET, &x_offset), "Kitty x offset");
+      require_success(ghostty_kitty_graphics_placement_get(instance->kitty_placements,
+          GHOSTTY_KITTY_GRAPHICS_PLACEMENT_DATA_Y_OFFSET, &y_offset), "Kitty y offset");
+      require_success(ghostty_kitty_graphics_placement_get(instance->kitty_placements,
+          GHOSTTY_KITTY_GRAPHICS_PLACEMENT_DATA_Z, &z), "Kitty z index");
+      auto render = GHOSTTY_INIT_SIZED(GhosttyKittyGraphicsPlacementRenderInfo);
+      GhosttyKittyGraphicsImage image = ghostty_kitty_graphics_image(graphics, image_id);
+      if (image == nullptr || ghostty_kitty_graphics_placement_render_info(
+          instance->kitty_placements, image, instance->terminal, &render) != GHOSTTY_SUCCESS ||
+          !render.viewport_visible) continue;
+      placements.push_back(Placement{image_id, z, x_offset, y_offset, render});
+      if (images.contains(image_id)) continue;
+      Image value{image_id, 0, 0, GHOSTTY_KITTY_IMAGE_FORMAT_RGBA, 0, nullptr, 0};
+      require_success(ghostty_kitty_graphics_image_get(image,
+          GHOSTTY_KITTY_IMAGE_DATA_WIDTH, &value.width), "Kitty image width");
+      require_success(ghostty_kitty_graphics_image_get(image,
+          GHOSTTY_KITTY_IMAGE_DATA_HEIGHT, &value.height), "Kitty image height");
+      require_success(ghostty_kitty_graphics_image_get(image,
+          GHOSTTY_KITTY_IMAGE_DATA_FORMAT, &value.format), "Kitty image format");
+      require_success(ghostty_kitty_graphics_image_get(image,
+          GHOSTTY_KITTY_IMAGE_DATA_GENERATION, &value.generation), "Kitty image generation");
+      require_success(ghostty_kitty_graphics_image_get(image,
+          GHOSTTY_KITTY_IMAGE_DATA_DATA_LEN, &value.data_len), "Kitty image length");
+      if (ghostty_kitty_graphics_image_get(image,
+          GHOSTTY_KITTY_IMAGE_DATA_DATA_PTR, &value.data) != GHOSTTY_SUCCESS) continue;
+      images.emplace(image_id, value);
+    }
+
+    std::vector<uint8_t> result;
+    append_i64(result, generation);
+    append_i32(result, static_cast<int32_t>(images.size()));
+    const bool include_pixels = generation != static_cast<uint64_t>(knownGeneration);
+    for (const auto& [id, image] : images) {
+      append_i32(result, id);
+      append_i64(result, image.generation);
+      append_i32(result, image.width);
+      append_i32(result, image.height);
+      append_i32(result, image.format);
+      const size_t data_len = include_pixels ? image.data_len : 0;
+      append_i32(result, static_cast<int32_t>(data_len));
+      if (data_len > 0) result.insert(result.end(), image.data, image.data + data_len);
+    }
+    append_i32(result, static_cast<int32_t>(placements.size()));
+    for (const Placement& placement : placements) {
+      append_i32(result, placement.image_id);
+      append_i32(result, placement.z);
+      append_i32(result, placement.x_offset);
+      append_i32(result, placement.y_offset);
+      append_i32(result, placement.render.pixel_width);
+      append_i32(result, placement.render.pixel_height);
+      append_i32(result, placement.render.viewport_col);
+      append_i32(result, placement.render.viewport_row);
+      append_i32(result, placement.render.source_x);
+      append_i32(result, placement.render.source_y);
+      append_i32(result, placement.render.source_width);
+      append_i32(result, placement.render.source_height);
+    }
+    return byte_array(env, reinterpret_cast<const char*>(result.data()), result.size());
+  } catch (const std::exception& error) {
+    throw_java(env, error);
+    return nullptr;
+  }
+}
+
+extern "C" JNIEXPORT jbyteArray JNICALL
 Java_dev_ghostty_connect_terminal_bridge_GhosttyTerminal_nativeSnapshot(
     JNIEnv* env, jobject, jlong handle) {
   try {
@@ -475,6 +865,7 @@ Java_dev_ghostty_connect_terminal_bridge_GhosttyTerminal_nativeSnapshot(
     uint16_t row_count = 0;
     auto cursor = GHOSTTY_INIT_SIZED(GhosttyRenderStateCursor);
     auto colors = GHOSTTY_INIT_SIZED(GhosttyRenderStateColors);
+    GhosttyRenderStateDirty dirty = GHOSTTY_RENDER_STATE_DIRTY_FULL;
     GhosttyTerminalScrollbar scrollbar{};
     GhosttyString title{};
     GhosttyString pwd{};
@@ -483,6 +874,13 @@ Java_dev_ghostty_connect_terminal_bridge_GhosttyTerminal_nativeSnapshot(
     require_success(ghostty_render_state_get(instance->render, GHOSTTY_RENDER_STATE_DATA_ROWS, &row_count), "read rows");
     require_success(ghostty_render_state_get(instance->render, GHOSTTY_RENDER_STATE_DATA_CURSOR, &cursor), "read cursor");
     require_success(ghostty_render_state_get(instance->render, GHOSTTY_RENDER_STATE_DATA_COLORS, &colors), "read colors");
+    require_success(ghostty_render_state_get(instance->render, GHOSTTY_RENDER_STATE_DATA_DIRTY, &dirty), "read dirty state");
+    if (instance->first_snapshot) {
+      dirty = GHOSTTY_RENDER_STATE_DIRTY_FULL;
+      require_success(ghostty_render_state_set(instance->render,
+          GHOSTTY_RENDER_STATE_OPTION_DIRTY, &dirty), "force initial render");
+      instance->first_snapshot = false;
+    }
     require_success(ghostty_terminal_get(instance->terminal,
         GHOSTTY_TERMINAL_DATA_SCROLLBAR, &scrollbar), "read scrollbar");
     require_success(ghostty_terminal_get(instance->terminal,
@@ -514,10 +912,15 @@ Java_dev_ghostty_connect_terminal_bridge_GhosttyTerminal_nativeSnapshot(
     if (title.len > 0) result.insert(result.end(), title.ptr, title.ptr + title.len);
     append_i32(result, static_cast<int32_t>(pwd.len));
     if (pwd.len > 0) result.insert(result.end(), pwd.ptr, pwd.ptr + pwd.len);
+    append_i32(result, static_cast<int32_t>(dirty));
+    const size_t update_count_offset = result.size();
+    append_i32(result, 0);
 
     std::vector<uint8_t> grapheme(32);
     int rows_written = 0;
-    while (ghostty_render_state_row_iterator_next(instance->rows)) {
+    uint16_t row_y = 0;
+    while (ghostty_render_state_row_iterator_next_dirty(instance->rows, &row_y)) {
+      append_i32(result, row_y);
       require_success(ghostty_render_state_row_get(instance->rows,
           GHOSTTY_RENDER_STATE_ROW_DATA_CELLS, &instance->cells), "populate cells");
       int cells_written = 0;
@@ -569,14 +972,7 @@ Java_dev_ghostty_connect_terminal_bridge_GhosttyTerminal_nativeSnapshot(
       }
       rows_written++;
     }
-    while (rows_written++ < row_count) {
-      for (int x = 0; x < columns; x++) {
-        append_i32(result, argb(colors.foreground));
-        append_i32(result, argb(colors.background));
-        append_i32(result, 0);
-        append_i32(result, 0);
-      }
-    }
+    replace_i32(result, update_count_offset, rows_written);
     require_success(ghostty_render_state_clean(instance->render), "render clean");
 
     jbyteArray output = env->NewByteArray(static_cast<jsize>(result.size()));

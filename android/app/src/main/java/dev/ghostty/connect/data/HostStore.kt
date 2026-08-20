@@ -50,6 +50,8 @@ class HostStore(context: Context) {
                 put("username", host.username)
                 put("authenticationType", host.authenticationType.name)
                 put("keyName", host.keyName ?: JSONObject.NULL)
+                put("allowRemoteClipboard", host.allowRemoteClipboard ?: JSONObject.NULL)
+                put("allowRemoteNotifications", host.allowRemoteNotifications ?: JSONObject.NULL)
             })
         }
     }.toString().toByteArray()
@@ -67,6 +69,12 @@ class HostStore(context: Context) {
                     username = value.getString("username"),
                     authenticationType = AuthenticationType.valueOf(value.getString("authenticationType")),
                     keyName = value.optString("keyName").takeIf { !value.isNull("keyName") && it.isNotBlank() },
+                    allowRemoteClipboard = value.optBoolean("allowRemoteClipboard").takeUnless {
+                        value.isNull("allowRemoteClipboard")
+                    },
+                    allowRemoteNotifications = value.optBoolean("allowRemoteNotifications").takeUnless {
+                        value.isNull("allowRemoteNotifications")
+                    },
                 ))
             }
         }

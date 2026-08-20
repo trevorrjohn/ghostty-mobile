@@ -3,6 +3,9 @@ package dev.ghostty.connect
 import android.Manifest
 import android.app.Activity
 import android.app.AlertDialog
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
 import android.annotation.SuppressLint
 import android.content.Intent
 import android.content.ComponentName
@@ -21,6 +24,7 @@ import android.content.pm.PackageManager
 import android.text.InputType
 import android.view.Gravity
 import android.view.KeyEvent
+import android.view.HapticFeedbackConstants
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowInsets
@@ -40,6 +44,8 @@ import android.widget.Toast
 import dev.ghostty.connect.data.HostStore
 import dev.ghostty.connect.data.KeyboardBarStore
 import dev.ghostty.connect.data.SshKeyStore
+import dev.ghostty.connect.data.TerminalThemeStore
+import dev.ghostty.connect.data.TerminalStateStore
 import dev.ghostty.connect.model.AuthenticationType
 import dev.ghostty.connect.model.Host
 import dev.ghostty.connect.model.KeyboardBarCatalog
@@ -47,8 +53,10 @@ import dev.ghostty.connect.model.KeyboardBarConfig
 import dev.ghostty.connect.model.KeyboardBarItem
 import dev.ghostty.connect.model.KeyboardBarItemType
 import dev.ghostty.connect.model.KeyboardModifier
+import dev.ghostty.connect.model.TerminalThemes
 import dev.ghostty.connect.terminal.SshSessionService
 import dev.ghostty.connect.terminal.bridge.GhosttyTerminal
+import dev.ghostty.connect.terminal.bridge.TerminalEffects
 import dev.ghostty.connect.terminal.view.GhosttyTerminalView
 import java.util.UUID
 
@@ -56,6 +64,8 @@ class MainActivity : Activity() {
     private lateinit var hostStore: HostStore
     private lateinit var keyStore: SshKeyStore
     private lateinit var keyboardBarStore: KeyboardBarStore
+    private lateinit var terminalThemeStore: TerminalThemeStore
+    private lateinit var terminalStateStore: TerminalStateStore
     private var keyboardBarConfig = KeyboardBarConfig()
     private var sessionService: SshSessionService? = null
     private var sessionBound = false
@@ -90,6 +100,18 @@ class MainActivity : Activity() {
 
         override fun onTerminalChanged() {
             terminalView?.refresh()
+        }
+
+        override fun onTerminalEffects(effects: TerminalEffects) {
+            if (effects.bells > 0) terminalView?.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+            if (effects.progressState >= 0 && effects.progress >= 0) {
+                terminalStatus?.text = "${effects.progress}% · ${sessionService?.host?.destination.orEmpty()}"
+            }
+            if (effects.clipboard.isNotEmpty()) handleRemoteClipboard(effects.clipboard)
+            if (effects.notificationTitle.isNotEmpty() || effects.notificationBody.isNotEmpty()) {
+                handleRemoteNotification(effects.notificationTitle, effects.notificationBody)
+            }
+            if (effects.processingError) terminalStatus?.text = "Terminal processing warning"
         }
 
         override fun onHostKeyVerification(fingerprint: String, changed: Boolean, answer: (Boolean) -> Unit) {
@@ -157,6 +179,8 @@ class MainActivity : Activity() {
         hostStore = HostStore(this)
         keyStore = SshKeyStore(this)
         keyboardBarStore = KeyboardBarStore(this)
+        terminalThemeStore = TerminalThemeStore(this)
+        terminalStateStore = TerminalStateStore(this)
         keyboardBarConfig = keyboardBarStore.load()
         shouldBindSession = intent?.action == SshSessionService.ACTION_OPEN_SESSION || SshSessionService.active
         showHosts(disconnect = false)
@@ -207,6 +231,9 @@ class MainActivity : Activity() {
             card.addView(label(host.destination, 14f, secondary))
             card.addView(label(host.keyName?.let { "SSH key · $it" } ?: "Password", 14f, accent).margins(top = 8))
             card.addView(button("Edit", secondary) { showHostEditor(host.id) }.margins(top = 10))
+            if (terminalStateStore.has(host.id)) {
+                card.addView(button("Last session", secondary) { showArchivedTerminal(host) }.margins(top = 8))
+            }
             card.setOnClickListener { requestCredentialAndConnect(host) }
             root.addView(card.margins(bottom = 16))
         }
@@ -264,6 +291,25 @@ class MainActivity : Activity() {
         root.addView(keySelection.margins(bottom = 10))
         root.addView(addKey.margins(bottom = 16))
         updateKeyControls()
+
+        root.addView(label("Remote requests", 14f, secondary).margins(top = 6, bottom = 6))
+        val policyChoices = listOf("Ask first time", "Allow", "Block")
+        fun policySpinner(label: String, value: Boolean?): Spinner {
+            root.addView(this.label(label, 13f, secondary).margins(bottom = 4))
+            return Spinner(this).apply {
+                adapter = ArrayAdapter(this@MainActivity, android.R.layout.simple_spinner_dropdown_item, policyChoices)
+                setBackgroundColor(raised)
+                setSelection(when (value) { true -> 1; false -> 2; null -> 0 })
+                root.addView(this.margins(bottom = 10))
+            }
+        }
+        val clipboardPolicy = policySpinner("Clipboard writes", existing?.allowRemoteClipboard)
+        val notificationPolicy = policySpinner("Terminal notifications", existing?.allowRemoteNotifications)
+        fun selectedPolicy(spinner: Spinner): Boolean? = when (spinner.selectedItemPosition) {
+            1 -> true
+            2 -> false
+            else -> null
+        }
         root.addView(button("Save host") {
             val parsedPort = port.text.toString().toIntOrNull()
             if (hostname.text.isBlank() || username.text.isBlank() || parsedPort !in 1..65535) {
@@ -287,6 +333,8 @@ class MainActivity : Activity() {
                 username = username.text.toString().trim(),
                 authenticationType = authenticationType,
                 keyName = keySelection.selectedItem.toString().takeIf { authenticationType == AuthenticationType.SSH_KEY },
+                allowRemoteClipboard = selectedPolicy(clipboardPolicy),
+                allowRemoteNotifications = selectedPolicy(notificationPolicy),
             ))
             editingHostId = null
             showHosts()
@@ -400,8 +448,29 @@ class MainActivity : Activity() {
     private fun showKeyboardSettings() {
         settingsVisible = true
         val root = vertical(24)
-        root.addView(label("Keyboard bar", 28f, primary, Typeface.BOLD))
-        root.addView(label("Shown above the keyboard while the terminal is live.", 14f, secondary).margins(bottom = 16))
+        root.addView(label("Settings", 28f, primary, Typeface.BOLD))
+
+        root.addView(label("Terminal theme", 18f, primary, Typeface.BOLD).margins(bottom = 6))
+        val currentTheme = terminalThemeStore.load()
+        val themeSpinner = Spinner(this).apply {
+            adapter = ArrayAdapter(
+                this@MainActivity,
+                android.R.layout.simple_spinner_dropdown_item,
+                TerminalThemes.all.map { it.name },
+            )
+            setBackgroundColor(raised)
+            setSelection(TerminalThemes.all.indexOfFirst { it.id == currentTheme.id }.coerceAtLeast(0))
+            onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+                override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
+                    terminalThemeStore.save(TerminalThemes.all[position])
+                }
+                override fun onNothingSelected(parent: AdapterView<*>?) = Unit
+            }
+        }
+        root.addView(themeSpinner.margins(bottom = 18))
+
+        root.addView(label("Keyboard bar", 18f, primary, Typeface.BOLD))
+        root.addView(label("Shown above the keyboard while the terminal is live.", 14f, secondary).margins(bottom = 12))
 
         val enabled = CheckBox(this).apply {
             text = "Enable keyboard bar"
@@ -565,7 +634,12 @@ class MainActivity : Activity() {
     }
 
     private fun showGhosttyPreview() {
-        val terminal = GhosttyTerminal().also { previewTerminal = it }
+        val theme = terminalThemeStore.load()
+        val terminal = GhosttyTerminal(
+            foreground = theme.foreground,
+            background = theme.background,
+            cursor = theme.cursor,
+        ).also { previewTerminal = it }
         terminal.write(
             "\u001b[2J\u001b[H" +
                 "\u001b[1;38;2;139;233;179mGhostty Connect\u001b[0m\r\n" +
@@ -576,7 +650,10 @@ class MainActivity : Activity() {
                 "✓ Unicode: λ → 東京 👻\r\n" +
                 "\u001b]0;this OSC title must stay invisible\u0007" +
                 "\r\nThe cursor below is maintained by Ghostty.\r\n\r\n" +
-                "~ ❯ ",
+                "~ ❯ " +
+                "\u001b_Ga=T,f=100,q=2,c=8,r=4;" +
+                "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==" +
+                "\u001b\\",
         )
         val root = vertical(0)
         val toolbar = vertical(16).apply { setBackgroundColor(raised) }
@@ -585,6 +662,40 @@ class MainActivity : Activity() {
         root.addView(toolbar)
         root.addView(GhosttyTerminalView(this, terminal), LinearLayout.LayoutParams(-1, 0, 1f))
         root.addView(button("Back to hosts", secondary) { showHosts() })
+        setContentView(root)
+    }
+
+    private fun showArchivedTerminal(host: Host) {
+        val terminal = runCatching {
+            GhosttyTerminal(restoredState = terminalStateStore.load(host.id))
+        }.getOrElse {
+            toast("Could not restore the last terminal session.")
+            return
+        }.also { previewTerminal = it }
+        val root = vertical(0)
+        val toolbar = vertical(16).apply { setBackgroundColor(raised) }
+        toolbar.addView(label(host.name, 18f, primary, Typeface.BOLD))
+        toolbar.addView(label("Last session · read-only", 13f, secondary))
+        root.addView(toolbar)
+        val view = GhosttyTerminalView(this, terminal).apply {
+            isEnabled = true
+            acceptsInput = false
+            isMouseTracking = { false }
+            onSelectionStart = terminal::selectWord
+            onSelectionUpdate = { column, row -> terminal.extendSelection(column, row) }
+            onSelectionFinished = {
+                terminal.selectedText().takeIf(String::isNotEmpty)?.let { writeClipboard(it) }
+            }
+            onLinkTap = { column, row ->
+                val uri = terminal.hyperlink(column, row).takeIf { it.isNotBlank() }?.let(Uri::parse)
+                if (uri?.scheme in setOf("http", "https")) {
+                    startActivity(Intent(Intent.ACTION_VIEW, uri))
+                    true
+                } else false
+            }
+        }
+        root.addView(view, LinearLayout.LayoutParams(-1, 0, 1f))
+        root.addView(button("Back", secondary) { showHosts(disconnect = false) })
         setContentView(root)
     }
 
@@ -891,6 +1002,75 @@ class MainActivity : Activity() {
         }
     }
 
+    private fun handleRemoteClipboard(text: String) {
+        val host = currentStoredHost() ?: return
+        when (host.allowRemoteClipboard) {
+            true -> writeClipboard(text)
+            false -> Unit
+            null -> AlertDialog.Builder(this)
+                .setTitle("Allow remote clipboard writes?")
+                .setMessage("${host.name} requested permission to replace the Android clipboard.")
+                .setNegativeButton("Block") { _, _ -> hostStore.save(host.copy(allowRemoteClipboard = false)) }
+                .setPositiveButton("Allow") { _, _ ->
+                    hostStore.save(host.copy(allowRemoteClipboard = true))
+                    writeClipboard(text)
+                }
+                .show()
+        }
+    }
+
+    private fun writeClipboard(text: String) {
+        getSystemService(ClipboardManager::class.java).setPrimaryClip(
+            ClipData.newPlainText("Remote terminal", text),
+        )
+    }
+
+    private fun handleRemoteNotification(title: String, body: String) {
+        val host = currentStoredHost() ?: return
+        when (host.allowRemoteNotifications) {
+            true -> showRemoteNotification(host, title, body)
+            false -> Unit
+            null -> AlertDialog.Builder(this)
+                .setTitle("Allow terminal notifications?")
+                .setMessage("${host.name} requested permission to create Android notifications.")
+                .setNegativeButton("Block") { _, _ -> hostStore.save(host.copy(allowRemoteNotifications = false)) }
+                .setPositiveButton("Allow") { _, _ ->
+                    hostStore.save(host.copy(allowRemoteNotifications = true))
+                    showRemoteNotification(host, title, body)
+                }
+                .show()
+        }
+    }
+
+    private fun showRemoteNotification(host: Host, title: String, body: String) {
+        val manager = getSystemService(NotificationManager::class.java)
+        manager.createNotificationChannel(
+            NotificationChannel(REMOTE_NOTIFICATION_CHANNEL, "Remote terminal notifications", NotificationManager.IMPORTANCE_DEFAULT),
+        )
+        val open = PendingIntent.getActivity(
+            this,
+            0,
+            Intent(this, MainActivity::class.java).setAction(SshSessionService.ACTION_OPEN_SESSION),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+        manager.notify(
+            (System.currentTimeMillis() and 0x7fffffff).toInt(),
+            android.app.Notification.Builder(this, REMOTE_NOTIFICATION_CHANNEL)
+                .setSmallIcon(android.R.drawable.stat_sys_download_done)
+                .setContentTitle(title.ifBlank { host.name })
+                .setContentText(body)
+                .setStyle(android.app.Notification.BigTextStyle().bigText(body))
+                .setContentIntent(open)
+                .setAutoCancel(true)
+                .build(),
+        )
+    }
+
+    private fun currentStoredHost(): Host? {
+        val id = sessionService?.host?.id ?: return null
+        return hostStore.loadAll().firstOrNull { it.id == id }
+    }
+
     private fun consumeOneShotModifiers() {
         activeModifiers.retainAll(lockedModifiers)
         renderModifierBarItems()
@@ -976,5 +1156,6 @@ class MainActivity : Activity() {
         const val GHOSTTY_MOD_SUPER = 1 shl 3
         const val GHOSTTY_MOD_CAPS_LOCK = 1 shl 4
         const val GHOSTTY_MOD_NUM_LOCK = 1 shl 5
+        const val REMOTE_NOTIFICATION_CHANNEL = "remote_terminal"
     }
 }

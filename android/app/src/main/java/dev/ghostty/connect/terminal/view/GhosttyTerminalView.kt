@@ -2,7 +2,9 @@ package dev.ghostty.connect.terminal.view
 
 import android.content.Context
 import android.graphics.Canvas
+import android.graphics.Bitmap
 import android.graphics.Paint
+import android.graphics.Rect
 import android.graphics.RectF
 import android.graphics.Typeface
 import android.text.InputType
@@ -20,6 +22,8 @@ import android.view.inputmethod.InputConnection
 import android.view.inputmethod.InputMethodManager
 import android.widget.OverScroller
 import dev.ghostty.connect.terminal.bridge.GhosttyTerminal
+import dev.ghostty.connect.terminal.bridge.KittyFrame
+import dev.ghostty.connect.terminal.bridge.KittyImage
 import dev.ghostty.connect.terminal.bridge.TerminalSnapshot
 import kotlin.math.floor
 import kotlin.math.max
@@ -30,6 +34,7 @@ class GhosttyTerminalView(
     private val terminal: GhosttyTerminal,
 ) : View(context) {
     var onInput: (String) -> Unit = {}
+    var acceptsInput = true
     var onSpecialKey: (String) -> Unit = {}
     var onKeyEvent: (KeyEvent) -> Boolean = { false }
     var isMouseTracking: () -> Boolean = { false }
@@ -57,6 +62,8 @@ class GhosttyTerminalView(
     private var cellHeight = paint.fontMetrics.run { descent - ascent + leading }
     private var baselineOffset = -paint.fontMetrics.ascent
     private var snapshot: TerminalSnapshot = terminal.snapshot()
+    private var kittyFrame: KittyFrame = terminal.kittyFrame()
+    private val kittyBitmaps = mutableMapOf<Int, Pair<Long, Bitmap>>()
     private val scroller = OverScroller(context)
     private val touchSlop = ViewConfiguration.get(context).scaledTouchSlop
     private val minimumFlingVelocity = ViewConfiguration.get(context).scaledMinimumFlingVelocity
@@ -106,6 +113,8 @@ class GhosttyTerminalView(
     fun refresh() {
         val wasAtBottom = snapshot.isAtBottom
         snapshot = terminal.snapshot()
+        kittyFrame = terminal.kittyFrame()
+        updateKittyBitmaps()
         onMetadataChanged(snapshot.title, snapshot.pwd, snapshot.cursorAtPrompt)
         if (snapshot.isAtBottom != wasAtBottom) onScrollPositionChanged(snapshot.isAtBottom)
         invalidate()
@@ -114,6 +123,12 @@ class GhosttyTerminalView(
     override fun onSizeChanged(width: Int, height: Int, oldWidth: Int, oldHeight: Int) {
         super.onSizeChanged(width, height, oldWidth, oldHeight)
         resizeTerminal()
+    }
+
+    override fun onDetachedFromWindow() {
+        kittyBitmaps.values.forEach { it.second.recycle() }
+        kittyBitmaps.clear()
+        super.onDetachedFromWindow()
     }
 
     private fun resizeTerminal() {
@@ -128,6 +143,7 @@ class GhosttyTerminalView(
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
         canvas.drawColor(snapshot.background)
+        drawKitty(canvas) { it < KITTY_BELOW_BACKGROUND }
         val visibleColumns = minOf(snapshot.columns, floor(width / cellWidth).toInt())
         val visibleRows = minOf(snapshot.rows, floor(height / cellHeight).toInt())
         for (row in 0 until visibleRows) {
@@ -145,6 +161,14 @@ class GhosttyTerminalView(
                     paint.style = Paint.Style.FILL
                     canvas.drawRect(left, top, left + cellWidth + 1f, top + cellHeight + 1f, paint)
                 }
+            }
+        }
+        drawKitty(canvas) { it in KITTY_BELOW_BACKGROUND until 0 }
+        for (row in 0 until visibleRows) {
+            val top = row * cellHeight
+            for (column in 0 until visibleColumns) {
+                val cell = snapshot.cells[row * snapshot.columns + column]
+                val left = column * cellWidth
                 if (!cell.invisible && cell.text.isNotEmpty()) {
                     paint.color = cell.foreground
                     paint.alpha = if (cell.faint) 150 else 255
@@ -157,9 +181,75 @@ class GhosttyTerminalView(
                 }
             }
         }
+        drawKitty(canvas) { it >= 0 }
         drawCursor(canvas, visibleColumns, visibleRows)
         drawScrollPosition(canvas)
         resetPaint()
+    }
+
+    private fun updateKittyBitmaps() {
+        val activeIds = kittyFrame.images.keys
+        kittyBitmaps.keys.filterNot(activeIds::contains).forEach { id -> kittyBitmaps.remove(id)?.second?.recycle() }
+        kittyFrame.images.values.forEach { image ->
+            if (kittyBitmaps[image.id]?.first == image.generation) return@forEach
+            kittyBitmaps.remove(image.id)?.second?.recycle()
+            kittyBitmaps[image.id] = image.generation to image.toBitmap()
+        }
+    }
+
+    private fun KittyImage.toBitmap(): Bitmap {
+        val pixels = IntArray(width * height)
+        var offset = 0
+        for (index in pixels.indices) {
+            val red: Int
+            val green: Int
+            val blue: Int
+            val alpha: Int
+            when (format) {
+                0 -> {
+                    red = data[offset++].toInt() and 0xff
+                    green = data[offset++].toInt() and 0xff
+                    blue = data[offset++].toInt() and 0xff
+                    alpha = 0xff
+                }
+                1 -> {
+                    red = data[offset++].toInt() and 0xff
+                    green = data[offset++].toInt() and 0xff
+                    blue = data[offset++].toInt() and 0xff
+                    alpha = data[offset++].toInt() and 0xff
+                }
+                3 -> {
+                    red = data[offset++].toInt() and 0xff
+                    green = red
+                    blue = red
+                    alpha = data[offset++].toInt() and 0xff
+                }
+                else -> {
+                    red = data[offset++].toInt() and 0xff
+                    green = red
+                    blue = red
+                    alpha = 0xff
+                }
+            }
+            pixels[index] = alpha shl 24 or (red shl 16) or (green shl 8) or blue
+        }
+        return Bitmap.createBitmap(pixels, width, height, Bitmap.Config.ARGB_8888)
+    }
+
+    private fun drawKitty(canvas: Canvas, matchesLayer: (Int) -> Boolean) {
+        kittyFrame.placements.filter { matchesLayer(it.z) }.forEach { placement ->
+            val bitmap = kittyBitmaps[placement.imageId]?.second ?: return@forEach
+            val source = Rect(
+                placement.sourceX,
+                placement.sourceY,
+                placement.sourceX + placement.sourceWidth,
+                placement.sourceY + placement.sourceHeight,
+            )
+            val left = placement.viewportColumn * cellWidth + placement.xOffset
+            val top = placement.viewportRow * cellHeight + placement.yOffset
+            val destination = RectF(left, top, left + placement.pixelWidth, top + placement.pixelHeight)
+            canvas.drawBitmap(bitmap, source, destination, paint)
+        }
     }
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
@@ -319,6 +409,7 @@ class GhosttyTerminalView(
 
     override fun performClick(): Boolean {
         super.performClick()
+        if (!acceptsInput) return true
         requestFocus()
         context.getSystemService(InputMethodManager::class.java)
             ?.showSoftInput(this, InputMethodManager.SHOW_IMPLICIT)
@@ -492,5 +583,6 @@ class GhosttyTerminalView(
         private const val MOUSE_WHEEL_UP = 4
         private const val MOUSE_WHEEL_DOWN = 5
         private const val CURSOR_BLINK_INTERVAL_MS = 500L
+        private const val KITTY_BELOW_BACKGROUND = Int.MIN_VALUE / 2
     }
 }

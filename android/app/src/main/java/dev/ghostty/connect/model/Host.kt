@@ -13,6 +13,8 @@ data class Host(
     val username: String,
     val authenticationType: AuthenticationType = AuthenticationType.PASSWORD,
     val keyName: String? = null,
+    val allowRemoteClipboard: Boolean? = null,
+    val allowRemoteNotifications: Boolean? = null,
 ) {
     val name: String get() = alias ?: hostname
     val destination: String get() = "$username@$hostname:$port"
