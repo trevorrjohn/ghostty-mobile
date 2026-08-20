@@ -21,19 +21,23 @@ import android.view.ViewGroup
 import android.view.WindowInsets
 import android.window.OnBackInvokedDispatcher
 import android.widget.ArrayAdapter
+import android.widget.AdapterView
 import android.widget.Button
 import android.widget.EditText
 import android.widget.LinearLayout
+import android.widget.PopupMenu
 import android.widget.ScrollView
 import android.widget.Spinner
 import android.widget.TextView
 import android.widget.Toast
 import dev.ghostty.connect.data.HostStore
 import dev.ghostty.connect.data.SshKeyStore
+import dev.ghostty.connect.model.AuthenticationType
 import dev.ghostty.connect.model.Host
 import dev.ghostty.connect.terminal.SshSessionService
 import dev.ghostty.connect.terminal.bridge.GhosttyTerminal
 import dev.ghostty.connect.terminal.view.GhosttyTerminalView
+import java.util.UUID
 
 class MainActivity : Activity() {
     private lateinit var hostStore: HostStore
@@ -44,8 +48,9 @@ class MainActivity : Activity() {
     private var pendingConnection: Pair<Host, String>? = null
     private var terminalStatus: TextView? = null
     private var terminalView: GhosttyTerminalView? = null
-    private var terminalKeys: List<Button> = emptyList()
     private var previewTerminal: GhosttyTerminal? = null
+    private var editingHostId: String? = null
+    private var editorKeySelection: Spinner? = null
     private val surface = Color.rgb(17, 19, 24)
     private val raised = Color.rgb(26, 29, 36)
     private val primary = Color.rgb(241, 243, 248)
@@ -101,7 +106,7 @@ class MainActivity : Activity() {
         super.onCreate(savedInstanceState)
         window.decorView.setOnApplyWindowInsetsListener { view, insets ->
             val bars = if (android.os.Build.VERSION.SDK_INT >= 30) {
-                insets.getInsets(WindowInsets.Type.systemBars())
+                insets.getInsets(WindowInsets.Type.systemBars() or WindowInsets.Type.ime())
             } else {
                 @Suppress("DEPRECATION")
                 android.graphics.Insets.of(
@@ -141,27 +146,30 @@ class MainActivity : Activity() {
     }
 
     private fun showHosts(disconnect: Boolean = true) {
+        editingHostId = null
         if (disconnect) {
             sessionService?.disconnect()
             shouldBindSession = false
         }
         terminalStatus = null
         terminalView = null
-        terminalKeys = emptyList()
+        editorKeySelection = null
         previewTerminal?.close()
         previewTerminal = null
         val root = vertical(24)
         root.addView(label("Ghostty Connect", 28f, primary, Typeface.BOLD))
         root.addView(label("A fast, native SSH terminal", 15f, secondary).margins(bottom = 28))
-        hostStore.load()?.let { host ->
+        val hosts = hostStore.loadAll()
+        hosts.forEach { host ->
             val card = vertical(18).apply { setBackgroundColor(raised) }
             card.addView(label(host.name, 20f, primary, Typeface.BOLD))
             card.addView(label(host.destination, 14f, secondary))
-            card.addView(label(host.keyName?.let { "Key · $it" } ?: "Password", 14f, accent).margins(top = 8))
+            card.addView(label(host.keyName?.let { "SSH key · $it" } ?: "Password", 14f, accent).margins(top = 8))
+            card.addView(button("Edit", secondary) { showHostEditor(host.id) }.margins(top = 10))
             card.setOnClickListener { requestCredentialAndConnect(host) }
             root.addView(card.margins(bottom = 16))
         }
-        root.addView(button(if (hostStore.load() == null) "Add your first host" else "Add or edit host") { showHostEditor() })
+        root.addView(button(if (hosts.isEmpty()) "Add your first host" else "Add host") { showHostEditor() })
         root.addView(button("Import SSH key", secondary) { openKeyPicker() }.margins(top = 10))
         root.addView(button("Paste private key", secondary) { showPasteKeyDialog() }.margins(top = 10))
         root.addView(button("Ghostty renderer preview", secondary) { showGhosttyPreview() }.margins(top = 10))
@@ -171,43 +179,84 @@ class MainActivity : Activity() {
         setContentView(scroll(root))
     }
 
-    private fun showHostEditor() {
-        val existing = hostStore.load()
+    private fun showHostEditor(hostId: String? = null) {
+        editingHostId = hostId
+        val existing = hostStore.loadAll().firstOrNull { it.id == hostId }
         val root = vertical(24)
-        root.addView(label("Connection", 28f, primary, Typeface.BOLD))
-        val name = field("Name", existing?.name.orEmpty())
+        root.addView(label(if (existing == null) "New connection" else "Edit connection", 28f, primary, Typeface.BOLD))
+        val alias = field("Alias (optional)", existing?.alias.orEmpty())
         val hostname = field("Hostname or IP", existing?.hostname.orEmpty())
-        val username = field("Username", existing?.username.orEmpty())
+        val username = field("User", existing?.username.orEmpty())
         val port = field("Port", existing?.port?.toString() ?: "22", InputType.TYPE_CLASS_NUMBER)
-        listOf(name, hostname, username, port).forEach { root.addView(it.margins(bottom = 12)) }
+        listOf(alias, hostname, username, port).forEach { root.addView(it.margins(bottom = 12)) }
 
         root.addView(label("Authentication", 14f, secondary).margins(top = 6, bottom = 6))
-        val choices = listOf("Password") + keyStore.names().map { "SSH key · $it" }
+        val authenticationChoices = listOf("Password", "SSH key")
         val authentication = Spinner(this).apply {
-            adapter = ArrayAdapter(this@MainActivity, android.R.layout.simple_spinner_dropdown_item, choices)
+            adapter = ArrayAdapter(this@MainActivity, android.R.layout.simple_spinner_dropdown_item, authenticationChoices)
             setBackgroundColor(raised)
-            val selected = existing?.keyName?.let { choices.indexOf("SSH key · $it") } ?: 0
-            setSelection(selected.coerceAtLeast(0))
+            setSelection(if (existing?.authenticationType == AuthenticationType.SSH_KEY) 1 else 0)
         }
-        root.addView(authentication.margins(bottom = 16))
+        root.addView(authentication.margins(bottom = 10))
+
+        val keyNames = keyStore.names()
+        val keySelection = Spinner(this).apply {
+            adapter = ArrayAdapter(
+                this@MainActivity,
+                android.R.layout.simple_spinner_dropdown_item,
+                keyNames.ifEmpty { listOf("No SSH keys saved") },
+            )
+            setBackgroundColor(raised)
+            setSelection(keyNames.indexOf(existing?.keyName).coerceAtLeast(0))
+        }.also { editorKeySelection = it }
+        val addKey = button("Add SSH key", secondary) { openKeyPicker() }
+        fun updateKeyControls() {
+            val visible = if (authentication.selectedItemPosition == 1) View.VISIBLE else View.GONE
+            keySelection.visibility = visible
+            addKey.visibility = visible
+        }
+        authentication.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) = updateKeyControls()
+            override fun onNothingSelected(parent: AdapterView<*>?) = Unit
+        }
+        root.addView(keySelection.margins(bottom = 10))
+        root.addView(addKey.margins(bottom = 16))
+        updateKeyControls()
         root.addView(button("Save host") {
             val parsedPort = port.text.toString().toIntOrNull()
             if (hostname.text.isBlank() || username.text.isBlank() || parsedPort !in 1..65535) {
                 toast("Enter a hostname, username, and valid port.")
                 return@button
             }
-            val selected = authentication.selectedItem.toString()
+            val authenticationType = if (authentication.selectedItemPosition == 1) {
+                AuthenticationType.SSH_KEY
+            } else {
+                AuthenticationType.PASSWORD
+            }
+            if (authenticationType == AuthenticationType.SSH_KEY && keyStore.names().isEmpty()) {
+                toast("Add an SSH key before saving this host.")
+                return@button
+            }
             hostStore.save(Host(
-                name = name.text.toString().ifBlank { hostname.text.toString() },
+                id = existing?.id ?: UUID.randomUUID().toString(),
+                alias = alias.text.toString().trim().ifBlank { null },
                 hostname = hostname.text.toString().trim(),
                 port = parsedPort!!,
                 username = username.text.toString().trim(),
-                keyName = selected.takeIf { it.startsWith("SSH key · ") }?.removePrefix("SSH key · "),
+                authenticationType = authenticationType,
+                keyName = keySelection.selectedItem.toString().takeIf { authenticationType == AuthenticationType.SSH_KEY },
             ))
+            editingHostId = null
             showHosts()
         })
-        root.addView(button("Import another key", secondary) { openKeyPicker() }.margins(top = 8))
         root.addView(button("Paste a private key", secondary) { showPasteKeyDialog() }.margins(top = 8))
+        existing?.let { host ->
+            root.addView(button("Delete host", secondary) {
+                hostStore.delete(host.id)
+                editingHostId = null
+                showHosts()
+            }.margins(top = 8))
+        }
         root.addView(button("Cancel", secondary) { showHosts() }.margins(top = 8))
         setContentView(scroll(root))
     }
@@ -250,7 +299,7 @@ class MainActivity : Activity() {
                     privateKey.text.clear()
                     dialog.dismiss()
                     toast("Private key saved")
-                    showHostEditor()
+                    refreshEditorKeys(name.text.toString().trim().ifBlank { "Pasted key" })
                 } catch (error: Exception) {
                     toast(error.message ?: "Could not save key")
                 }
@@ -271,7 +320,7 @@ class MainActivity : Activity() {
             val displayName = uri.lastPathSegment?.substringAfterLast('/')?.takeLast(80) ?: "SSH key"
             keyStore.import(displayName, bytes)
             toast("Imported $displayName")
-            showHostEditor()
+            refreshEditorKeys(displayName)
         } catch (error: Exception) {
             toast(error.message ?: "Could not import key")
         }
@@ -282,17 +331,28 @@ class MainActivity : Activity() {
             checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), NOTIFICATION_PERMISSION)
         }
-        val credential = field(
-            if (host.keyName == null) "Password" else "Key passphrase (blank if none)",
-            "",
-            InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD,
-        )
+        if (host.authenticationType == AuthenticationType.SSH_KEY) {
+            startSession(host, "")
+            return
+        }
+        val credential = field("Password", "", InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD)
         AlertDialog.Builder(this)
-            .setTitle(if (host.keyName == null) "Authenticate" else "Unlock ${host.keyName}")
+            .setTitle("Authenticate")
             .setView(credential)
             .setNegativeButton("Cancel", null)
             .setPositiveButton("Connect") { _, _ -> startSession(host, credential.text.toString()) }
             .show()
+    }
+
+    private fun refreshEditorKeys(selectedName: String) {
+        val spinner = editorKeySelection
+        if (spinner == null) {
+            showHostEditor(editingHostId)
+            return
+        }
+        val names = keyStore.names()
+        spinner.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, names)
+        spinner.setSelection(names.indexOf(selectedName).coerceAtLeast(0))
     }
 
     private fun showGhosttyPreview() {
@@ -339,7 +399,29 @@ class MainActivity : Activity() {
         val root = vertical(0)
         val status = label("Connecting…", 13f, accent).also { terminalStatus = it }
         val toolbar = vertical(16).apply { setBackgroundColor(raised) }
-        toolbar.addView(label(host.name, 18f, primary, Typeface.BOLD))
+        val titleRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+        titleRow.addView(label(host.name, 18f, primary, Typeface.BOLD), LinearLayout.LayoutParams(0, -2, 1f))
+        val overflow = label("...", 24f, primary).apply {
+            contentDescription = "More options"
+            gravity = Gravity.CENTER
+            setPadding(dp(12), dp(4), dp(12), dp(4))
+            setOnClickListener { anchor ->
+                PopupMenu(this@MainActivity, anchor).apply {
+                    menu.add("Disconnect")
+                    setOnMenuItemClickListener { item ->
+                        if (item.title == "Disconnect") {
+                            showHosts()
+                            true
+                        } else {
+                            false
+                        }
+                    }
+                    show()
+                }
+            }
+        }
+        titleRow.addView(overflow, LinearLayout.LayoutParams(dp(48), -2))
+        toolbar.addView(titleRow)
         toolbar.addView(status)
         root.addView(toolbar)
 
@@ -351,23 +433,12 @@ class MainActivity : Activity() {
             }
         }.also { terminalView = it }
         root.addView(view, LinearLayout.LayoutParams(-1, 0, 1f))
-        val keys = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setBackgroundColor(raised) }
-        val keyButtons = mutableListOf<Button>()
-        listOf("Esc" to "\u001b", "Ctrl-C" to "\u0003", "Tab" to "\t", "↑" to "\u001b[A", "↓" to "\u001b[B").forEach { (name, bytes) ->
-            val keyButton = button(name, secondary) { sessionService?.send(bytes) }.apply { isEnabled = false }
-            keyButtons += keyButton
-            keys.addView(keyButton, LinearLayout.LayoutParams(0, dp(44), 1f))
-        }
-        terminalKeys = keyButtons
-        root.addView(keys)
-        root.addView(button("Disconnect", secondary) { showHosts() })
         setContentView(root)
         sessionListener.onSessionStatus(service.run { statusText() })
     }
 
     private fun setTerminalEnabled(enabled: Boolean) {
         terminalView?.isEnabled = enabled
-        terminalKeys.forEach { it.isEnabled = enabled }
         if (enabled) terminalView?.requestFocus()
     }
 

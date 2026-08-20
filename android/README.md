@@ -6,7 +6,7 @@ An Android SSH client designed around one promise: a fast, native terminal conne
 
 This repository contains a runnable API 36 SSH client with:
 
-- a saved-host editor;
+- an encrypted multi-host editor with optional aliases and reusable SSH identities;
 - password and imported private-key authentication;
 - Android Keystore-encrypted private-key storage;
 - explicit approval for unknown and changed host keys;
@@ -17,7 +17,7 @@ This repository contains a runnable API 36 SSH client with:
 - foreground-service session ownership so an active SSH shell survives activity backgrounding and recreation;
 - a persistent connection notification with reopen and disconnect actions;
 
-Host metadata is stored in private app preferences. Private keys are encrypted with a non-exportable Android Keystore AES key. Passwords and key passphrases are requested per connection and are not persisted.
+Host configurations, trusted-host fingerprints, private keys, and SSH key names are AES-GCM encrypted with a non-exportable Android Keystore key. Passwords are requested per connection and are never persisted. Key authentication connects without a credential prompt and therefore requires a private key that does not need a passphrase.
 
 ## Build
 

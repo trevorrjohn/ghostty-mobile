@@ -1,7 +1,9 @@
 package dev.ghostty.connect.terminal
 
 import android.content.Context
+import dev.ghostty.connect.data.KnownHostStore
 import dev.ghostty.connect.data.SshKeyStore
+import dev.ghostty.connect.model.AuthenticationType
 import dev.ghostty.connect.model.Host
 import net.schmizz.sshj.SSHClient
 import net.schmizz.sshj.common.SecurityUtils
@@ -20,6 +22,8 @@ class SshConnection(
     private val keyStore: SshKeyStore,
     private val callbacks: Callbacks,
 ) {
+    private val knownHostStore = KnownHostStore(context)
+
     interface Callbacks {
         fun status(message: String)
         fun output(bytes: ByteArray)
@@ -47,13 +51,14 @@ class SshConnection(
             ssh.connect(host.hostname, host.port)
             ssh.connection.keepAlive.keepAliveInterval = 30
             callbacks.status("Authenticating…")
-            if (host.keyName != null) {
+            if (host.authenticationType == AuthenticationType.SSH_KEY) {
+                val keyName = requireNotNull(host.keyName) { "No SSH key is selected for this host" }
                 temporaryKey = File.createTempFile("identity-", ".key", context.cacheDir).apply {
-                    writeBytes(keyStore.read(host.keyName))
+                    writeBytes(keyStore.read(keyName))
                     setReadable(false, false)
                     setReadable(true, true)
                 }
-                val provider = ssh.loadKeys(temporaryKey.absolutePath, passwordOrPassphrase)
+                val provider = ssh.loadKeys(temporaryKey.absolutePath, "")
                 ssh.authPublickey(host.username, provider)
             } else {
                 ssh.authPassword(host.username, passwordOrPassphrase)
@@ -107,9 +112,7 @@ class SshConnection(
     private fun verifier(host: Host) = object : HostKeyVerifier {
         override fun verify(hostname: String, port: Int, key: PublicKey): Boolean {
             val fingerprint = SecurityUtils.getFingerprint(key)
-            val preferences = context.getSharedPreferences("known_hosts", Context.MODE_PRIVATE)
-            val id = "${host.hostname}:${host.port}"
-            val known = preferences.getString(id, null)
+            val known = knownHostStore.fingerprint(host.hostname, host.port)
             if (known == fingerprint) return true
             val latch = CountDownLatch(1)
             var accepted = false
@@ -118,7 +121,7 @@ class SshConnection(
                 latch.countDown()
             }
             if (!latch.await(2, TimeUnit.MINUTES) || !accepted) return false
-            preferences.edit().putString(id, fingerprint).apply()
+            knownHostStore.trust(host.hostname, host.port, fingerprint)
             return true
         }
 
