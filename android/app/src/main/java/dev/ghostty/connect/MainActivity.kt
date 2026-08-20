@@ -22,12 +22,15 @@ import android.os.IBinder
 import android.os.Build
 import android.content.pm.PackageManager
 import android.text.InputType
+import android.text.Editable
+import android.text.TextWatcher
 import android.view.Gravity
 import android.view.KeyEvent
 import android.view.HapticFeedbackConstants
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowInsets
+import android.view.WindowManager
 import android.window.OnBackInvokedDispatcher
 import android.widget.ArrayAdapter
 import android.widget.AdapterView
@@ -77,6 +80,7 @@ class MainActivity : Activity() {
     private var previewTerminal: GhosttyTerminal? = null
     private var editingHostId: String? = null
     private var editorKeySelection: Spinner? = null
+    private var editorAuthentication: Spinner? = null
     private var modifierBar: View? = null
     private var modifierBarRow: LinearLayout? = null
     private var imeVisible = false
@@ -207,6 +211,7 @@ class MainActivity : Activity() {
     }
 
     private fun showHosts(disconnect: Boolean = true) {
+        window.clearFlags(WindowManager.LayoutParams.FLAG_SECURE)
         editingHostId = null
         settingsVisible = false
         if (disconnect) {
@@ -217,6 +222,7 @@ class MainActivity : Activity() {
         terminalTitle = null
         terminalView = null
         editorKeySelection = null
+        editorAuthentication = null
         modifierBar = null
         modifierBarRow = null
         previewTerminal?.close()
@@ -265,7 +271,7 @@ class MainActivity : Activity() {
             adapter = ArrayAdapter(this@MainActivity, android.R.layout.simple_spinner_dropdown_item, authenticationChoices)
             setBackgroundColor(raised)
             setSelection(if (existing?.authenticationType == AuthenticationType.SSH_KEY) 1 else 0)
-        }
+        }.also { editorAuthentication = it }
         root.addView(authentication.margins(bottom = 10))
 
         val keyNames = keyStore.names()
@@ -372,8 +378,32 @@ class MainActivity : Activity() {
             setBackgroundColor(raised)
             setPadding(dp(12), dp(12), dp(12), dp(12))
         }
+        val encryptionStatus = label("", 13f, secondary)
+        var generatedName = ""
+        privateKey.addTextChangedListener(object : TextWatcher {
+            override fun beforeTextChanged(value: CharSequence?, start: Int, count: Int, after: Int) = Unit
+            override fun onTextChanged(value: CharSequence?, start: Int, before: Int, count: Int) = Unit
+            override fun afterTextChanged(value: Editable?) {
+                val keyBytes = value.toString().trim().toByteArray()
+                if (keyBytes.isEmpty()) {
+                    encryptionStatus.text = ""
+                    return
+                }
+                val details = keyStore.inspect(keyBytes)
+                if (name.text.isBlank() || name.text.toString() == generatedName) {
+                    generatedName = details.suggestedName
+                    name.setText(generatedName)
+                }
+                encryptionStatus.text = if (details.requiresPassphrase) {
+                    "Encrypted key · passphrase required when connecting"
+                } else {
+                    "No key passphrase detected"
+                }
+            }
+        })
         form.addView(name.margins(bottom = 10))
         form.addView(privateKey, LinearLayout.LayoutParams(-1, dp(260)))
+        form.addView(encryptionStatus.margins(top = 8))
         val dialog = AlertDialog.Builder(this)
             .setTitle("Paste private key")
             .setView(form)
@@ -385,11 +415,13 @@ class MainActivity : Activity() {
                 try {
                     val value = privateKey.text.toString().trim()
                     require(value.contains("PRIVATE KEY")) { "Paste a PEM or OpenSSH private key" }
-                    keyStore.import(name.text.toString().ifBlank { "Pasted key" }, (value + "\n").toByteArray())
+                    val bytes = (value + "\n").toByteArray()
+                    val savedName = name.text.toString().trim().ifBlank { keyStore.inspect(bytes).suggestedName }
+                    keyStore.import(savedName, bytes)
                     privateKey.text.clear()
                     dialog.dismiss()
                     toast("Private key saved")
-                    refreshEditorKeys(name.text.toString().trim().ifBlank { "Pasted key" })
+                    refreshEditorKeys(savedName)
                 } catch (error: Exception) {
                     toast(error.message ?: "Could not save key")
                 }
@@ -422,7 +454,33 @@ class MainActivity : Activity() {
             requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), NOTIFICATION_PERMISSION)
         }
         if (host.authenticationType == AuthenticationType.SSH_KEY) {
-            startSession(host, "")
+            val keyName = requireNotNull(host.keyName)
+            if (!keyStore.requiresPassphrase(keyName)) {
+                startSession(host, "")
+                return
+            }
+            val passphrase = field(
+                "Private key passphrase",
+                "",
+                InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD,
+            )
+            val dialog = AlertDialog.Builder(this)
+                .setTitle("Unlock $keyName")
+                .setView(passphrase)
+                .setNegativeButton("Cancel", null)
+                .setPositiveButton("Connect", null)
+                .create()
+            dialog.setOnShowListener {
+                dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                    if (passphrase.text.isEmpty()) {
+                        toast("Enter the private key passphrase")
+                    } else {
+                        dialog.dismiss()
+                        startSession(host, passphrase.text.toString())
+                    }
+                }
+            }
+            dialog.show()
             return
         }
         val credential = field("Password", "", InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD)
@@ -438,11 +496,13 @@ class MainActivity : Activity() {
         val spinner = editorKeySelection
         if (spinner == null) {
             showHostEditor(editingHostId)
+            refreshEditorKeys(selectedName)
             return
         }
         val names = keyStore.names()
         spinner.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, names)
         spinner.setSelection(names.indexOf(selectedName).coerceAtLeast(0))
+        editorAuthentication?.setSelection(1)
     }
 
     private fun showKeyboardSettings() {
@@ -468,6 +528,20 @@ class MainActivity : Activity() {
             }
         }
         root.addView(themeSpinner.margins(bottom = 18))
+        val fontSize = field(
+            "Font size (9-30)",
+            terminalThemeStore.loadFontSize().toInt().toString(),
+            InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL,
+        )
+        root.addView(fontSize.margins(bottom = 8))
+        root.addView(button("Save font size", secondary) {
+            val size = fontSize.text.toString().toFloatOrNull()
+            if (size == null || size !in 9f..30f) toast("Enter a font size from 9 to 30.")
+            else {
+                terminalThemeStore.saveFontSize(size)
+                toast("Font size saved")
+            }
+        }.margins(bottom = 18))
 
         root.addView(label("Keyboard bar", 18f, primary, Typeface.BOLD))
         root.addView(label("Shown above the keyboard while the terminal is live.", 14f, secondary).margins(bottom = 12))
@@ -639,6 +713,7 @@ class MainActivity : Activity() {
             foreground = theme.foreground,
             background = theme.background,
             cursor = theme.cursor,
+            palette = theme.palette,
         ).also { previewTerminal = it }
         terminal.write(
             "\u001b[2J\u001b[H" +
@@ -660,7 +735,12 @@ class MainActivity : Activity() {
         toolbar.addView(label("Ghostty renderer", 18f, primary, Typeface.BOLD))
         toolbar.addView(label("Recorded native terminal fixture", 13f, accent))
         root.addView(toolbar)
-        root.addView(GhosttyTerminalView(this, terminal), LinearLayout.LayoutParams(-1, 0, 1f))
+        root.addView(
+            GhosttyTerminalView(this, terminal, terminalThemeStore.loadFontSize()).apply {
+                onTextSizeChanged = terminalThemeStore::saveFontSize
+            },
+            LinearLayout.LayoutParams(-1, 0, 1f),
+        )
         root.addView(button("Back to hosts", secondary) { showHosts() })
         setContentView(root)
     }
@@ -677,7 +757,7 @@ class MainActivity : Activity() {
         toolbar.addView(label(host.name, 18f, primary, Typeface.BOLD))
         toolbar.addView(label("Last session · read-only", 13f, secondary))
         root.addView(toolbar)
-        val view = GhosttyTerminalView(this, terminal).apply {
+        val view = GhosttyTerminalView(this, terminal, terminalThemeStore.loadFontSize()).apply {
             isEnabled = true
             acceptsInput = false
             isMouseTracking = { false }
@@ -739,6 +819,10 @@ class MainActivity : Activity() {
                 PopupMenu(this@MainActivity, anchor).apply {
                     menu.add("Disconnect")
                     menu.add("Paste")
+                    menu.add("Copy latest output")
+                    menu.add("Previous prompt")
+                    menu.add("Next prompt")
+                    menu.add("Search scrollback")
                     setOnMenuItemClickListener { item ->
                         when (item.title) {
                             "Disconnect" -> {
@@ -747,6 +831,28 @@ class MainActivity : Activity() {
                             }
                             "Paste" -> {
                                 pasteFromClipboard(service)
+                                true
+                            }
+                            "Copy latest output" -> {
+                                if (terminal.selectLatestOutput()) {
+                                    terminalView?.refresh()
+                                    writeClipboard(terminal.selectedText())
+                                    toast("Latest output copied")
+                                } else toast("No command output found")
+                                true
+                            }
+                            "Previous prompt" -> {
+                                if (!terminal.jumpPrompt(-1)) toast("No previous prompt")
+                                terminalView?.refresh()
+                                true
+                            }
+                            "Next prompt" -> {
+                                if (!terminal.jumpPrompt(1)) toast("No next prompt")
+                                terminalView?.refresh()
+                                true
+                            }
+                            "Search scrollback" -> {
+                                showScrollbackSearch(terminal)
                                 true
                             }
                             else -> false
@@ -761,7 +867,7 @@ class MainActivity : Activity() {
         toolbar.addView(status)
         root.addView(toolbar)
 
-        val view = GhosttyTerminalView(this, terminal).apply {
+        val view = GhosttyTerminalView(this, terminal, terminalThemeStore.loadFontSize()).apply {
             isEnabled = false
             onInput = { input ->
                 val key = input.singleOrNull()?.let { character ->
@@ -798,7 +904,13 @@ class MainActivity : Activity() {
                     toast("Selection copied")
                 }
             }
-            onMetadataChanged = { title, _, _ -> terminalTitle?.text = title.ifBlank { host.name } }
+            onMetadataChanged = { title, pwd, _, passwordInput ->
+                terminalTitle?.text = title.ifBlank { host.name }
+                if (pwd.isNotBlank()) terminalStatus?.text = displayRemotePwd(pwd)
+                setPasswordInput(passwordInput)
+                if (passwordInput) window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
+                else window.clearFlags(WindowManager.LayoutParams.FLAG_SECURE)
+            }
             onLinkTap = { column, row ->
                 val uri = terminal.hyperlink(column, row).takeIf { it.isNotBlank() }?.let(Uri::parse)
                 if (uri?.scheme in setOf("http", "https")) {
@@ -815,6 +927,7 @@ class MainActivity : Activity() {
                 terminalAtBottom = isAtBottom
                 updateModifierBarVisibility()
             }
+            onTextSizeChanged = terminalThemeStore::saveFontSize
         }.also { terminalView = it }
         root.addView(view, LinearLayout.LayoutParams(-1, 0, 1f))
         root.addView(createModifierBar().also { modifierBar = it })
@@ -1099,6 +1212,34 @@ class MainActivity : Activity() {
     private fun setTerminalEnabled(enabled: Boolean) {
         terminalView?.isEnabled = enabled
         if (enabled) terminalView?.requestFocus()
+    }
+
+    private fun displayRemotePwd(value: String): String = runCatching {
+        val uri = Uri.parse(value)
+        if (uri.scheme == "file") uri.path.orEmpty().ifBlank { value } else value
+    }.getOrDefault(value)
+
+    private fun showScrollbackSearch(terminal: GhosttyTerminal) {
+        val query = field("Search scrollback", "")
+        val dialog = AlertDialog.Builder(this)
+            .setTitle("Search scrollback")
+            .setView(query)
+            .setNegativeButton("Cancel", null)
+            .setNeutralButton("Previous", null)
+            .setPositiveButton("Next", null)
+            .create()
+        dialog.setOnShowListener {
+            fun search(direction: Int) {
+                if (query.text.isBlank()) return
+                if (!terminal.search(query.text.toString(), direction)) toast("No match")
+                terminalView?.refresh()
+            }
+            dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener { search(-1) }
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener { search(1) }
+        }
+        dialog.show()
+        dialog.window?.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_VISIBLE)
+        query.requestFocus()
     }
 
     private fun handleBackNavigation() {

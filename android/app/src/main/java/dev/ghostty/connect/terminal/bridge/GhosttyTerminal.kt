@@ -9,15 +9,18 @@ class GhosttyTerminal(
     foreground: Int = 0xfff1f3f8.toInt(),
     background: Int = 0xff0a0c10.toInt(),
     cursor: Int = 0xff8be9b3.toInt(),
+    palette: IntArray = IntArray(0),
     restoredState: ByteArray? = null,
 ) : AutoCloseable {
-    private var handle = restoredState?.let(::nativeRestore)
-        ?: nativeCreate(columns, rows, foreground, background, cursor)
+    private val restored = restoredState?.let(::decodeSavedState)
+    private var handle = restored?.nativeState?.let(::nativeRestore)
+        ?: nativeCreate(columns, rows, foreground, background, cursor, palette)
     private var cachedColumns = 0
     private var cachedRows = 0
     private var cachedCells = mutableListOf<TerminalCell>()
-    private var kittyGeneration = 0L
-    private var kittyImages = emptyMap<Int, KittyImage>()
+    private var kittyGeneration = restored?.kittyFrame?.generation ?: 0L
+    private var kittyImages = restored?.kittyFrame?.images ?: emptyMap()
+    private var restoredPlacements = restored?.kittyFrame?.placements.orEmpty()
 
     fun write(bytes: ByteArray, offset: Int = 0, length: Int = bytes.size) {
         check(handle != 0L) { "Ghostty terminal is closed" }
@@ -92,6 +95,12 @@ class GhosttyTerminal(
 
     fun clearSelection() = nativeClearSelection(handle)
 
+    fun selectLatestOutput(): Boolean = nativeSelectLatestOutput(handle)
+
+    fun jumpPrompt(direction: Int): Boolean = nativeJumpPrompt(handle, direction)
+
+    fun search(query: String, direction: Int): Boolean = nativeSearch(handle, query, direction)
+
     fun hyperlink(column: Int, row: Int): String = nativeHyperlink(handle, column, row)
 
     fun drainEffects(): TerminalEffects {
@@ -109,14 +118,60 @@ class GhosttyTerminal(
         )
     }
 
-    fun encodeState(): ByteArray = nativeEncodeState(handle)
+    fun encodeState(): ByteArray {
+        val native = nativeEncodeState(handle)
+        val frame = kittyFrame()
+        val revision = GHOSTTY_REVISION.toByteArray(Charsets.UTF_8)
+        val size = 4 + 4 + 4 + revision.size + 4 + native.size + 8 + 4 +
+            frame.images.values.sumOf { 4 + 8 + 4 * 4 + 4 + it.data.size } +
+            4 + frame.placements.size * (12 * 4)
+        require(size <= MAX_SAVED_STATE_SIZE) { "Terminal snapshot is too large" }
+        return ByteBuffer.allocate(size).order(ByteOrder.LITTLE_ENDIAN).apply {
+            putInt(SAVED_STATE_MAGIC)
+            putInt(SAVED_STATE_VERSION)
+            putInt(revision.size)
+            put(revision)
+            putInt(native.size)
+            put(native)
+            putLong(frame.generation)
+            putInt(frame.images.size)
+            frame.images.values.forEach { image ->
+                putInt(image.id)
+                putLong(image.generation)
+                putInt(image.width)
+                putInt(image.height)
+                putInt(image.format)
+                putInt(image.data.size)
+                put(image.data)
+            }
+            putInt(frame.placements.size)
+            frame.placements.forEach { placement ->
+                putInt(placement.imageId)
+                putInt(placement.z)
+                putInt(placement.xOffset)
+                putInt(placement.yOffset)
+                putInt(placement.pixelWidth)
+                putInt(placement.pixelHeight)
+                putInt(placement.viewportColumn)
+                putInt(placement.viewportRow)
+                putInt(placement.sourceX)
+                putInt(placement.sourceY)
+                putInt(placement.sourceWidth)
+                putInt(placement.sourceHeight)
+            }
+        }.array()
+    }
 
     fun kittyFrame(): KittyFrame {
         val input = ByteBuffer.wrap(nativeKittyFrame(handle, kittyGeneration)).order(ByteOrder.LITTLE_ENDIAN)
         val generation = input.long
         val imageCount = input.int
         require(imageCount in 0..1024) { "Invalid Kitty image count" }
-        val images = if (generation != kittyGeneration) mutableMapOf<Int, KittyImage>() else kittyImages.toMutableMap()
+        val images = if (generation != kittyGeneration && restoredPlacements.isEmpty()) {
+            mutableMapOf<Int, KittyImage>()
+        } else {
+            kittyImages.toMutableMap()
+        }
         repeat(imageCount) {
             val id = input.int
             val imageGeneration = input.long
@@ -153,7 +208,13 @@ class GhosttyTerminal(
         }
         kittyGeneration = generation
         kittyImages = images
-        return KittyFrame(generation, images, placements)
+        val effectivePlacements = if (placements.isEmpty() && restoredPlacements.isNotEmpty()) {
+            restoredPlacements
+        } else {
+            restoredPlacements = emptyList()
+            placements
+        }
+        return KittyFrame(generation, images, effectivePlacements)
     }
 
     override fun close() {
@@ -235,6 +296,45 @@ class GhosttyTerminal(
         )
     }
 
+    private fun decodeSavedState(bytes: ByteArray): SavedState {
+        val input = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN)
+        if (bytes.size < 8 || input.int != SAVED_STATE_MAGIC) return SavedState(bytes, null)
+        require(input.int == SAVED_STATE_VERSION) { "Unsupported saved terminal version" }
+        val revisionLength = input.int
+        require(revisionLength in 1..128 && revisionLength <= input.remaining()) { "Invalid Ghostty revision" }
+        val revision = ByteArray(revisionLength).also(input::get).toString(Charsets.UTF_8)
+        require(revision == GHOSTTY_REVISION) { "Saved session uses a different Ghostty revision" }
+        val nativeLength = input.int
+        require(nativeLength in 1..input.remaining()) { "Invalid native terminal snapshot" }
+        val native = ByteArray(nativeLength).also(input::get)
+        val generation = input.long
+        val imageCount = input.int
+        require(imageCount in 0..1024) { "Invalid saved Kitty image count" }
+        val images = buildMap {
+            repeat(imageCount) {
+                val id = input.int
+                val imageGeneration = input.long
+                val width = input.int
+                val height = input.int
+                val format = input.int
+                val length = input.int
+                require(width in 1..4096 && height in 1..4096 && length in 0..input.remaining()) {
+                    "Invalid saved Kitty image"
+                }
+                put(id, KittyImage(id, imageGeneration, width, height, format, ByteArray(length).also(input::get)))
+            }
+        }
+        val placementCount = input.int
+        require(placementCount in 0..4096 && input.remaining() == placementCount * 48) {
+            "Invalid saved Kitty placements"
+        }
+        val placements = List(placementCount) {
+            KittyPlacement(input.int, input.int, input.int, input.int, input.int, input.int,
+                input.int, input.int, input.int, input.int, input.int, input.int)
+        }
+        return SavedState(native, KittyFrame(generation, images, placements))
+    }
+
     private fun readString(input: ByteBuffer): String {
         return readBytes(input).toString(Charsets.UTF_8)
     }
@@ -245,7 +345,9 @@ class GhosttyTerminal(
         return ByteArray(length).also(input::get)
     }
 
-    private external fun nativeCreate(columns: Int, rows: Int, foreground: Int, background: Int, cursor: Int): Long
+    private external fun nativeCreate(
+        columns: Int, rows: Int, foreground: Int, background: Int, cursor: Int, palette: IntArray,
+    ): Long
     private external fun nativeWrite(handle: Long, data: ByteArray, offset: Int, length: Int)
     private external fun nativeResize(handle: Long, columns: Int, rows: Int, cellWidth: Int, cellHeight: Int)
     private external fun nativeSnapshot(handle: Long): ByteArray
@@ -272,6 +374,9 @@ class GhosttyTerminal(
     private external fun nativeExtendSelection(handle: Long, column: Int, row: Int): Boolean
     private external fun nativeSelectedText(handle: Long): String
     private external fun nativeClearSelection(handle: Long)
+    private external fun nativeSelectLatestOutput(handle: Long): Boolean
+    private external fun nativeJumpPrompt(handle: Long, direction: Int): Boolean
+    private external fun nativeSearch(handle: Long, query: String, direction: Int): Boolean
     private external fun nativeHyperlink(handle: Long, column: Int, row: Int): String
     private external fun nativeDrainEffects(handle: Long): ByteArray
     private external fun nativeEncodeState(handle: Long): ByteArray
@@ -281,6 +386,10 @@ class GhosttyTerminal(
 
     companion object {
         private const val SNAPSHOT_MAGIC = 0x47565431
+        private const val SAVED_STATE_MAGIC = 0x47544332
+        private const val SAVED_STATE_VERSION = 1
+        private const val GHOSTTY_REVISION = "9ae02a326f62bd88f7f5508cf1807c67e7775cb5"
+        private const val MAX_SAVED_STATE_SIZE = 32 * 1024 * 1024
         private const val DIRTY_FULL = 2
         const val KEY_ACTION_RELEASE = 0
         const val KEY_ACTION_PRESS = 1
@@ -297,6 +406,8 @@ class GhosttyTerminal(
         }
     }
 }
+
+private data class SavedState(val nativeState: ByteArray, val kittyFrame: KittyFrame?)
 
 data class KittyFrame(
     val generation: Long,

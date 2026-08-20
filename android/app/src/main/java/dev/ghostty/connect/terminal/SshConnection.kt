@@ -58,7 +58,7 @@ class SshConnection(
                     setReadable(false, false)
                     setReadable(true, true)
                 }
-                val provider = ssh.loadKeys(temporaryKey.absolutePath, "")
+                val provider = ssh.loadKeys(temporaryKey.absolutePath, passwordOrPassphrase)
                 ssh.authPublickey(host.username, provider)
             } else {
                 ssh.authPassword(host.username, passwordOrPassphrase)

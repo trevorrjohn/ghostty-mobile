@@ -15,7 +15,14 @@ class TerminalThemeStore(context: Context) {
 
     fun save(theme: TerminalTheme) = encryptedStore.write(FILE_NAME, theme.id.toByteArray())
 
+    fun loadFontSize(): Float = if (encryptedStore.exists(FONT_FILE)) {
+        encryptedStore.read(FONT_FILE).toString(Charsets.UTF_8).toFloatOrNull()?.coerceIn(9f, 30f) ?: 15f
+    } else 15f
+
+    fun saveFontSize(size: Float) = encryptedStore.write(FONT_FILE, size.coerceIn(9f, 30f).toString().toByteArray())
+
     companion object {
         private const val FILE_NAME = "terminal-theme.enc"
+        private const val FONT_FILE = "terminal-font-size.enc"
     }
 }

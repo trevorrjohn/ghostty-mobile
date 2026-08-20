@@ -10,6 +10,10 @@ import android.graphics.Typeface
 import android.text.InputType
 import android.util.TypedValue
 import android.view.KeyEvent
+import android.view.InputDevice
+import android.view.ActionMode
+import android.view.Menu
+import android.view.MenuItem
 import android.view.MotionEvent
 import android.view.ScaleGestureDetector
 import android.view.View
@@ -32,6 +36,7 @@ import kotlin.math.abs
 class GhosttyTerminalView(
     context: Context,
     private val terminal: GhosttyTerminal,
+    initialTextSizeSp: Float = 15f,
 ) : View(context) {
     var onInput: (String) -> Unit = {}
     var acceptsInput = true
@@ -45,11 +50,13 @@ class GhosttyTerminalView(
     var onSelectionStart: (column: Int, row: Int) -> Boolean = { _, _ -> false }
     var onSelectionUpdate: (column: Int, row: Int) -> Unit = { _, _ -> }
     var onSelectionFinished: () -> Unit = {}
-    var onMetadataChanged: (title: String, pwd: String, atPrompt: Boolean) -> Unit = { _, _, _ -> }
+    var onMetadataChanged: (title: String, pwd: String, atPrompt: Boolean, passwordInput: Boolean) -> Unit =
+        { _, _, _, _ -> }
     var onLinkTap: (column: Int, row: Int) -> Boolean = { _, _ -> false }
     var onResize: (columns: Int, rows: Int, pixelWidth: Int, pixelHeight: Int) -> Unit = { _, _, _, _ -> }
     var onScrollPositionChanged: (isAtBottom: Boolean) -> Unit = {}
-    private var terminalTextSizeSp = 15f
+    var onTextSizeChanged: (Float) -> Unit = {}
+    private var terminalTextSizeSp = initialTextSizeSp.coerceIn(MIN_TEXT_SIZE_SP, MAX_TEXT_SIZE_SP)
     private var terminalTextSize = sp(terminalTextSizeSp)
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         typeface = Typeface.MONOSPACE
@@ -81,7 +88,23 @@ class GhosttyTerminalView(
     private var remoteDownY = 0f
     private var remoteWheelPixels = 0f
     private var selectionActive = false
+    private var selectionVisible = false
+    private var selectionStartX = 0f
+    private var selectionStartY = 0f
+    private var selectionEndX = 0f
+    private var selectionEndY = 0f
+    private var selectionEdgeDirection = 0
+    private val selectionAutoScroll = object : Runnable {
+        override fun run() {
+            if (!selectionActive || selectionEdgeDirection == 0) return
+            terminal.scrollRows(selectionEdgeDirection)
+            onSelectionUpdate(cellColumn(selectionEndX), cellRow(selectionEndY))
+            refresh()
+            postDelayed(this, SELECTION_SCROLL_INTERVAL_MS)
+        }
+    }
     private var pendingLongPress: Runnable? = null
+    private var passwordInput = false
     private var lastFlingY = 0
     private val liveButton = RectF()
     private val scaleDetector = ScaleGestureDetector(context,
@@ -97,6 +120,7 @@ class GhosttyTerminalView(
                 val newSize = (terminalTextSizeSp * detector.scaleFactor).coerceIn(MIN_TEXT_SIZE_SP, MAX_TEXT_SIZE_SP)
                 if (abs(newSize - terminalTextSizeSp) < 0.05f) return true
                 terminalTextSizeSp = newSize
+                onTextSizeChanged(newSize)
                 updateFontMetrics()
                 resizeTerminal()
                 return true
@@ -115,7 +139,7 @@ class GhosttyTerminalView(
         snapshot = terminal.snapshot()
         kittyFrame = terminal.kittyFrame()
         updateKittyBitmaps()
-        onMetadataChanged(snapshot.title, snapshot.pwd, snapshot.cursorAtPrompt)
+        onMetadataChanged(snapshot.title, snapshot.pwd, snapshot.cursorAtPrompt, snapshot.passwordInput)
         if (snapshot.isAtBottom != wasAtBottom) onScrollPositionChanged(snapshot.isAtBottom)
         invalidate()
     }
@@ -126,6 +150,7 @@ class GhosttyTerminalView(
     }
 
     override fun onDetachedFromWindow() {
+        removeCallbacks(selectionAutoScroll)
         kittyBitmaps.values.forEach { it.second.recycle() }
         kittyBitmaps.clear()
         super.onDetachedFromWindow()
@@ -184,6 +209,7 @@ class GhosttyTerminalView(
         drawKitty(canvas) { it >= 0 }
         drawCursor(canvas, visibleColumns, visibleRows)
         drawScrollPosition(canvas)
+        drawSelectionHandles(canvas)
         resetPaint()
     }
 
@@ -270,11 +296,23 @@ class GhosttyTerminalView(
                 remoteTwoFingerGesture = false
                 remoteDownX = event.x
                 remoteDownY = event.y
+                if (selectionVisible && isNearSelectionHandle(event.x, event.y)) {
+                    selectionActive = true
+                    cancelPendingLongPress()
+                    return true
+                }
                 pendingLongPress = Runnable {
                     if (!dragging && !scaleGesture) {
                         remoteMouseGesture = false
                         selectionActive = onSelectionStart(cellColumn(remoteDownX), cellRow(remoteDownY))
-                        if (selectionActive) refresh()
+                        if (selectionActive) {
+                            selectionVisible = true
+                            selectionStartX = remoteDownX
+                            selectionStartY = remoteDownY
+                            selectionEndX = remoteDownX
+                            selectionEndY = remoteDownY
+                            refresh()
+                        }
                     }
                 }.also { postDelayed(it, ViewConfiguration.getLongPressTimeout().toLong()) }
                 return true
@@ -296,7 +334,10 @@ class GhosttyTerminalView(
             }
             MotionEvent.ACTION_MOVE -> {
                 if (selectionActive) {
+                    selectionEndX = event.x.coerceIn(0f, width.toFloat())
+                    selectionEndY = event.y.coerceIn(0f, height.toFloat())
                     onSelectionUpdate(cellColumn(event.x), cellRow(event.y))
+                    updateSelectionAutoScroll(event.y)
                     refresh()
                     return true
                 }
@@ -333,7 +374,8 @@ class GhosttyTerminalView(
                 cancelPendingLongPress()
                 if (selectionActive) {
                     selectionActive = false
-                    onSelectionFinished()
+                    updateSelectionAutoScroll(height / 2f)
+                    startActionMode(selectionActions, ActionMode.TYPE_FLOATING)
                     refresh()
                     endTouch()
                     return true
@@ -381,11 +423,106 @@ class GhosttyTerminalView(
                 remoteMouseGesture = false
                 remotePressSent = false
                 remoteTwoFingerGesture = false
+                selectionActive = false
+                updateSelectionAutoScroll(height / 2f)
                 endTouch()
                 return true
             }
         }
         return super.onTouchEvent(event)
+    }
+
+    override fun onGenericMotionEvent(event: MotionEvent): Boolean {
+        if (!isEnabled || !isMouseTracking() || event.source and InputDevice.SOURCE_CLASS_POINTER == 0) {
+            return super.onGenericMotionEvent(event)
+        }
+        when (event.actionMasked) {
+            MotionEvent.ACTION_SCROLL -> {
+                val vertical = event.getAxisValue(MotionEvent.AXIS_VSCROLL)
+                if (vertical != 0f) {
+                    sendRemoteMouse(
+                        MOUSE_PRESS,
+                        if (vertical > 0) MOUSE_WHEEL_UP else MOUSE_WHEEL_DOWN,
+                        event.x,
+                        event.y,
+                        false,
+                    )
+                    return true
+                }
+            }
+            MotionEvent.ACTION_BUTTON_PRESS, MotionEvent.ACTION_BUTTON_RELEASE -> {
+                val button = when (event.actionButton) {
+                    MotionEvent.BUTTON_SECONDARY, MotionEvent.BUTTON_STYLUS_PRIMARY -> MOUSE_RIGHT
+                    MotionEvent.BUTTON_TERTIARY, MotionEvent.BUTTON_STYLUS_SECONDARY -> MOUSE_MIDDLE
+                    else -> MOUSE_LEFT
+                }
+                val pressed = event.actionMasked == MotionEvent.ACTION_BUTTON_PRESS
+                sendRemoteMouse(if (pressed) MOUSE_PRESS else MOUSE_RELEASE, button, event.x, event.y, pressed)
+                return true
+            }
+            MotionEvent.ACTION_HOVER_MOVE -> {
+                val button = when {
+                    event.buttonState and MotionEvent.BUTTON_SECONDARY != 0 -> MOUSE_RIGHT
+                    event.buttonState and MotionEvent.BUTTON_TERTIARY != 0 -> MOUSE_MIDDLE
+                    else -> MOUSE_LEFT
+                }
+                sendRemoteMouse(MOUSE_MOTION, button, event.x, event.y, event.buttonState != 0)
+                return true
+            }
+        }
+        return super.onGenericMotionEvent(event)
+    }
+
+    private val selectionActions = object : ActionMode.Callback {
+        override fun onCreateActionMode(mode: ActionMode, menu: Menu): Boolean {
+            menu.add("Copy").setShowAsAction(MenuItem.SHOW_AS_ACTION_ALWAYS)
+            menu.add("Clear")
+            return true
+        }
+
+        override fun onPrepareActionMode(mode: ActionMode, menu: Menu) = false
+
+        override fun onActionItemClicked(mode: ActionMode, item: MenuItem): Boolean {
+            when (item.title) {
+                "Copy" -> onSelectionFinished()
+                "Clear" -> Unit
+                else -> return false
+            }
+            terminal.clearSelection()
+            selectionVisible = false
+            refresh()
+            mode.finish()
+            return true
+        }
+
+        override fun onDestroyActionMode(mode: ActionMode) = Unit
+    }
+
+    private fun updateSelectionAutoScroll(y: Float) {
+        val direction = when {
+            y < 0f -> -1
+            y > height -> 1
+            else -> 0
+        }
+        if (direction == selectionEdgeDirection) return
+        removeCallbacks(selectionAutoScroll)
+        selectionEdgeDirection = direction
+        if (direction != 0) post(selectionAutoScroll)
+    }
+
+    private fun isNearSelectionHandle(x: Float, y: Float): Boolean {
+        val radius = 28f * resources.displayMetrics.density
+        return Math.hypot((x - selectionStartX).toDouble(), (y - selectionStartY).toDouble()) <= radius ||
+            Math.hypot((x - selectionEndX).toDouble(), (y - selectionEndY).toDouble()) <= radius
+    }
+
+    private fun drawSelectionHandles(canvas: Canvas) {
+        if (!selectionVisible) return
+        paint.color = 0xff8be9b3.toInt()
+        paint.style = Paint.Style.FILL
+        val radius = 5f * resources.displayMetrics.density
+        canvas.drawCircle(selectionStartX, selectionStartY + cellHeight, radius, paint)
+        canvas.drawCircle(selectionEndX, selectionEndY + cellHeight, radius, paint)
     }
 
     private fun sendRemoteMouse(action: Int, button: Int, x: Float, y: Float, pressed: Boolean) {
@@ -475,9 +612,19 @@ class GhosttyTerminalView(
 
     override fun onCheckIsTextEditor(): Boolean = true
 
+    fun setPasswordInput(enabled: Boolean) {
+        if (passwordInput == enabled) return
+        passwordInput = enabled
+        context.getSystemService(InputMethodManager::class.java)?.restartInput(this)
+    }
+
     override fun onCreateInputConnection(outAttrs: EditorInfo): InputConnection {
-        outAttrs.inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_NORMAL or
-            InputType.TYPE_TEXT_FLAG_AUTO_CORRECT
+        outAttrs.inputType = if (passwordInput) {
+            InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD or
+                InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
+        } else {
+            InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_NORMAL or InputType.TYPE_TEXT_FLAG_AUTO_CORRECT
+        }
         outAttrs.imeOptions = EditorInfo.IME_FLAG_NO_EXTRACT_UI or EditorInfo.IME_FLAG_NO_FULLSCREEN
         return object : BaseInputConnection(this, false) {
             private var composingText = ""
@@ -580,9 +727,12 @@ class GhosttyTerminalView(
         private const val MOUSE_RELEASE = 1
         private const val MOUSE_MOTION = 2
         private const val MOUSE_LEFT = 1
+        private const val MOUSE_MIDDLE = 2
+        private const val MOUSE_RIGHT = 3
         private const val MOUSE_WHEEL_UP = 4
         private const val MOUSE_WHEEL_DOWN = 5
         private const val CURSOR_BLINK_INTERVAL_MS = 500L
+        private const val SELECTION_SCROLL_INTERVAL_MS = 50L
         private const val KITTY_BELOW_BACKGROUND = Int.MIN_VALUE / 2
     }
 }

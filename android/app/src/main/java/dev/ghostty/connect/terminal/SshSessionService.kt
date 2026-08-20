@@ -48,6 +48,7 @@ class SshSessionService : Service(), SshConnection.Callbacks {
     private var listener: Listener? = null
     private var pendingVerification: PendingVerification? = null
     private val pendingEffects = ArrayDeque<TerminalEffects>()
+    private val framePending = AtomicBoolean(false)
     private var status = "Disconnected"
     var host: Host? = null
         private set
@@ -88,6 +89,7 @@ class SshSessionService : Service(), SshConnection.Callbacks {
             foreground = theme.foreground,
             background = theme.background,
             cursor = theme.cursor,
+            palette = theme.palette,
         )
         status = "Connecting…"
         startInForeground(status)
@@ -133,7 +135,7 @@ class SshSessionService : Service(), SshConnection.Callbacks {
             if (!visibleEffects.isEmpty) {
                 listener?.onTerminalEffects(visibleEffects) ?: handleBackgroundEffects(visibleEffects)
             }
-            listener?.onTerminalChanged()
+            scheduleTerminalChanged()
         }
     }
 
@@ -186,6 +188,14 @@ class SshSessionService : Service(), SshConnection.Callbacks {
 
     private fun onMain(action: () -> Unit) {
         if (Looper.myLooper() == Looper.getMainLooper()) action() else mainHandler.post(action)
+    }
+
+    private fun scheduleTerminalChanged() {
+        if (!framePending.compareAndSet(false, true)) return
+        mainHandler.postDelayed({
+            framePending.set(false)
+            listener?.onTerminalChanged()
+        }, FRAME_INTERVAL_MS)
     }
 
     private fun handleBackgroundEffects(effects: TerminalEffects) {
@@ -286,5 +296,6 @@ class SshSessionService : Service(), SshConnection.Callbacks {
         private const val CHANNEL_ID = "ssh_sessions"
         private const val NOTIFICATION_ID = 100
         private const val REMOTE_CHANNEL_ID = "remote_terminal"
+        private const val FRAME_INTERVAL_MS = 16L
     }
 }
