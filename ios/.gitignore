@@ -1,0 +1,6 @@
+.DS_Store
+DerivedData/
+.build/
+GhosttyConnect.xcodeproj/
+*.xcuserstate
+xcuserdata/
