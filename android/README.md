@@ -14,6 +14,7 @@ This repository contains a runnable API 36 SSH client with:
 - a pinned `libghostty-vt` native terminal engine for arm64 and x86_64;
 - a JNI snapshot bridge and Android Canvas terminal renderer;
 - live SSH output rendered through Ghostty with colors, cursor state, and direct keyboard input;
+- a configurable, horizontally scrolling terminal modifier bar with reusable key combinations;
 - foreground-service session ownership so an active SSH shell survives activity backgrounding and recreation;
 - a persistent connection notification with reopen and disconnect actions;
 

@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <memory>
 #include <mutex>
@@ -16,12 +17,20 @@ constexpr int32_t kSnapshotMagic = 0x47565431; // GVT1
 
 struct NativeTerminal {
   GhosttyTerminal terminal = nullptr;
+  GhosttyKeyEncoder key_encoder = nullptr;
+  GhosttyKeyEvent key_event = nullptr;
+  GhosttyMouseEncoder mouse_encoder = nullptr;
+  GhosttyMouseEvent mouse_event = nullptr;
   GhosttyRenderState render = nullptr;
   GhosttyRenderStateRowIterator rows = nullptr;
   GhosttyRenderStateRowCells cells = nullptr;
   std::mutex mutex;
 
   ~NativeTerminal() {
+    ghostty_key_event_free(key_event);
+    ghostty_key_encoder_free(key_encoder);
+    ghostty_mouse_event_free(mouse_event);
+    ghostty_mouse_encoder_free(mouse_encoder);
     ghostty_render_state_row_cells_free(cells);
     ghostty_render_state_row_iterator_free(rows);
     ghostty_render_state_free(render);
@@ -33,6 +42,97 @@ void require_success(GhosttyResult result, const char* operation) {
   if (result != GHOSTTY_SUCCESS) {
     throw std::runtime_error(std::string(operation) + " failed: " + std::to_string(result));
   }
+}
+
+std::string java_string(JNIEnv* env, jstring value) {
+  if (value == nullptr) return {};
+  const char* chars = env->GetStringUTFChars(value, nullptr);
+  if (chars == nullptr) return {};
+  std::string result(chars);
+  env->ReleaseStringUTFChars(value, chars);
+  return result;
+}
+
+std::string java_utf8(JNIEnv* env, jstring value) {
+  if (value == nullptr) return {};
+  jclass string_class = env->FindClass("java/lang/String");
+  jmethodID get_bytes = env->GetMethodID(string_class, "getBytes", "(Ljava/lang/String;)[B");
+  jstring encoding = env->NewStringUTF("UTF-8");
+  auto bytes = static_cast<jbyteArray>(env->CallObjectMethod(value, get_bytes, encoding));
+  env->DeleteLocalRef(encoding);
+  const jsize length = env->GetArrayLength(bytes);
+  std::string result(static_cast<size_t>(length), '\0');
+  env->GetByteArrayRegion(bytes, 0, length, reinterpret_cast<jbyte*>(result.data()));
+  env->DeleteLocalRef(bytes);
+  env->DeleteLocalRef(string_class);
+  return result;
+}
+
+GhosttyKey key_from_name(const std::string& name) {
+  if (name.size() == 1) {
+    const char key = name[0];
+    if (key >= 'A' && key <= 'Z') return static_cast<GhosttyKey>(GHOSTTY_KEY_A + key - 'A');
+    if (key >= 'a' && key <= 'z') return static_cast<GhosttyKey>(GHOSTTY_KEY_A + key - 'a');
+    if (key >= '0' && key <= '9') return static_cast<GhosttyKey>(GHOSTTY_KEY_DIGIT_0 + key - '0');
+  }
+  if (name == "ESCAPE") return GHOSTTY_KEY_ESCAPE;
+  if (name == "SPACE") return GHOSTTY_KEY_SPACE;
+  if (name == "BACKQUOTE") return GHOSTTY_KEY_BACKQUOTE;
+  if (name == "BACKSLASH") return GHOSTTY_KEY_BACKSLASH;
+  if (name == "BRACKET_LEFT") return GHOSTTY_KEY_BRACKET_LEFT;
+  if (name == "BRACKET_RIGHT") return GHOSTTY_KEY_BRACKET_RIGHT;
+  if (name == "COMMA") return GHOSTTY_KEY_COMMA;
+  if (name == "EQUAL") return GHOSTTY_KEY_EQUAL;
+  if (name == "MINUS") return GHOSTTY_KEY_MINUS;
+  if (name == "PERIOD") return GHOSTTY_KEY_PERIOD;
+  if (name == "QUOTE") return GHOSTTY_KEY_QUOTE;
+  if (name == "SEMICOLON") return GHOSTTY_KEY_SEMICOLON;
+  if (name == "SLASH") return GHOSTTY_KEY_SLASH;
+  if (name == "TAB") return GHOSTTY_KEY_TAB;
+  if (name == "ENTER") return GHOSTTY_KEY_ENTER;
+  if (name == "BACKSPACE") return GHOSTTY_KEY_BACKSPACE;
+  if (name == "DELETE") return GHOSTTY_KEY_DELETE;
+  if (name == "INSERT") return GHOSTTY_KEY_INSERT;
+  if (name == "HOME") return GHOSTTY_KEY_HOME;
+  if (name == "END") return GHOSTTY_KEY_END;
+  if (name == "PAGE_UP") return GHOSTTY_KEY_PAGE_UP;
+  if (name == "PAGE_DOWN") return GHOSTTY_KEY_PAGE_DOWN;
+  if (name == "ARROW_UP") return GHOSTTY_KEY_ARROW_UP;
+  if (name == "ARROW_DOWN") return GHOSTTY_KEY_ARROW_DOWN;
+  if (name == "ARROW_LEFT") return GHOSTTY_KEY_ARROW_LEFT;
+  if (name == "ARROW_RIGHT") return GHOSTTY_KEY_ARROW_RIGHT;
+  if (name == "SHIFT_LEFT") return GHOSTTY_KEY_SHIFT_LEFT;
+  if (name == "SHIFT_RIGHT") return GHOSTTY_KEY_SHIFT_RIGHT;
+  if (name == "CONTROL_LEFT") return GHOSTTY_KEY_CONTROL_LEFT;
+  if (name == "CONTROL_RIGHT") return GHOSTTY_KEY_CONTROL_RIGHT;
+  if (name == "ALT_LEFT") return GHOSTTY_KEY_ALT_LEFT;
+  if (name == "ALT_RIGHT") return GHOSTTY_KEY_ALT_RIGHT;
+  if (name == "META_LEFT") return GHOSTTY_KEY_META_LEFT;
+  if (name == "META_RIGHT") return GHOSTTY_KEY_META_RIGHT;
+  if (name.size() >= 2 && name[0] == 'F') {
+    const int number = std::atoi(name.c_str() + 1);
+    if (number >= 1 && number <= 25) return static_cast<GhosttyKey>(GHOSTTY_KEY_F1 + number - 1);
+  }
+  return GHOSTTY_KEY_UNIDENTIFIED;
+}
+
+jbyteArray byte_array(JNIEnv* env, const char* data, size_t size) {
+  jbyteArray result = env->NewByteArray(static_cast<jsize>(size));
+  if (size > 0) env->SetByteArrayRegion(result, 0, static_cast<jsize>(size),
+      reinterpret_cast<const jbyte*>(data));
+  return result;
+}
+
+jstring utf8_java_string(JNIEnv* env, const uint8_t* data, size_t size) {
+  jbyteArray bytes = byte_array(env, reinterpret_cast<const char*>(data), size);
+  jclass string_class = env->FindClass("java/lang/String");
+  jmethodID constructor = env->GetMethodID(string_class, "<init>", "([BLjava/lang/String;)V");
+  jstring encoding = env->NewStringUTF("UTF-8");
+  auto result = static_cast<jstring>(env->NewObject(string_class, constructor, bytes, encoding));
+  env->DeleteLocalRef(encoding);
+  env->DeleteLocalRef(bytes);
+  env->DeleteLocalRef(string_class);
+  return result;
 }
 
 int32_t argb(GhosttyColorRgb color) {
@@ -73,6 +173,10 @@ Java_dev_ghostty_connect_terminal_bridge_GhosttyTerminal_nativeCreate(
     require_success(ghostty_terminal_new(
         nullptr, &instance->terminal,
         static_cast<uint16_t>(columns), static_cast<uint16_t>(rows)), "terminal create");
+    require_success(ghostty_key_encoder_new(nullptr, &instance->key_encoder), "key encoder create");
+    require_success(ghostty_key_event_new(nullptr, &instance->key_event), "key event create");
+    require_success(ghostty_mouse_encoder_new(nullptr, &instance->mouse_encoder), "mouse encoder create");
+    require_success(ghostty_mouse_event_new(nullptr, &instance->mouse_event), "mouse event create");
 
     const GhosttyColorRgb foreground{0xf1, 0xf3, 0xf8};
     const GhosttyColorRgb background{0x0a, 0x0c, 0x10};
@@ -94,6 +198,231 @@ Java_dev_ghostty_connect_terminal_bridge_GhosttyTerminal_nativeCreate(
   } catch (const std::exception& error) {
     throw_java(env, error);
     return 0;
+  }
+}
+
+extern "C" JNIEXPORT jboolean JNICALL
+Java_dev_ghostty_connect_terminal_bridge_GhosttyTerminal_nativeIsMouseTracking(
+    JNIEnv* env, jobject, jlong handle) {
+  try {
+    NativeTerminal* instance = from_handle(handle);
+    std::lock_guard lock(instance->mutex);
+    bool tracking = false;
+    require_success(ghostty_terminal_get(instance->terminal,
+        GHOSTTY_TERMINAL_DATA_MOUSE_TRACKING, &tracking), "read mouse tracking");
+    return tracking;
+  } catch (const std::exception& error) {
+    throw_java(env, error);
+    return false;
+  }
+}
+
+extern "C" JNIEXPORT jbyteArray JNICALL
+Java_dev_ghostty_connect_terminal_bridge_GhosttyTerminal_nativeEncodeMouse(
+    JNIEnv* env, jobject, jlong handle, jint action, jint button, jfloat x, jfloat y,
+    jint modifiers, jint width, jint height, jint cellWidth, jint cellHeight,
+    jboolean anyPressed) {
+  try {
+    NativeTerminal* instance = from_handle(handle);
+    std::lock_guard lock(instance->mutex);
+    ghostty_mouse_encoder_setopt_from_terminal(instance->mouse_encoder, instance->terminal);
+    GhosttyMouseEncoderSize size{
+        sizeof(GhosttyMouseEncoderSize), static_cast<uint32_t>(width),
+        static_cast<uint32_t>(height), static_cast<uint32_t>(cellWidth),
+        static_cast<uint32_t>(cellHeight), 0, 0, 0, 0};
+    ghostty_mouse_encoder_setopt(instance->mouse_encoder, GHOSTTY_MOUSE_ENCODER_OPT_SIZE, &size);
+    const bool pressed = anyPressed;
+    const bool track_last_cell = true;
+    ghostty_mouse_encoder_setopt(instance->mouse_encoder,
+        GHOSTTY_MOUSE_ENCODER_OPT_ANY_BUTTON_PRESSED, &pressed);
+    ghostty_mouse_encoder_setopt(instance->mouse_encoder,
+        GHOSTTY_MOUSE_ENCODER_OPT_TRACK_LAST_CELL, &track_last_cell);
+    ghostty_mouse_event_set_action(instance->mouse_event, static_cast<GhosttyMouseAction>(action));
+    ghostty_mouse_event_set_button(instance->mouse_event, static_cast<GhosttyMouseButton>(button));
+    ghostty_mouse_event_set_mods(instance->mouse_event, static_cast<GhosttyMods>(modifiers));
+    ghostty_mouse_event_set_position(instance->mouse_event, GhosttyMousePosition{x, y});
+    char buffer[128];
+    size_t written = 0;
+    GhosttyResult result = ghostty_mouse_encoder_encode(
+        instance->mouse_encoder, instance->mouse_event, buffer, sizeof(buffer), &written);
+    require_success(result, "mouse encode");
+    return byte_array(env, buffer, written);
+  } catch (const std::exception& error) {
+    throw_java(env, error);
+    return nullptr;
+  }
+}
+
+extern "C" JNIEXPORT jboolean JNICALL
+Java_dev_ghostty_connect_terminal_bridge_GhosttyTerminal_nativeSelectWord(
+    JNIEnv* env, jobject, jlong handle, jint column, jint row) {
+  try {
+    NativeTerminal* instance = from_handle(handle);
+    std::lock_guard lock(instance->mutex);
+    GhosttyPoint point{GHOSTTY_POINT_TAG_VIEWPORT,
+        {.coordinate = {static_cast<uint16_t>(column), static_cast<uint32_t>(row)}}};
+    auto ref = GHOSTTY_INIT_SIZED(GhosttyGridRef);
+    if (ghostty_terminal_grid_ref(instance->terminal, point, &ref) != GHOSTTY_SUCCESS) return false;
+    auto options = GHOSTTY_INIT_SIZED(GhosttyTerminalSelectWordOptions);
+    options.ref = ref;
+    auto selection = GHOSTTY_INIT_SIZED(GhosttySelection);
+    if (ghostty_terminal_select_word(instance->terminal, &options, &selection) != GHOSTTY_SUCCESS) return false;
+    require_success(ghostty_terminal_set(instance->terminal, GHOSTTY_TERMINAL_OPT_SELECTION, &selection),
+        "install selection");
+    return true;
+  } catch (const std::exception& error) {
+    throw_java(env, error);
+    return false;
+  }
+}
+
+extern "C" JNIEXPORT jboolean JNICALL
+Java_dev_ghostty_connect_terminal_bridge_GhosttyTerminal_nativeExtendSelection(
+    JNIEnv* env, jobject, jlong handle, jint column, jint row) {
+  try {
+    NativeTerminal* instance = from_handle(handle);
+    std::lock_guard lock(instance->mutex);
+    auto selection = GHOSTTY_INIT_SIZED(GhosttySelection);
+    if (ghostty_terminal_get(instance->terminal, GHOSTTY_TERMINAL_DATA_SELECTION, &selection) != GHOSTTY_SUCCESS) return false;
+    GhosttyPoint point{GHOSTTY_POINT_TAG_VIEWPORT,
+        {.coordinate = {static_cast<uint16_t>(column), static_cast<uint32_t>(row)}}};
+    auto ref = GHOSTTY_INIT_SIZED(GhosttyGridRef);
+    if (ghostty_terminal_grid_ref(instance->terminal, point, &ref) != GHOSTTY_SUCCESS) return false;
+    selection.end = ref;
+    require_success(ghostty_terminal_set(instance->terminal, GHOSTTY_TERMINAL_OPT_SELECTION, &selection),
+        "extend selection");
+    return true;
+  } catch (const std::exception& error) {
+    throw_java(env, error);
+    return false;
+  }
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_dev_ghostty_connect_terminal_bridge_GhosttyTerminal_nativeSelectedText(
+    JNIEnv* env, jobject, jlong handle) {
+  try {
+    NativeTerminal* instance = from_handle(handle);
+    std::lock_guard lock(instance->mutex);
+    auto options = GHOSTTY_INIT_SIZED(GhosttyTerminalSelectionFormatOptions);
+    options.emit = GHOSTTY_FORMATTER_FORMAT_PLAIN;
+    options.unwrap = true;
+    options.trim = true;
+    uint8_t* bytes = nullptr;
+    size_t length = 0;
+    const GhosttyResult result = ghostty_terminal_selection_format_alloc(
+        instance->terminal, nullptr, options, &bytes, &length);
+    if (result == GHOSTTY_NO_VALUE) return env->NewStringUTF("");
+    require_success(result, "format selection");
+    jstring value = utf8_java_string(env, bytes, length);
+    ghostty_free(nullptr, bytes, length);
+    return value;
+  } catch (const std::exception& error) {
+    throw_java(env, error);
+    return nullptr;
+  }
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_dev_ghostty_connect_terminal_bridge_GhosttyTerminal_nativeClearSelection(
+    JNIEnv* env, jobject, jlong handle) {
+  try {
+    NativeTerminal* instance = from_handle(handle);
+    std::lock_guard lock(instance->mutex);
+    require_success(ghostty_terminal_set(instance->terminal, GHOSTTY_TERMINAL_OPT_SELECTION, nullptr),
+        "clear selection");
+  } catch (const std::exception& error) {
+    throw_java(env, error);
+  }
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_dev_ghostty_connect_terminal_bridge_GhosttyTerminal_nativeHyperlink(
+    JNIEnv* env, jobject, jlong handle, jint column, jint row) {
+  try {
+    NativeTerminal* instance = from_handle(handle);
+    std::lock_guard lock(instance->mutex);
+    GhosttyPoint point{GHOSTTY_POINT_TAG_VIEWPORT,
+        {.coordinate = {static_cast<uint16_t>(column), static_cast<uint32_t>(row)}}};
+    auto ref = GHOSTTY_INIT_SIZED(GhosttyGridRef);
+    if (ghostty_terminal_grid_ref(instance->terminal, point, &ref) != GHOSTTY_SUCCESS) return env->NewStringUTF("");
+    size_t length = 0;
+    GhosttyResult result = ghostty_grid_ref_hyperlink_uri(&ref, nullptr, 0, &length);
+    if (result == GHOSTTY_SUCCESS && length == 0) return env->NewStringUTF("");
+    if (result != GHOSTTY_OUT_OF_SPACE) {
+      require_success(result, "query hyperlink");
+    }
+    std::vector<uint8_t> bytes(length);
+    require_success(ghostty_grid_ref_hyperlink_uri(&ref, bytes.data(), bytes.size(), &length),
+        "read hyperlink");
+    return utf8_java_string(env, bytes.data(), length);
+  } catch (const std::exception& error) {
+    throw_java(env, error);
+    return nullptr;
+  }
+}
+
+extern "C" JNIEXPORT jbyteArray JNICALL
+Java_dev_ghostty_connect_terminal_bridge_GhosttyTerminal_nativeEncodeKey(
+    JNIEnv* env, jobject, jlong handle, jstring keyName, jstring text,
+    jint modifiers, jint action) {
+  try {
+    NativeTerminal* instance = from_handle(handle);
+    const std::string key_name = java_string(env, keyName);
+    const std::string utf8 = java_utf8(env, text);
+    std::lock_guard lock(instance->mutex);
+    ghostty_key_encoder_setopt_from_terminal(instance->key_encoder, instance->terminal);
+    ghostty_key_event_set_action(instance->key_event, static_cast<GhosttyKeyAction>(action));
+    ghostty_key_event_set_key(instance->key_event, key_from_name(key_name));
+    ghostty_key_event_set_mods(instance->key_event, static_cast<GhosttyMods>(modifiers));
+    ghostty_key_event_set_consumed_mods(instance->key_event, 0);
+    ghostty_key_event_set_composing(instance->key_event, false);
+    ghostty_key_event_set_unshifted_codepoint(instance->key_event, 0);
+    ghostty_key_event_set_utf8(instance->key_event, utf8.data(), utf8.size());
+    char buffer[128];
+    size_t written = 0;
+    GhosttyResult result = ghostty_key_encoder_encode(
+        instance->key_encoder, instance->key_event, buffer, sizeof(buffer), &written);
+    if (result == GHOSTTY_OUT_OF_SPACE) {
+      std::vector<char> dynamic(written);
+      require_success(ghostty_key_encoder_encode(instance->key_encoder, instance->key_event,
+          dynamic.data(), dynamic.size(), &written), "key encode");
+      return byte_array(env, dynamic.data(), written);
+    }
+    require_success(result, "key encode");
+    return byte_array(env, buffer, written);
+  } catch (const std::exception& error) {
+    throw_java(env, error);
+    return nullptr;
+  }
+}
+
+extern "C" JNIEXPORT jboolean JNICALL
+Java_dev_ghostty_connect_terminal_bridge_GhosttyTerminal_nativePasteIsSafe(
+    JNIEnv* env, jobject, jstring text) {
+  const std::string utf8 = java_utf8(env, text);
+  return ghostty_paste_is_safe(utf8.data(), utf8.size());
+}
+
+extern "C" JNIEXPORT jbyteArray JNICALL
+Java_dev_ghostty_connect_terminal_bridge_GhosttyTerminal_nativeEncodePaste(
+    JNIEnv* env, jobject, jlong handle, jstring text) {
+  try {
+    NativeTerminal* instance = from_handle(handle);
+    const std::string utf8 = java_utf8(env, text);
+    std::vector<char> mutable_input(utf8.begin(), utf8.end());
+    std::lock_guard lock(instance->mutex);
+    GhosttyTerminalModeConfig mode{GHOSTTY_MODE_BRACKETED_PASTE, false};
+    require_success(ghostty_terminal_get(instance->terminal, GHOSTTY_TERMINAL_DATA_MODE, &mode),
+        "read bracketed paste mode");
+    std::vector<char> output(mutable_input.size() + (mode.value ? 12 : 0));
+    size_t written = 0;
+    require_success(ghostty_paste_encode(mutable_input.data(), mutable_input.size(), mode.value,
+        output.data(), output.size(), &written), "paste encode");
+    return byte_array(env, output.data(), written);
+  } catch (const std::exception& error) {
+    throw_java(env, error);
+    return nullptr;
   }
 }
 
@@ -147,12 +476,21 @@ Java_dev_ghostty_connect_terminal_bridge_GhosttyTerminal_nativeSnapshot(
     auto cursor = GHOSTTY_INIT_SIZED(GhosttyRenderStateCursor);
     auto colors = GHOSTTY_INIT_SIZED(GhosttyRenderStateColors);
     GhosttyTerminalScrollbar scrollbar{};
+    GhosttyString title{};
+    GhosttyString pwd{};
+    bool cursor_at_prompt = false;
     require_success(ghostty_render_state_get(instance->render, GHOSTTY_RENDER_STATE_DATA_COLS, &columns), "read columns");
     require_success(ghostty_render_state_get(instance->render, GHOSTTY_RENDER_STATE_DATA_ROWS, &row_count), "read rows");
     require_success(ghostty_render_state_get(instance->render, GHOSTTY_RENDER_STATE_DATA_CURSOR, &cursor), "read cursor");
     require_success(ghostty_render_state_get(instance->render, GHOSTTY_RENDER_STATE_DATA_COLORS, &colors), "read colors");
     require_success(ghostty_terminal_get(instance->terminal,
         GHOSTTY_TERMINAL_DATA_SCROLLBAR, &scrollbar), "read scrollbar");
+    require_success(ghostty_terminal_get(instance->terminal,
+        GHOSTTY_TERMINAL_DATA_TITLE, &title), "read title");
+    require_success(ghostty_terminal_get(instance->terminal,
+        GHOSTTY_TERMINAL_DATA_PWD, &pwd), "read pwd");
+    require_success(ghostty_terminal_get(instance->terminal,
+        GHOSTTY_TERMINAL_DATA_CURSOR_AT_PROMPT, &cursor_at_prompt), "read prompt state");
     require_success(ghostty_render_state_get(instance->render,
         GHOSTTY_RENDER_STATE_DATA_ROW_ITERATOR, &instance->rows), "populate rows");
 
@@ -170,6 +508,12 @@ Java_dev_ghostty_connect_terminal_bridge_GhosttyTerminal_nativeSnapshot(
     append_i32(result, static_cast<int32_t>(std::min<uint64_t>(scrollbar.total, INT32_MAX)));
     append_i32(result, static_cast<int32_t>(std::min<uint64_t>(scrollbar.offset, INT32_MAX)));
     append_i32(result, static_cast<int32_t>(std::min<uint64_t>(scrollbar.len, INT32_MAX)));
+    append_i32(result, (cursor.blinking ? 1 : 0) | (cursor.password_input ? 2 : 0) |
+        (cursor.wide_tail ? 4 : 0) | (cursor_at_prompt ? 8 : 0));
+    append_i32(result, static_cast<int32_t>(title.len));
+    if (title.len > 0) result.insert(result.end(), title.ptr, title.ptr + title.len);
+    append_i32(result, static_cast<int32_t>(pwd.len));
+    if (pwd.len > 0) result.insert(result.end(), pwd.ptr, pwd.ptr + pwd.len);
 
     std::vector<uint8_t> grapheme(32);
     int rows_written = 0;
@@ -194,6 +538,11 @@ Java_dev_ghostty_connect_terminal_bridge_GhosttyTerminal_nativeSnapshot(
         int32_t flags = (style.bold ? 1 : 0) | (style.italic ? 2 : 0) |
             (style.faint ? 4 : 0) | (style.underline ? 8 : 0) |
             (style.strikethrough ? 16 : 0) | (style.invisible ? 32 : 0);
+        bool selected = false;
+        if (ghostty_render_state_row_cells_get(instance->cells,
+            GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_SELECTED, &selected) == GHOSTTY_SUCCESS && selected) {
+          flags |= 64;
+        }
 
         GhosttyBuffer text{grapheme.data(), grapheme.size(), 0};
         GhosttyResult text_result = ghostty_render_state_row_cells_get(instance->cells,

@@ -85,6 +85,8 @@ class SshSessionService : Service(), SshConnection.Callbacks {
 
     fun send(text: String) = connection?.send(text) ?: Unit
 
+    fun send(bytes: ByteArray) = connection?.send(bytes) ?: Unit
+
     fun statusText(): String = status
 
     fun resize(columns: Int, rows: Int, pixelWidth: Int, pixelHeight: Int) {

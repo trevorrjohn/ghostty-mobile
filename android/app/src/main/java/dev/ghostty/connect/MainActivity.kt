@@ -8,14 +8,19 @@ import android.content.Intent
 import android.content.ComponentName
 import android.content.Context
 import android.content.ServiceConnection
+import android.content.ClipboardManager
+import android.content.ClipData
 import android.graphics.Color
+import android.graphics.Rect
 import android.graphics.Typeface
+import android.net.Uri
 import android.os.Bundle
 import android.os.IBinder
 import android.os.Build
 import android.content.pm.PackageManager
 import android.text.InputType
 import android.view.Gravity
+import android.view.KeyEvent
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowInsets
@@ -23,7 +28,9 @@ import android.window.OnBackInvokedDispatcher
 import android.widget.ArrayAdapter
 import android.widget.AdapterView
 import android.widget.Button
+import android.widget.CheckBox
 import android.widget.EditText
+import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
 import android.widget.PopupMenu
 import android.widget.ScrollView
@@ -31,9 +38,15 @@ import android.widget.Spinner
 import android.widget.TextView
 import android.widget.Toast
 import dev.ghostty.connect.data.HostStore
+import dev.ghostty.connect.data.KeyboardBarStore
 import dev.ghostty.connect.data.SshKeyStore
 import dev.ghostty.connect.model.AuthenticationType
 import dev.ghostty.connect.model.Host
+import dev.ghostty.connect.model.KeyboardBarCatalog
+import dev.ghostty.connect.model.KeyboardBarConfig
+import dev.ghostty.connect.model.KeyboardBarItem
+import dev.ghostty.connect.model.KeyboardBarItemType
+import dev.ghostty.connect.model.KeyboardModifier
 import dev.ghostty.connect.terminal.SshSessionService
 import dev.ghostty.connect.terminal.bridge.GhosttyTerminal
 import dev.ghostty.connect.terminal.view.GhosttyTerminalView
@@ -42,15 +55,27 @@ import java.util.UUID
 class MainActivity : Activity() {
     private lateinit var hostStore: HostStore
     private lateinit var keyStore: SshKeyStore
+    private lateinit var keyboardBarStore: KeyboardBarStore
+    private var keyboardBarConfig = KeyboardBarConfig()
     private var sessionService: SshSessionService? = null
     private var sessionBound = false
     private var shouldBindSession = false
     private var pendingConnection: Pair<Host, String>? = null
     private var terminalStatus: TextView? = null
+    private var terminalTitle: TextView? = null
     private var terminalView: GhosttyTerminalView? = null
     private var previewTerminal: GhosttyTerminal? = null
     private var editingHostId: String? = null
     private var editorKeySelection: Spinner? = null
+    private var modifierBar: View? = null
+    private var modifierBarRow: LinearLayout? = null
+    private var imeVisible = false
+    private var terminalAtBottom = true
+    private var settingsVisible = false
+    private val activeModifiers = mutableSetOf<KeyboardModifier>()
+    private val lockedModifiers = mutableSetOf<KeyboardModifier>()
+    private var lastUsedModifier: KeyboardModifier? = null
+    private var lastUsedCombination: KeyboardBarItem? = null
     private val surface = Color.rgb(17, 19, 24)
     private val raised = Color.rgb(26, 29, 36)
     private val primary = Color.rgb(241, 243, 248)
@@ -106,6 +131,7 @@ class MainActivity : Activity() {
         super.onCreate(savedInstanceState)
         window.decorView.setOnApplyWindowInsetsListener { view, insets ->
             val bars = if (android.os.Build.VERSION.SDK_INT >= 30) {
+                imeVisible = insets.isVisible(WindowInsets.Type.ime())
                 insets.getInsets(WindowInsets.Type.systemBars() or WindowInsets.Type.ime())
             } else {
                 @Suppress("DEPRECATION")
@@ -117,10 +143,21 @@ class MainActivity : Activity() {
                 )
             }
             view.setPadding(bars.left, bars.top, bars.right, bars.bottom)
+            updateModifierBarVisibility()
             insets
+        }
+        if (Build.VERSION.SDK_INT < 30) {
+            window.decorView.viewTreeObserver.addOnGlobalLayoutListener {
+                val visible = Rect()
+                window.decorView.getWindowVisibleDisplayFrame(visible)
+                imeVisible = window.decorView.rootView.height - visible.bottom > window.decorView.rootView.height * 0.15
+                updateModifierBarVisibility()
+            }
         }
         hostStore = HostStore(this)
         keyStore = SshKeyStore(this)
+        keyboardBarStore = KeyboardBarStore(this)
+        keyboardBarConfig = keyboardBarStore.load()
         shouldBindSession = intent?.action == SshSessionService.ACTION_OPEN_SESSION || SshSessionService.active
         showHosts(disconnect = false)
         if (Build.VERSION.SDK_INT >= 33) {
@@ -147,13 +184,17 @@ class MainActivity : Activity() {
 
     private fun showHosts(disconnect: Boolean = true) {
         editingHostId = null
+        settingsVisible = false
         if (disconnect) {
             sessionService?.disconnect()
             shouldBindSession = false
         }
         terminalStatus = null
+        terminalTitle = null
         terminalView = null
         editorKeySelection = null
+        modifierBar = null
+        modifierBarRow = null
         previewTerminal?.close()
         previewTerminal = null
         val root = vertical(24)
@@ -172,6 +213,7 @@ class MainActivity : Activity() {
         root.addView(button(if (hosts.isEmpty()) "Add your first host" else "Add host") { showHostEditor() })
         root.addView(button("Import SSH key", secondary) { openKeyPicker() }.margins(top = 10))
         root.addView(button("Paste private key", secondary) { showPasteKeyDialog() }.margins(top = 10))
+        root.addView(button("Settings", secondary) { showKeyboardSettings() }.margins(top = 10))
         root.addView(button("Ghostty renderer preview", secondary) { showGhosttyPreview() }.margins(top = 10))
         if (keyStore.names().isNotEmpty()) {
             root.addView(label("Imported keys: ${keyStore.names().joinToString()}", 13f, secondary).margins(top = 14))
@@ -355,6 +397,173 @@ class MainActivity : Activity() {
         spinner.setSelection(names.indexOf(selectedName).coerceAtLeast(0))
     }
 
+    private fun showKeyboardSettings() {
+        settingsVisible = true
+        val root = vertical(24)
+        root.addView(label("Keyboard bar", 28f, primary, Typeface.BOLD))
+        root.addView(label("Shown above the keyboard while the terminal is live.", 14f, secondary).margins(bottom = 16))
+
+        val enabled = CheckBox(this).apply {
+            text = "Enable keyboard bar"
+            setTextColor(primary)
+            isChecked = keyboardBarConfig.enabled
+            setOnCheckedChangeListener { _, checked ->
+                saveKeyboardBarConfig(keyboardBarConfig.copy(enabled = checked), refreshSettings = false)
+            }
+        }
+        root.addView(enabled.margins(bottom = 14))
+        root.addView(label("Preview", 14f, secondary).margins(bottom = 6))
+        root.addView(settingsBarPreview().margins(bottom = 18))
+        root.addView(label("Order", 18f, primary, Typeface.BOLD).margins(bottom = 8))
+
+        keyboardBarConfig.items.forEachIndexed { index, item ->
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setBackgroundColor(raised)
+                setPadding(dp(12), dp(6), dp(6), dp(6))
+            }
+            row.addView(label(item.label, 15f, primary), LinearLayout.LayoutParams(0, -2, 1f))
+            row.addView(compactButton("Up", index > 0) { moveKeyboardBarItem(index, index - 1) })
+            row.addView(compactButton("Down", index < keyboardBarConfig.items.lastIndex) { moveKeyboardBarItem(index, index + 1) })
+            row.addView(compactButton("Remove") {
+                saveKeyboardBarConfig(keyboardBarConfig.copy(items = keyboardBarConfig.items.filterIndexed { i, _ -> i != index }))
+            })
+            root.addView(row.margins(bottom = 6))
+        }
+
+        root.addView(button("Add item") { showAddKeyboardBarItem() }.margins(top = 10))
+        root.addView(button("Create combination", secondary) { showCombinationEditor() }.margins(top = 8))
+        if (keyboardBarConfig.combinations.isNotEmpty()) {
+            root.addView(label("Saved combinations", 18f, primary, Typeface.BOLD).margins(top = 18, bottom = 8))
+            keyboardBarConfig.combinations.forEach { combination ->
+                val row = LinearLayout(this).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    gravity = Gravity.CENTER_VERTICAL
+                    setBackgroundColor(raised)
+                    setPadding(dp(12), dp(6), dp(6), dp(6))
+                }
+                row.addView(label(combination.label, 15f, primary), LinearLayout.LayoutParams(0, -2, 1f))
+                row.addView(compactButton("Edit") { showCombinationEditor(combination) })
+                row.addView(compactButton("Delete") {
+                    saveKeyboardBarConfig(keyboardBarConfig.copy(
+                        items = keyboardBarConfig.items.filterNot { it.id == combination.id },
+                        combinations = keyboardBarConfig.combinations.filterNot { it.id == combination.id },
+                    ))
+                })
+                root.addView(row.margins(bottom = 6))
+            }
+        }
+        root.addView(button("Reset to defaults", secondary) {
+            saveKeyboardBarConfig(keyboardBarConfig.copy(items = KeyboardBarCatalog.defaultItems))
+        }.margins(top = 8))
+        root.addView(button("Back", secondary) { showHosts(disconnect = false) }.margins(top = 16))
+        setContentView(scroll(root))
+    }
+
+    private fun settingsBarPreview(): View {
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setPadding(dp(4), dp(4), dp(4), dp(4))
+        }
+        keyboardBarConfig.items.forEach { row.addView(barButton(it.label) {}) }
+        row.addView(barButton("More") {})
+        return HorizontalScrollView(this).apply {
+            isHorizontalScrollBarEnabled = false
+            setBackgroundColor(raised)
+            addView(row, ViewGroup.LayoutParams(-2, dp(48)))
+        }
+    }
+
+    private fun moveKeyboardBarItem(from: Int, to: Int) {
+        if (to !in keyboardBarConfig.items.indices) return
+        val items = keyboardBarConfig.items.toMutableList()
+        val item = items.removeAt(from)
+        items.add(to, item)
+        saveKeyboardBarConfig(keyboardBarConfig.copy(items = items))
+    }
+
+    private fun showAddKeyboardBarItem() {
+        val currentIds = keyboardBarConfig.items.mapTo(mutableSetOf(), KeyboardBarItem::id)
+        val available = (KeyboardBarCatalog.availableItems + keyboardBarConfig.combinations)
+            .filterNot { it.id in currentIds }
+        if (available.isEmpty()) {
+            toast("All available items are already in the bar.")
+            return
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Add keyboard item")
+            .setItems(available.map(KeyboardBarItem::label).toTypedArray()) { _, index ->
+                saveKeyboardBarConfig(keyboardBarConfig.copy(items = keyboardBarConfig.items + available[index]))
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun showCombinationEditor(existing: KeyboardBarItem? = null) {
+        val form = vertical(16)
+        val name = field("Label (optional)", existing?.label.orEmpty())
+        val key = field("Key, for example b or ARROW_LEFT", existing?.key.orEmpty())
+        form.addView(name.margins(bottom = 8))
+        form.addView(key.margins(bottom = 10))
+        form.addView(label("Modifiers", 14f, secondary).margins(bottom = 4))
+        val checks = KeyboardModifier.entries.associateWith { modifier ->
+            CheckBox(this).apply {
+                text = modifier.displayName
+                setTextColor(primary)
+                isChecked = existing?.modifiers?.contains(modifier) == true
+                form.addView(this)
+            }
+        }
+        val dialog = AlertDialog.Builder(this)
+            .setTitle("Custom combination")
+            .setView(scroll(form))
+            .setNegativeButton("Cancel", null)
+            .setPositiveButton("Save", null)
+            .create()
+        dialog.setOnShowListener {
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                val keyValue = key.text.toString().trim()
+                val modifiers = checks.filterValues(CheckBox::isChecked).keys
+                if (keyValue.isBlank() || modifiers.isEmpty()) {
+                    toast("Choose at least one modifier and enter a key.")
+                    return@setOnClickListener
+                }
+                val labelValue = name.text.toString().trim().ifBlank {
+                    (modifiers.joinToString("+") { it.displayName }) + "+" + keyValue
+                }
+                val combination = KeyboardBarItem(
+                    id = existing?.id ?: "combination-${UUID.randomUUID()}",
+                    label = labelValue,
+                    type = KeyboardBarItemType.COMBINATION,
+                    key = keyValue.uppercase().takeIf { candidate ->
+                        KeyboardBarCatalog.keys.any { it.key == candidate }
+                    } ?: keyValue,
+                    modifiers = modifiers,
+                )
+                val items = if (existing == null) {
+                    keyboardBarConfig.items + combination
+                } else {
+                    keyboardBarConfig.items.map { if (it.id == existing.id) combination else it }
+                }
+                val combinations = if (existing == null) {
+                    keyboardBarConfig.combinations + combination
+                } else {
+                    keyboardBarConfig.combinations.map { if (it.id == existing.id) combination else it }
+                }
+                saveKeyboardBarConfig(keyboardBarConfig.copy(items = items, combinations = combinations))
+                dialog.dismiss()
+            }
+        }
+        dialog.show()
+    }
+
+    private fun saveKeyboardBarConfig(config: KeyboardBarConfig, refreshSettings: Boolean = true) {
+        keyboardBarConfig = config
+        keyboardBarStore.save(config)
+        if (refreshSettings) showKeyboardSettings()
+    }
+
     private fun showGhosttyPreview() {
         val terminal = GhosttyTerminal().also { previewTerminal = it }
         terminal.write(
@@ -399,11 +608,18 @@ class MainActivity : Activity() {
     private fun renderTerminal(service: SshSessionService) {
         val host = service.host ?: return
         val terminal = service.terminal ?: return
+        activeModifiers.clear()
+        lockedModifiers.clear()
+        terminalAtBottom = true
+        settingsVisible = false
         val root = vertical(0)
         val status = label("Connecting…", 13f, accent).also { terminalStatus = it }
         val toolbar = vertical(16).apply { setBackgroundColor(raised) }
         val titleRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
-        titleRow.addView(label(host.name, 18f, primary, Typeface.BOLD), LinearLayout.LayoutParams(0, -2, 1f))
+        titleRow.addView(
+            label(host.name, 18f, primary, Typeface.BOLD).also { terminalTitle = it },
+            LinearLayout.LayoutParams(0, -2, 1f),
+        )
         val overflow = label("...", 24f, primary).apply {
             contentDescription = "More options"
             gravity = Gravity.CENTER
@@ -411,12 +627,18 @@ class MainActivity : Activity() {
             setOnClickListener { anchor ->
                 PopupMenu(this@MainActivity, anchor).apply {
                     menu.add("Disconnect")
+                    menu.add("Paste")
                     setOnMenuItemClickListener { item ->
-                        if (item.title == "Disconnect") {
-                            showHosts()
-                            true
-                        } else {
-                            false
+                        when (item.title) {
+                            "Disconnect" -> {
+                                showHosts()
+                                true
+                            }
+                            "Paste" -> {
+                                pasteFromClipboard(service)
+                                true
+                            }
+                            else -> false
                         }
                     }
                     show()
@@ -430,14 +652,268 @@ class MainActivity : Activity() {
 
         val view = GhosttyTerminalView(this, terminal).apply {
             isEnabled = false
-            onInput = { sessionService?.send(it) }
+            onInput = { input ->
+                val key = input.singleOrNull()?.let { character ->
+                    if (character.isLetterOrDigit()) character.uppercase() else "UNIDENTIFIED"
+                } ?: "UNIDENTIFIED"
+                sessionService?.send(terminal.encodeKey(key, input, ghosttyModifierBits(activeModifiers)))
+                consumeOneShotModifiers()
+            }
+            onSpecialKey = { key -> sendBarKey(key, activeModifiers) }
+            onKeyEvent = { event -> sendHardwareKey(terminal, event) }
+            isMouseTracking = terminal::isMouseTracking
+            onMouseEvent = { action, button, x, y, width, height, cellWidth, cellHeight, pressed ->
+                sessionService?.send(terminal.encodeMouse(
+                    action = action,
+                    button = button,
+                    x = x,
+                    y = y,
+                    modifiers = ghosttyModifierBits(activeModifiers),
+                    width = width,
+                    height = height,
+                    cellWidth = cellWidth,
+                    cellHeight = cellHeight,
+                    anyPressed = pressed,
+                ))
+            }
+            onSelectionStart = terminal::selectWord
+            onSelectionUpdate = { column, row -> terminal.extendSelection(column, row) }
+            onSelectionFinished = {
+                val selected = terminal.selectedText()
+                if (selected.isNotEmpty()) {
+                    getSystemService(ClipboardManager::class.java).setPrimaryClip(
+                        ClipData.newPlainText("Terminal selection", selected),
+                    )
+                    toast("Selection copied")
+                }
+            }
+            onMetadataChanged = { title, _, _ -> terminalTitle?.text = title.ifBlank { host.name } }
+            onLinkTap = { column, row ->
+                val uri = terminal.hyperlink(column, row).takeIf { it.isNotBlank() }?.let(Uri::parse)
+                if (uri?.scheme in setOf("http", "https")) {
+                    startActivity(Intent(Intent.ACTION_VIEW, uri))
+                    true
+                } else {
+                    false
+                }
+            }
             onResize = { columns, rows, pixelWidth, pixelHeight ->
                 sessionService?.resize(columns, rows, pixelWidth, pixelHeight)
             }
+            onScrollPositionChanged = { isAtBottom ->
+                terminalAtBottom = isAtBottom
+                updateModifierBarVisibility()
+            }
         }.also { terminalView = it }
         root.addView(view, LinearLayout.LayoutParams(-1, 0, 1f))
+        root.addView(createModifierBar().also { modifierBar = it })
         setContentView(root)
+        updateModifierBarVisibility()
         sessionListener.onSessionStatus(service.run { statusText() })
+    }
+
+    private fun createModifierBar(): View {
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setBackgroundColor(raised)
+            setPadding(dp(6), dp(4), dp(6), dp(4))
+        }.also { modifierBarRow = it }
+        renderModifierBarItems()
+        return HorizontalScrollView(this).apply {
+            isHorizontalScrollBarEnabled = false
+            setBackgroundColor(raised)
+            addView(row, ViewGroup.LayoutParams(-2, dp(48)))
+        }
+    }
+
+    private fun renderModifierBarItems() {
+        val row = modifierBarRow ?: return
+        row.removeAllViews()
+        keyboardBarConfig.items.forEach { item -> row.addView(modifierBarButton(item)) }
+        row.addView(barButton("More") { showAllKeyboardKeys() })
+    }
+
+    private fun modifierBarButton(item: KeyboardBarItem): View {
+        val resolved = when (item.type) {
+            KeyboardBarItemType.LAST_USED_MODIFIER -> lastUsedModifier?.let { modifier ->
+                KeyboardBarCatalog.modifiers.first { modifier in it.modifiers }
+            }
+            KeyboardBarItemType.LAST_USED_COMBINATION -> lastUsedCombination
+            else -> item
+        }
+        val label = when (item.type) {
+            KeyboardBarItemType.LAST_USED_MODIFIER -> lastUsedModifier?.displayName ?: "Last mod"
+            KeyboardBarItemType.LAST_USED_COMBINATION -> lastUsedCombination?.label ?: "Last combo"
+            else -> item.label
+        }
+        val modifier = resolved?.modifiers?.singleOrNull().takeIf {
+            resolved?.type == KeyboardBarItemType.MODIFIER
+        }
+        val button = barButton(label, modifier != null && modifier in activeModifiers) {
+            resolved?.let(::activateBarItem)
+        }
+        if (modifier != null) {
+            button.setOnLongClickListener {
+                lastUsedModifier = modifier
+                activeModifiers += modifier
+                lockedModifiers += modifier
+                renderModifierBarItems()
+                true
+            }
+        }
+        return button
+    }
+
+    private fun activateBarItem(item: KeyboardBarItem) {
+        when (item.type) {
+            KeyboardBarItemType.MODIFIER -> {
+                val modifier = item.modifiers.single()
+                lastUsedModifier = modifier
+                if (modifier in activeModifiers) {
+                    activeModifiers -= modifier
+                    lockedModifiers -= modifier
+                } else {
+                    activeModifiers += modifier
+                }
+                renderModifierBarItems()
+            }
+            KeyboardBarItemType.KEY -> sendBarKey(item.key.orEmpty(), activeModifiers)
+            KeyboardBarItemType.COMBINATION -> {
+                lastUsedCombination = item
+                sendBarKey(item.key.orEmpty(), activeModifiers + item.modifiers)
+            }
+            KeyboardBarItemType.LAST_USED_MODIFIER -> Unit
+            KeyboardBarItemType.LAST_USED_COMBINATION -> lastUsedCombination?.let(::activateBarItem)
+        }
+    }
+
+    private fun sendBarKey(key: String, modifiers: Set<KeyboardModifier>) {
+        val text = key.takeUnless { candidate -> KeyboardBarCatalog.keys.any { it.key == candidate } }.orEmpty()
+        val terminal = sessionService?.terminal ?: return
+        sessionService?.send(terminal.encodeKey(
+            key = key,
+            text = text,
+            modifiers = ghosttyModifierBits(modifiers),
+        ))
+        consumeOneShotModifiers()
+    }
+
+    private fun sendHardwareKey(terminal: GhosttyTerminal, event: KeyEvent): Boolean {
+        val key = androidKeyName(event.keyCode) ?: return false
+        val codepoint = event.unicodeChar
+        val text = codepoint.takeIf { it > 31 && it != 127 }?.let { String(Character.toChars(it)) }.orEmpty()
+        val action = when {
+            event.action == KeyEvent.ACTION_UP -> GhosttyTerminal.KEY_ACTION_RELEASE
+            event.repeatCount > 0 -> GhosttyTerminal.KEY_ACTION_REPEAT
+            else -> GhosttyTerminal.KEY_ACTION_PRESS
+        }
+        val modifiers = ghosttyModifierBits(activeModifiers) or
+            (if (event.isShiftPressed) GHOSTTY_MOD_SHIFT else 0) or
+            (if (event.isCtrlPressed) GHOSTTY_MOD_CTRL else 0) or
+            (if (event.isAltPressed) GHOSTTY_MOD_ALT else 0) or
+            (if (event.isMetaPressed) GHOSTTY_MOD_SUPER else 0) or
+            (if (event.isCapsLockOn) GHOSTTY_MOD_CAPS_LOCK else 0) or
+            (if (event.isNumLockOn) GHOSTTY_MOD_NUM_LOCK else 0)
+        sessionService?.send(terminal.encodeKey(key, text, modifiers, action))
+        if (action == GhosttyTerminal.KEY_ACTION_PRESS && !KeyEvent.isModifierKey(event.keyCode)) {
+            consumeOneShotModifiers()
+        }
+        return true
+    }
+
+    private fun androidKeyName(keyCode: Int): String? = when (keyCode) {
+        in KeyEvent.KEYCODE_A..KeyEvent.KEYCODE_Z -> ('A'.code + keyCode - KeyEvent.KEYCODE_A).toChar().toString()
+        in KeyEvent.KEYCODE_0..KeyEvent.KEYCODE_9 -> (keyCode - KeyEvent.KEYCODE_0).toString()
+        KeyEvent.KEYCODE_ESCAPE -> "ESCAPE"
+        KeyEvent.KEYCODE_TAB -> "TAB"
+        KeyEvent.KEYCODE_ENTER, KeyEvent.KEYCODE_NUMPAD_ENTER -> "ENTER"
+        KeyEvent.KEYCODE_DEL -> "BACKSPACE"
+        KeyEvent.KEYCODE_FORWARD_DEL -> "DELETE"
+        KeyEvent.KEYCODE_INSERT -> "INSERT"
+        KeyEvent.KEYCODE_MOVE_HOME -> "HOME"
+        KeyEvent.KEYCODE_MOVE_END -> "END"
+        KeyEvent.KEYCODE_PAGE_UP -> "PAGE_UP"
+        KeyEvent.KEYCODE_PAGE_DOWN -> "PAGE_DOWN"
+        KeyEvent.KEYCODE_DPAD_UP -> "ARROW_UP"
+        KeyEvent.KEYCODE_DPAD_DOWN -> "ARROW_DOWN"
+        KeyEvent.KEYCODE_DPAD_LEFT -> "ARROW_LEFT"
+        KeyEvent.KEYCODE_DPAD_RIGHT -> "ARROW_RIGHT"
+        in KeyEvent.KEYCODE_F1..KeyEvent.KEYCODE_F12 -> "F${keyCode - KeyEvent.KEYCODE_F1 + 1}"
+        KeyEvent.KEYCODE_SPACE -> "SPACE"
+        KeyEvent.KEYCODE_GRAVE -> "BACKQUOTE"
+        KeyEvent.KEYCODE_BACKSLASH -> "BACKSLASH"
+        KeyEvent.KEYCODE_LEFT_BRACKET -> "BRACKET_LEFT"
+        KeyEvent.KEYCODE_RIGHT_BRACKET -> "BRACKET_RIGHT"
+        KeyEvent.KEYCODE_COMMA -> "COMMA"
+        KeyEvent.KEYCODE_EQUALS -> "EQUAL"
+        KeyEvent.KEYCODE_MINUS -> "MINUS"
+        KeyEvent.KEYCODE_PERIOD -> "PERIOD"
+        KeyEvent.KEYCODE_APOSTROPHE -> "QUOTE"
+        KeyEvent.KEYCODE_SEMICOLON -> "SEMICOLON"
+        KeyEvent.KEYCODE_SLASH -> "SLASH"
+        KeyEvent.KEYCODE_SHIFT_LEFT -> "SHIFT_LEFT"
+        KeyEvent.KEYCODE_SHIFT_RIGHT -> "SHIFT_RIGHT"
+        KeyEvent.KEYCODE_CTRL_LEFT -> "CONTROL_LEFT"
+        KeyEvent.KEYCODE_CTRL_RIGHT -> "CONTROL_RIGHT"
+        KeyEvent.KEYCODE_ALT_LEFT -> "ALT_LEFT"
+        KeyEvent.KEYCODE_ALT_RIGHT -> "ALT_RIGHT"
+        KeyEvent.KEYCODE_META_LEFT -> "META_LEFT"
+        KeyEvent.KEYCODE_META_RIGHT -> "META_RIGHT"
+        else -> null
+    }
+
+    private fun ghosttyModifierBits(modifiers: Set<KeyboardModifier>): Int =
+        (if (KeyboardModifier.SHIFT in modifiers) GHOSTTY_MOD_SHIFT else 0) or
+            (if (KeyboardModifier.CONTROL in modifiers) GHOSTTY_MOD_CTRL else 0) or
+            (if (KeyboardModifier.ALT in modifiers) GHOSTTY_MOD_ALT else 0) or
+            (if (KeyboardModifier.META in modifiers) GHOSTTY_MOD_SUPER else 0) or
+            (if (KeyboardModifier.CAPS_LOCK in modifiers) GHOSTTY_MOD_CAPS_LOCK else 0) or
+            (if (KeyboardModifier.NUM_LOCK in modifiers) GHOSTTY_MOD_NUM_LOCK else 0)
+
+    private fun pasteFromClipboard(service: SshSessionService) {
+        val text = getSystemService(ClipboardManager::class.java).primaryClip
+            ?.getItemAt(0)?.coerceToText(this)?.toString().orEmpty()
+        if (text.isEmpty()) {
+            toast("Clipboard is empty.")
+            return
+        }
+        val terminal = service.terminal ?: return
+        val paste = { service.send(terminal.encodePaste(text)) }
+        if (terminal.isPasteSafe(text)) {
+            paste()
+        } else {
+            AlertDialog.Builder(this)
+                .setTitle("Paste multiple lines?")
+                .setMessage("This paste contains a newline or terminal control sequence.")
+                .setNegativeButton("Cancel", null)
+                .setPositiveButton("Paste") { _, _ -> paste() }
+                .show()
+        }
+    }
+
+    private fun consumeOneShotModifiers() {
+        activeModifiers.retainAll(lockedModifiers)
+        renderModifierBarItems()
+    }
+
+    private fun updateModifierBarVisibility() {
+        modifierBar?.visibility = if (keyboardBarConfig.enabled && imeVisible && terminalAtBottom) {
+            View.VISIBLE
+        } else {
+            View.GONE
+        }
+    }
+
+    private fun showAllKeyboardKeys() {
+        val items = KeyboardBarCatalog.availableItems.filter {
+            it.type != KeyboardBarItemType.LAST_USED_MODIFIER &&
+                it.type != KeyboardBarItemType.LAST_USED_COMBINATION
+        } + keyboardBarConfig.combinations
+        AlertDialog.Builder(this)
+            .setTitle("Keyboard keys")
+            .setItems(items.map(KeyboardBarItem::label).toTypedArray()) { _, index -> activateBarItem(items[index]) }
+            .setNegativeButton("Cancel", null)
+            .show()
     }
 
     private fun setTerminalEnabled(enabled: Boolean) {
@@ -446,7 +922,9 @@ class MainActivity : Activity() {
     }
 
     private fun handleBackNavigation() {
-        if (terminalView != null || previewTerminal != null) showHosts() else finish()
+        if (settingsVisible) showHosts(disconnect = false)
+        else if (terminalView != null || previewTerminal != null) showHosts()
+        else finish()
     }
 
     @SuppressLint("GestureBackNavigation")
@@ -474,6 +952,15 @@ class MainActivity : Activity() {
     private fun button(text: String, color: Int = accent, action: () -> Unit) = Button(this).apply {
         this.text = text; setTextColor(Color.rgb(8, 15, 12)); setBackgroundColor(color); isAllCaps = false; setOnClickListener { action() }
     }
+    private fun compactButton(text: String, enabled: Boolean = true, action: () -> Unit) = Button(this).apply {
+        this.text = text; isEnabled = enabled; isAllCaps = false; setTextColor(primary); setBackgroundColor(surface)
+        minWidth = 0; minimumWidth = 0; setPadding(dp(8), 0, dp(8), 0); setOnClickListener { action() }
+    }
+    private fun barButton(text: String, active: Boolean = false, action: () -> Unit) = Button(this).apply {
+        this.text = text; isAllCaps = false; setTextColor(if (active) Color.rgb(8, 15, 12) else primary)
+        setBackgroundColor(if (active) accent else surface); minWidth = dp(52); minimumWidth = dp(52)
+        setPadding(dp(10), 0, dp(10), 0); setOnClickListener { action() }
+    }
     private fun View.margins(top: Int = 0, bottom: Int = 0): View = apply {
         layoutParams = LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(top); bottomMargin = dp(bottom) }
     }
@@ -483,5 +970,11 @@ class MainActivity : Activity() {
     companion object {
         const val IMPORT_KEY = 1001
         const val NOTIFICATION_PERMISSION = 1002
+        const val GHOSTTY_MOD_SHIFT = 1 shl 0
+        const val GHOSTTY_MOD_CTRL = 1 shl 1
+        const val GHOSTTY_MOD_ALT = 1 shl 2
+        const val GHOSTTY_MOD_SUPER = 1 shl 3
+        const val GHOSTTY_MOD_CAPS_LOCK = 1 shl 4
+        const val GHOSTTY_MOD_NUM_LOCK = 1 shl 5
     }
 }

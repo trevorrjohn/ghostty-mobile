@@ -84,10 +84,14 @@ class SshConnection(
     }
 
     fun send(text: String) {
+        send(text.toByteArray())
+    }
+
+    fun send(bytes: ByteArray) {
         thread(name = "ssh-write") {
             runCatching {
                 shell?.outputStream?.apply {
-                    write(text.toByteArray())
+                    write(bytes)
                     flush()
                 }
             }.onFailure { callbacks.closed(it.message) }

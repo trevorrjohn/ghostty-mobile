@@ -13,6 +13,7 @@ import android.view.ScaleGestureDetector
 import android.view.View
 import android.view.VelocityTracker
 import android.view.ViewConfiguration
+import android.os.SystemClock
 import android.view.inputmethod.BaseInputConnection
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputConnection
@@ -29,7 +30,20 @@ class GhosttyTerminalView(
     private val terminal: GhosttyTerminal,
 ) : View(context) {
     var onInput: (String) -> Unit = {}
+    var onSpecialKey: (String) -> Unit = {}
+    var onKeyEvent: (KeyEvent) -> Boolean = { false }
+    var isMouseTracking: () -> Boolean = { false }
+    var onMouseEvent: (
+        action: Int, button: Int, x: Float, y: Float,
+        width: Int, height: Int, cellWidth: Int, cellHeight: Int, anyPressed: Boolean,
+    ) -> Unit = { _, _, _, _, _, _, _, _, _ -> }
+    var onSelectionStart: (column: Int, row: Int) -> Boolean = { _, _ -> false }
+    var onSelectionUpdate: (column: Int, row: Int) -> Unit = { _, _ -> }
+    var onSelectionFinished: () -> Unit = {}
+    var onMetadataChanged: (title: String, pwd: String, atPrompt: Boolean) -> Unit = { _, _, _ -> }
+    var onLinkTap: (column: Int, row: Int) -> Boolean = { _, _ -> false }
     var onResize: (columns: Int, rows: Int, pixelWidth: Int, pixelHeight: Int) -> Unit = { _, _, _, _ -> }
+    var onScrollPositionChanged: (isAtBottom: Boolean) -> Unit = {}
     private var terminalTextSizeSp = 15f
     private var terminalTextSize = sp(terminalTextSizeSp)
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -53,6 +67,14 @@ class GhosttyTerminalView(
     private var scrollPixels = 0f
     private var dragging = false
     private var scaleGesture = false
+    private var remoteMouseGesture = false
+    private var remotePressSent = false
+    private var remoteTwoFingerGesture = false
+    private var remoteDownX = 0f
+    private var remoteDownY = 0f
+    private var remoteWheelPixels = 0f
+    private var selectionActive = false
+    private var pendingLongPress: Runnable? = null
     private var lastFlingY = 0
     private val liveButton = RectF()
     private val scaleDetector = ScaleGestureDetector(context,
@@ -82,7 +104,10 @@ class GhosttyTerminalView(
     }
 
     fun refresh() {
+        val wasAtBottom = snapshot.isAtBottom
         snapshot = terminal.snapshot()
+        onMetadataChanged(snapshot.title, snapshot.pwd, snapshot.cursorAtPrompt)
+        if (snapshot.isAtBottom != wasAtBottom) onScrollPositionChanged(snapshot.isAtBottom)
         invalidate()
     }
 
@@ -115,6 +140,11 @@ class GhosttyTerminalView(
                     paint.style = Paint.Style.FILL
                     canvas.drawRect(left, top, left + cellWidth + 1f, top + cellHeight + 1f, paint)
                 }
+                if (cell.selected) {
+                    paint.color = 0xff315849.toInt()
+                    paint.style = Paint.Style.FILL
+                    canvas.drawRect(left, top, left + cellWidth + 1f, top + cellHeight + 1f, paint)
+                }
                 if (!cell.invisible && cell.text.isNotEmpty()) {
                     paint.color = cell.foreground
                     paint.alpha = if (cell.faint) 150 else 255
@@ -134,7 +164,7 @@ class GhosttyTerminalView(
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
         if (!isEnabled) return false
-        scaleDetector.onTouchEvent(event)
+        if (!remoteMouseGesture && !remoteTwoFingerGesture) scaleDetector.onTouchEvent(event)
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
                 parent?.requestDisallowInterceptTouchEvent(true)
@@ -145,14 +175,62 @@ class GhosttyTerminalView(
                 lastTouchY = event.y
                 dragging = false
                 scaleGesture = false
+                remoteMouseGesture = isMouseTracking()
+                remotePressSent = false
+                remoteTwoFingerGesture = false
+                remoteDownX = event.x
+                remoteDownY = event.y
+                pendingLongPress = Runnable {
+                    if (!dragging && !scaleGesture) {
+                        remoteMouseGesture = false
+                        selectionActive = onSelectionStart(cellColumn(remoteDownX), cellRow(remoteDownY))
+                        if (selectionActive) refresh()
+                    }
+                }.also { postDelayed(it, ViewConfiguration.getLongPressTimeout().toLong()) }
                 return true
             }
             MotionEvent.ACTION_POINTER_DOWN -> {
+                cancelPendingLongPress()
+                if (remoteMouseGesture) {
+                    if (remotePressSent) sendRemoteMouse(MOUSE_RELEASE, MOUSE_LEFT, event.x, event.y, false)
+                    remoteMouseGesture = false
+                    remotePressSent = false
+                    remoteTwoFingerGesture = true
+                    lastTouchY = pointerAverageY(event)
+                    remoteWheelPixels = 0f
+                    return true
+                }
                 scaleGesture = true
                 dragging = false
                 return true
             }
             MotionEvent.ACTION_MOVE -> {
+                if (selectionActive) {
+                    onSelectionUpdate(cellColumn(event.x), cellRow(event.y))
+                    refresh()
+                    return true
+                }
+                if (abs(event.x - remoteDownX) > touchSlop || abs(event.y - remoteDownY) > touchSlop) cancelPendingLongPress()
+                if (remoteTwoFingerGesture && event.pointerCount >= 2) {
+                    val y = pointerAverageY(event)
+                    remoteWheelPixels += y - lastTouchY
+                    lastTouchY = y
+                    val threshold = cellHeight.coerceAtLeast(1f)
+                    while (abs(remoteWheelPixels) >= threshold) {
+                        val button = if (remoteWheelPixels < 0) MOUSE_WHEEL_DOWN else MOUSE_WHEEL_UP
+                        sendRemoteMouse(MOUSE_PRESS, button, event.x, y, false)
+                        remoteWheelPixels += if (remoteWheelPixels < 0) threshold else -threshold
+                    }
+                    return true
+                }
+                if (remoteMouseGesture) {
+                    if (!remotePressSent && (abs(event.x - remoteDownX) > touchSlop || abs(event.y - remoteDownY) > touchSlop)) {
+                        sendRemoteMouse(MOUSE_PRESS, MOUSE_LEFT, remoteDownX, remoteDownY, true)
+                        remotePressSent = true
+                    }
+                    if (remotePressSent) sendRemoteMouse(MOUSE_MOTION, MOUSE_LEFT, event.x, event.y, true)
+                    return true
+                }
                 if (scaleDetector.isInProgress || scaleGesture) return true
                 velocityTracker?.addMovement(event)
                 val distance = event.y - lastTouchY
@@ -162,6 +240,27 @@ class GhosttyTerminalView(
                 return true
             }
             MotionEvent.ACTION_UP -> {
+                cancelPendingLongPress()
+                if (selectionActive) {
+                    selectionActive = false
+                    onSelectionFinished()
+                    refresh()
+                    endTouch()
+                    return true
+                }
+                if (remoteTwoFingerGesture) {
+                    remoteTwoFingerGesture = false
+                    endTouch()
+                    return true
+                }
+                if (remoteMouseGesture) {
+                    if (!remotePressSent) sendRemoteMouse(MOUSE_PRESS, MOUSE_LEFT, event.x, event.y, true)
+                    sendRemoteMouse(MOUSE_RELEASE, MOUSE_LEFT, event.x, event.y, false)
+                    remoteMouseGesture = false
+                    remotePressSent = false
+                    endTouch()
+                    return true
+                }
                 velocityTracker?.addMovement(event)
                 if (scaleGesture) {
                     // A pinch must not also focus the keyboard or start a fling.
@@ -176,6 +275,8 @@ class GhosttyTerminalView(
                 } else if (!snapshot.isAtBottom && liveButton.contains(event.x, event.y)) {
                     terminal.scrollToBottom()
                     refresh()
+                } else if (onLinkTap(cellColumn(event.x), cellRow(event.y))) {
+                    // The link handler owns this tap.
                 } else {
                     performClick()
                 }
@@ -183,11 +284,37 @@ class GhosttyTerminalView(
                 return true
             }
             MotionEvent.ACTION_CANCEL -> {
+                cancelPendingLongPress()
+                if (remoteMouseGesture && remotePressSent) {
+                    sendRemoteMouse(MOUSE_RELEASE, MOUSE_LEFT, event.x, event.y, false)
+                }
+                remoteMouseGesture = false
+                remotePressSent = false
+                remoteTwoFingerGesture = false
                 endTouch()
                 return true
             }
         }
         return super.onTouchEvent(event)
+    }
+
+    private fun sendRemoteMouse(action: Int, button: Int, x: Float, y: Float, pressed: Boolean) {
+        onMouseEvent(
+            action, button, x, y, width, height,
+            cellWidth.toInt().coerceAtLeast(1), cellHeight.toInt().coerceAtLeast(1), pressed,
+        )
+    }
+
+    private fun pointerAverageY(event: MotionEvent): Float =
+        (0 until event.pointerCount).sumOf { event.getY(it).toDouble() }.toFloat() / event.pointerCount
+
+    private fun cellColumn(x: Float) = floor(x / cellWidth).toInt().coerceIn(0, snapshot.columns - 1)
+
+    private fun cellRow(y: Float) = floor(y / cellHeight).toInt().coerceIn(0, snapshot.rows - 1)
+
+    private fun cancelPendingLongPress() {
+        pendingLongPress?.let(::removeCallbacks)
+        pendingLongPress = null
     }
 
     override fun performClick(): Boolean {
@@ -285,18 +412,18 @@ class GhosttyTerminalView(
                     composingText = composingText.dropLast(beforeLength.coerceAtLeast(1))
                     return true
                 }
-                repeat(beforeLength.coerceAtLeast(1)) { sendInput("\u007f") }
+                repeat(beforeLength.coerceAtLeast(1)) { onSpecialKey("BACKSPACE") }
                 return true
             }
 
             override fun sendKeyEvent(event: KeyEvent): Boolean {
                 if (event.action == KeyEvent.ACTION_DOWN) flushComposition()
-                return handleTerminalKey(event) || super.sendKeyEvent(event)
+                return onKeyEvent(event) || super.sendKeyEvent(event)
             }
 
             override fun performEditorAction(actionCode: Int): Boolean {
                 flushComposition()
-                sendInput("\r")
+                onSpecialKey("ENTER")
                 return true
             }
 
@@ -309,33 +436,9 @@ class GhosttyTerminalView(
         }
     }
 
-    override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean = handleTerminalKey(event) || super.onKeyDown(keyCode, event)
+    override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean = onKeyEvent(event) || super.onKeyDown(keyCode, event)
 
-    private fun handleTerminalKey(event: KeyEvent): Boolean {
-        if (event.action != KeyEvent.ACTION_DOWN) return false
-        val encoded = when (event.keyCode) {
-            KeyEvent.KEYCODE_ENTER, KeyEvent.KEYCODE_NUMPAD_ENTER -> "\r"
-            KeyEvent.KEYCODE_DEL -> "\u007f"
-            KeyEvent.KEYCODE_FORWARD_DEL -> "\u001b[3~"
-            KeyEvent.KEYCODE_TAB -> "\t"
-            KeyEvent.KEYCODE_ESCAPE -> "\u001b"
-            KeyEvent.KEYCODE_DPAD_UP -> "\u001b[A"
-            KeyEvent.KEYCODE_DPAD_DOWN -> "\u001b[B"
-            KeyEvent.KEYCODE_DPAD_RIGHT -> "\u001b[C"
-            KeyEvent.KEYCODE_DPAD_LEFT -> "\u001b[D"
-            KeyEvent.KEYCODE_MOVE_HOME -> "\u001b[H"
-            KeyEvent.KEYCODE_MOVE_END -> "\u001b[F"
-            else -> {
-                if (event.isCtrlPressed && event.keyCode in KeyEvent.KEYCODE_A..KeyEvent.KEYCODE_Z) {
-                    ((event.keyCode - KeyEvent.KEYCODE_A) + 1).toChar().toString()
-                } else {
-                    event.unicodeChar.takeIf { it > 0 }?.let { String(Character.toChars(it)) }
-                }
-            }
-        } ?: return false
-        sendInput(encoded)
-        return true
-    }
+    override fun onKeyUp(keyCode: Int, event: KeyEvent): Boolean = onKeyEvent(event) || super.onKeyUp(keyCode, event)
 
     private fun sendInput(text: String) {
         if (!snapshot.isAtBottom) {
@@ -347,7 +450,12 @@ class GhosttyTerminalView(
 
     private fun drawCursor(canvas: Canvas, visibleColumns: Int, visibleRows: Int) {
         if (snapshot.cursorStyle == 0 || snapshot.cursorX !in 0 until visibleColumns || snapshot.cursorY !in 0 until visibleRows) return
-        val left = snapshot.cursorX * cellWidth
+        if (snapshot.cursorBlinking) {
+            postInvalidateDelayed(CURSOR_BLINK_INTERVAL_MS)
+            if ((SystemClock.uptimeMillis() / CURSOR_BLINK_INTERVAL_MS) % 2L != 0L) return
+        }
+        val cursorColumn = snapshot.cursorX - if (snapshot.cursorWideTail) 1 else 0
+        val left = cursorColumn.coerceAtLeast(0) * cellWidth
         val top = snapshot.cursorY * cellHeight
         paint.color = snapshot.cursorColor
         paint.alpha = 220
@@ -377,5 +485,12 @@ class GhosttyTerminalView(
     companion object {
         private const val MIN_TEXT_SIZE_SP = 9f
         private const val MAX_TEXT_SIZE_SP = 30f
+        private const val MOUSE_PRESS = 0
+        private const val MOUSE_RELEASE = 1
+        private const val MOUSE_MOTION = 2
+        private const val MOUSE_LEFT = 1
+        private const val MOUSE_WHEEL_UP = 4
+        private const val MOUSE_WHEEL_DOWN = 5
+        private const val CURSOR_BLINK_INTERVAL_MS = 500L
     }
 }
