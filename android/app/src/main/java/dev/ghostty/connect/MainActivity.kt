@@ -58,6 +58,7 @@ import dev.ghostty.connect.model.KeyboardBarItemType
 import dev.ghostty.connect.model.KeyboardModifier
 import dev.ghostty.connect.model.TerminalThemes
 import dev.ghostty.connect.terminal.SshSessionService
+import dev.ghostty.connect.terminal.AuthenticationChallenge
 import dev.ghostty.connect.terminal.bridge.GhosttyTerminal
 import dev.ghostty.connect.terminal.bridge.TerminalEffects
 import dev.ghostty.connect.terminal.view.GhosttyTerminalView
@@ -74,9 +75,13 @@ class MainActivity : Activity() {
     private var sessionService: SshSessionService? = null
     private var sessionBound = false
     private var shouldBindSession = false
-    private var pendingConnection: Pair<Host, String>? = null
+    private data class PendingConnection(val sessionId: String, val host: Host, val credential: CharArray)
+
+    private var pendingConnection: PendingConnection? = null
+    private var selectedSessionId: String? = null
     private var terminalStatus: TextView? = null
     private var terminalTitle: TextView? = null
+    private var terminalRetryButton: Button? = null
     private var terminalView: GhosttyTerminalView? = null
     private var previewTerminal: GhosttyTerminal? = null
     private var editingHostId: String? = null
@@ -98,20 +103,26 @@ class MainActivity : Activity() {
     private val secondary = Color.rgb(174, 182, 198)
     private val accent = Color.rgb(139, 233, 179)
     private val sessionListener = object : SshSessionService.Listener {
-        override fun onSessionStatus(status: String) {
+        override fun onSessionStatus(sessionId: String, status: String) {
+            if (sessionId != selectedSessionId) return
             val service = sessionService ?: return
-            terminalStatus?.text = "$status · ${service.host?.destination.orEmpty()}"
+            terminalStatus?.text = "$status · ${service.host(sessionId)?.destination.orEmpty()}"
             setTerminalEnabled(status == "Connected")
+            terminalRetryButton?.visibility = if (
+                service.summaries().firstOrNull { it.sessionId == sessionId }?.canRetry == true
+            ) View.VISIBLE else View.GONE
         }
 
-        override fun onTerminalChanged() {
+        override fun onTerminalChanged(sessionId: String) {
+            if (sessionId != selectedSessionId) return
             terminalView?.refresh()
         }
 
-        override fun onTerminalEffects(effects: TerminalEffects) {
+        override fun onTerminalEffects(sessionId: String, effects: TerminalEffects) {
+            if (sessionId != selectedSessionId) return
             if (effects.bells > 0) terminalView?.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
             if (effects.progressState >= 0 && effects.progress >= 0) {
-                terminalStatus?.text = "${effects.progress}% · ${sessionService?.host?.destination.orEmpty()}"
+                terminalStatus?.text = "${effects.progress}% · ${sessionService?.host(sessionId)?.destination.orEmpty()}"
             }
             if (effects.clipboard.isNotEmpty()) handleRemoteClipboard(effects.clipboard)
             if (effects.notificationTitle.isNotEmpty() || effects.notificationBody.isNotEmpty()) {
@@ -120,18 +131,62 @@ class MainActivity : Activity() {
             if (effects.processingError) terminalStatus?.text = "Terminal processing warning"
         }
 
-        override fun onHostKeyVerification(fingerprint: String, changed: Boolean, answer: (Boolean) -> Unit) {
+        override fun onHostKeyVerification(
+            sessionId: String,
+            fingerprint: String,
+            changed: Boolean,
+            answer: (Boolean) -> Unit,
+        ) {
+            val hostName = sessionService?.host(sessionId)?.name
             AlertDialog.Builder(this@MainActivity)
                 .setTitle(if (changed) "Host key changed" else "Unknown host")
-                .setMessage((if (changed) "The saved host key does not match. This could indicate an attack.\n\n" else "Verify this fingerprint with the server administrator:\n\n") + fingerprint)
+                .setMessage((hostName?.let { "$it\n\n" } ?: "") + (if (changed) "The saved host key does not match. This could indicate an attack.\n\n" else "Verify this fingerprint with the server administrator:\n\n") + fingerprint)
                 .setNegativeButton("Reject") { _, _ -> answer(false) }
                 .setPositiveButton(if (changed) "Accept new key" else "Trust host") { _, _ -> answer(true) }
                 .setOnCancelListener { answer(false) }
                 .show()
         }
 
-        override fun onSessionClosed(error: String?) {
-            terminalStatus?.text = if (error == null) "Disconnected" else "Connection failed"
+        override fun onAuthenticationChallenge(
+            sessionId: String,
+            hostName: String,
+            challenge: AuthenticationChallenge,
+            answer: (CharArray?) -> Unit,
+        ) {
+            val response = field(
+                challenge.prompt.ifBlank { "Response" },
+                "",
+                if (challenge.echo) InputType.TYPE_CLASS_TEXT else {
+                    InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+                },
+            )
+            val message = listOf(challenge.instruction, challenge.prompt)
+                .filter(String::isNotBlank)
+                .joinToString("\n\n")
+            AlertDialog.Builder(this@MainActivity)
+                .setTitle(challenge.title.ifBlank { "Authenticate with $hostName" })
+                .setMessage("$hostName · session ${sessionId.take(8)}" + if (message.isBlank()) "" else "\n\n$message")
+                .setView(response)
+                .setNegativeButton("Cancel") { _, _ ->
+                    response.text.clear()
+                    answer(null)
+                }
+                .setPositiveButton("Respond") { _, _ ->
+                    val value = response.text.toString().toCharArray()
+                    response.text.clear()
+                    answer(value)
+                }
+                .setOnCancelListener {
+                    response.text.clear()
+                    answer(null)
+                }
+                .show()
+        }
+
+        override fun onSessionClosed(sessionId: String, error: String?) {
+            if (sessionId != selectedSessionId) return
+            val retryable = sessionService?.summaries()?.firstOrNull { it.sessionId == sessionId }?.canRetry == true
+            if (!retryable) terminalStatus?.text = if (error == null) "Disconnected" else "Connection failed"
             setTerminalEnabled(false)
         }
     }
@@ -140,12 +195,16 @@ class MainActivity : Activity() {
             val service = (binder as SshSessionService.LocalBinder).service
             sessionService = service
             sessionBound = true
-            service.attach(sessionListener)
-            pendingConnection?.let { (host, credential) ->
+            service.attach(sessionListener, selectedSessionId)
+            pendingConnection?.let { pending ->
                 pendingConnection = null
-                service.connect(host, credential)
+                service.connect(pending.sessionId, pending.host, pending.credential)
+                selectedSessionId = pending.sessionId
+                service.selectListenerSession(pending.sessionId)
             }
-            service.host?.let { renderTerminal(service) }
+            val requested = selectedSessionId?.takeIf { service.host(it) != null }
+            val sessionId = requested ?: service.summaries().singleOrNull()?.sessionId
+            if (sessionId != null) openSession(sessionId) else showHosts(disconnect = false)
         }
 
         override fun onServiceDisconnected(name: ComponentName?) {
@@ -188,6 +247,7 @@ class MainActivity : Activity() {
         terminalThemeStore = TerminalThemeStore(this)
         terminalStateStore = TerminalStateStore(this)
         keyboardBarConfig = keyboardBarStore.load()
+        selectedSessionId = intent?.getStringExtra(SshSessionService.EXTRA_SESSION_ID)
         shouldBindSession = intent?.action == SshSessionService.ACTION_OPEN_SESSION || SshSessionService.active
         showHosts(disconnect = false)
         if (Build.VERSION.SDK_INT >= 33) {
@@ -202,6 +262,16 @@ class MainActivity : Activity() {
         if (shouldBindSession && !sessionBound) bindSessionService()
     }
 
+    override fun onNewIntent(intent: Intent?) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        val sessionId = intent?.takeIf { it.action == SshSessionService.ACTION_OPEN_SESSION }
+            ?.getStringExtra(SshSessionService.EXTRA_SESSION_ID) ?: return
+        selectedSessionId = sessionId
+        shouldBindSession = true
+        sessionService?.let { if (it.host(sessionId) != null) openSession(sessionId) }
+    }
+
     override fun onStop() {
         if (sessionBound) {
             sessionService?.detach(sessionListener)
@@ -212,16 +282,18 @@ class MainActivity : Activity() {
         super.onStop()
     }
 
-    private fun showHosts(disconnect: Boolean = true) {
+    private fun showHosts(disconnect: Boolean = false) {
         window.clearFlags(WindowManager.LayoutParams.FLAG_SECURE)
         editingHostId = null
         settingsVisible = false
         if (disconnect) {
-            sessionService?.disconnect()
-            shouldBindSession = false
+            selectedSessionId?.let { sessionService?.disconnect(it) }
         }
+        selectedSessionId = null
+        sessionService?.selectListenerSession(null)
         terminalStatus = null
         terminalTitle = null
+        terminalRetryButton = null
         terminalView = null
         editorKeySelection = null
         editorAuthentication = null
@@ -232,6 +304,30 @@ class MainActivity : Activity() {
         val root = vertical(24)
         root.addView(label("Ghostty Connect", 28f, primary, Typeface.BOLD))
         root.addView(label("A fast, native SSH terminal", 15f, secondary).margins(bottom = 28))
+        val activeSessions = sessionService?.summaries().orEmpty()
+        if (activeSessions.isNotEmpty()) {
+            root.addView(label("Active sessions", 20f, primary, Typeface.BOLD).margins(bottom = 10))
+            activeSessions.forEach { session ->
+                val row = vertical(12).apply { setBackgroundColor(raised) }
+                row.addView(label(session.hostName, 17f, primary, Typeface.BOLD))
+                row.addView(label("${session.status} · ${session.destination}", 13f, secondary))
+                val actions = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+                actions.addView(compactButton("Open") { openSession(session.sessionId) })
+                sessionService?.host(session.sessionId)?.let { host ->
+                    actions.addView(compactButton("Duplicate") { requestCredentialAndConnect(host) })
+                }
+                if (session.canRetry) {
+                    actions.addView(compactButton("Retry / Reauthenticate") { reauthenticate(session.sessionId) })
+                }
+                actions.addView(compactButton("Disconnect") {
+                    sessionService?.disconnect(session.sessionId)
+                    showHosts(disconnect = false)
+                })
+                row.addView(actions.margins(top = 8))
+                root.addView(row.margins(bottom = 12))
+            }
+            root.addView(label("Hosts", 20f, primary, Typeface.BOLD).margins(top = 12, bottom = 10))
+        }
         val hosts = hostStore.loadAll()
         hosts.forEach { host ->
             val card = vertical(18).apply { setBackgroundColor(raised) }
@@ -450,7 +546,11 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun requestCredentialAndConnect(host: Host) {
+    private fun requestCredentialAndConnect(host: Host) = requestCredential(host) { credential ->
+        startSession(host, credential)
+    }
+
+    private fun requestCredential(host: Host, connect: (CharArray) -> Unit) {
         if (Build.VERSION.SDK_INT >= 33 &&
             checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), NOTIFICATION_PERMISSION)
@@ -458,7 +558,7 @@ class MainActivity : Activity() {
         if (host.authenticationType == AuthenticationType.SSH_KEY) {
             val keyName = requireNotNull(host.keyName)
             if (!keyStore.requiresPassphrase(keyName)) {
-                startSession(host, "")
+                connect(CharArray(0))
                 return
             }
             val passphrase = field(
@@ -478,7 +578,9 @@ class MainActivity : Activity() {
                         toast("Enter the private key passphrase")
                     } else {
                         dialog.dismiss()
-                        startSession(host, passphrase.text.toString())
+                        val value = passphrase.text.toString().toCharArray()
+                        passphrase.text.clear()
+                        connect(value)
                     }
                 }
             }
@@ -490,8 +592,21 @@ class MainActivity : Activity() {
             .setTitle("Authenticate")
             .setView(credential)
             .setNegativeButton("Cancel", null)
-            .setPositiveButton("Connect") { _, _ -> startSession(host, credential.text.toString()) }
+            .setPositiveButton("Connect") { _, _ ->
+                val value = credential.text.toString().toCharArray()
+                credential.text.clear()
+                connect(value)
+            }
             .show()
+    }
+
+    private fun reauthenticate(sessionId: String) {
+        val service = sessionService ?: return
+        val host = service.host(sessionId) ?: return
+        requestCredential(host) { credential ->
+            service.retry(sessionId, credential)
+            openSession(sessionId)
+        }
     }
 
     private fun refreshEditorKeys(selectedName: String) {
@@ -781,15 +896,18 @@ class MainActivity : Activity() {
         setContentView(root)
     }
 
-    private fun startSession(host: Host, credential: String) {
-        pendingConnection = host to credential
+    private fun startSession(host: Host, credential: CharArray) {
+        val sessionId = SshSessionService.newSessionId()
+        selectedSessionId = sessionId
+        pendingConnection = PendingConnection(sessionId, host, credential)
         shouldBindSession = true
         startForegroundService(Intent(this, SshSessionService::class.java))
         if (!sessionBound) bindSessionService() else {
             pendingConnection = null
-            sessionService?.let { service ->
-                service.connect(host, credential)
-                renderTerminal(service)
+            val service = sessionService
+            if (service == null) credential.fill('\u0000') else {
+                service.connect(sessionId, host, credential)
+                openSession(sessionId)
             }
         }
     }
@@ -798,9 +916,16 @@ class MainActivity : Activity() {
         bindService(Intent(this, SshSessionService::class.java), serviceConnection, Context.BIND_AUTO_CREATE)
     }
 
-    private fun renderTerminal(service: SshSessionService) {
-        val host = service.host ?: return
-        val terminal = service.terminal ?: return
+    private fun openSession(sessionId: String) {
+        val service = sessionService ?: return
+        selectedSessionId = sessionId
+        service.selectListenerSession(sessionId)
+        renderTerminal(service, sessionId)
+    }
+
+    private fun renderTerminal(service: SshSessionService, sessionId: String) {
+        val host = service.host(sessionId) ?: return
+        val terminal = service.terminal(sessionId) ?: return
         activeModifiers.clear()
         lockedModifiers.clear()
         terminalAtBottom = true
@@ -819,6 +944,8 @@ class MainActivity : Activity() {
             setPadding(dp(12), dp(4), dp(12), dp(4))
             setOnClickListener { anchor ->
                 PopupMenu(this@MainActivity, anchor).apply {
+                    menu.add("Sessions")
+                    menu.add("Duplicate session")
                     menu.add("Disconnect")
                     menu.add("Paste")
                     menu.add("Copy latest output")
@@ -829,8 +956,17 @@ class MainActivity : Activity() {
                     menu.add("Send terminate signal")
                     setOnMenuItemClickListener { item ->
                         when (item.title) {
+                            "Sessions" -> {
+                                showHosts(disconnect = false)
+                                true
+                            }
+                            "Duplicate session" -> {
+                                requestCredentialAndConnect(host)
+                                true
+                            }
                             "Disconnect" -> {
-                                showHosts()
+                                service.disconnect(sessionId)
+                                showHosts(disconnect = false)
                                 true
                             }
                             "Paste" -> {
@@ -860,11 +996,11 @@ class MainActivity : Activity() {
                                 true
                             }
                             "Send interrupt signal" -> {
-                                service.signal(Signal.INT)
+                                service.signal(sessionId, Signal.INT)
                                 true
                             }
                             "Send terminate signal" -> {
-                                service.signal(Signal.TERM)
+                                service.signal(sessionId, Signal.TERM)
                                 true
                             }
                             else -> false
@@ -877,6 +1013,14 @@ class MainActivity : Activity() {
         titleRow.addView(overflow, LinearLayout.LayoutParams(dp(48), -2))
         toolbar.addView(titleRow)
         toolbar.addView(status)
+        toolbar.addView(button("Retry / Reauthenticate", secondary) { reauthenticate(sessionId) }.apply {
+            visibility = if (service.summaries().firstOrNull { it.sessionId == sessionId }?.canRetry == true) {
+                View.VISIBLE
+            } else {
+                View.GONE
+            }
+            terminalRetryButton = this
+        }.margins(top = 8))
         root.addView(toolbar)
 
         val view = GhosttyTerminalView(this, terminal, terminalThemeStore.loadFontSize()).apply {
@@ -885,14 +1029,14 @@ class MainActivity : Activity() {
                 val key = input.singleOrNull()?.let { character ->
                     if (character.isLetterOrDigit()) character.uppercase() else "UNIDENTIFIED"
                 } ?: "UNIDENTIFIED"
-                sessionService?.send(terminal.encodeKey(key, input, ghosttyModifierBits(activeModifiers)))
+                sessionService?.send(sessionId, terminal.encodeKey(key, input, ghosttyModifierBits(activeModifiers)))
                 consumeOneShotModifiers()
             }
             onSpecialKey = { key -> sendBarKey(key, activeModifiers) }
             onKeyEvent = { event -> sendHardwareKey(terminal, event) }
             isMouseTracking = terminal::isMouseTracking
             onMouseEvent = { action, button, x, y, width, height, cellWidth, cellHeight, pressed, metaState ->
-                sessionService?.send(terminal.encodeMouse(
+                sessionService?.send(sessionId, terminal.encodeMouse(
                     action = action,
                     button = button,
                     x = x,
@@ -906,7 +1050,7 @@ class MainActivity : Activity() {
                 ))
             }
             onTerminalFocusChanged = { focused ->
-                terminal.encodeFocus(focused).takeIf(ByteArray::isNotEmpty)?.let { sessionService?.send(it) }
+                terminal.encodeFocus(focused).takeIf(ByteArray::isNotEmpty)?.let { sessionService?.send(sessionId, it) }
             }
             onSelectionStart = terminal::selectWord
             onSelectionUpdate = { start, column, row -> terminal.setSelectionEndpoint(start, column, row) }
@@ -936,7 +1080,7 @@ class MainActivity : Activity() {
                 }
             }
             onResize = { columns, rows, pixelWidth, pixelHeight ->
-                sessionService?.resize(columns, rows, pixelWidth, pixelHeight)
+                sessionService?.resize(sessionId, columns, rows, pixelWidth, pixelHeight)
             }
             onScrollPositionChanged = { isAtBottom ->
                 terminalAtBottom = isAtBottom
@@ -948,7 +1092,7 @@ class MainActivity : Activity() {
         root.addView(createModifierBar().also { modifierBar = it })
         setContentView(root)
         updateModifierBarVisibility()
-        sessionListener.onSessionStatus(service.run { statusText() })
+        service.status(sessionId)?.let { sessionListener.onSessionStatus(sessionId, it) }
     }
 
     private fun createModifierBar(): View {
@@ -1028,8 +1172,9 @@ class MainActivity : Activity() {
 
     private fun sendBarKey(key: String, modifiers: Set<KeyboardModifier>) {
         val text = key.takeUnless { candidate -> KeyboardBarCatalog.keys.any { it.key == candidate } }.orEmpty()
-        val terminal = sessionService?.terminal ?: return
-        sessionService?.send(terminal.encodeKey(
+        val sessionId = selectedSessionId ?: return
+        val terminal = sessionService?.terminal(sessionId) ?: return
+        sessionService?.send(sessionId, terminal.encodeKey(
             key = key,
             text = text,
             modifiers = ghosttyModifierBits(modifiers),
@@ -1053,7 +1198,7 @@ class MainActivity : Activity() {
             (if (event.isMetaPressed) GHOSTTY_MOD_SUPER else 0) or
             (if (event.isCapsLockOn) GHOSTTY_MOD_CAPS_LOCK else 0) or
             (if (event.isNumLockOn) GHOSTTY_MOD_NUM_LOCK else 0)
-        sessionService?.send(terminal.encodeKey(key, text, modifiers, action))
+        selectedSessionId?.let { sessionService?.send(it, terminal.encodeKey(key, text, modifiers, action)) }
         if (action == GhosttyTerminal.KEY_ACTION_PRESS && !KeyEvent.isModifierKey(event.keyCode)) {
             consumeOneShotModifiers()
         }
@@ -1124,8 +1269,9 @@ class MainActivity : Activity() {
             toast("Clipboard is empty.")
             return
         }
-        val terminal = service.terminal ?: return
-        val paste = { service.send(terminal.encodePaste(text)) }
+        val sessionId = selectedSessionId ?: return
+        val terminal = service.terminal(sessionId) ?: return
+        val paste = { service.send(sessionId, terminal.encodePaste(text)) }
         if (terminal.isPasteSafe(text)) {
             paste()
         } else {
@@ -1185,8 +1331,11 @@ class MainActivity : Activity() {
         )
         val open = PendingIntent.getActivity(
             this,
-            0,
-            Intent(this, MainActivity::class.java).setAction(SshSessionService.ACTION_OPEN_SESSION),
+            selectedSessionId?.hashCode() ?: 0,
+            Intent(this, MainActivity::class.java)
+                .setAction(SshSessionService.ACTION_OPEN_SESSION)
+                .setData(Uri.parse("ghostty-connect://session/${selectedSessionId.orEmpty()}/open"))
+                .putExtra(SshSessionService.EXTRA_SESSION_ID, selectedSessionId),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
         manager.notify(
@@ -1203,7 +1352,8 @@ class MainActivity : Activity() {
     }
 
     private fun currentStoredHost(): Host? {
-        val id = sessionService?.host?.id ?: return null
+        val sessionId = selectedSessionId ?: return null
+        val id = sessionService?.host(sessionId)?.id ?: return null
         return hostStore.loadAll().firstOrNull { it.id == id }
     }
 
@@ -1277,6 +1427,8 @@ class MainActivity : Activity() {
     override fun onBackPressed() = handleBackNavigation()
 
     override fun onDestroy() {
+        pendingConnection?.credential?.fill('\u0000')
+        pendingConnection = null
         previewTerminal?.close()
         super.onDestroy()
     }
