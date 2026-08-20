@@ -385,7 +385,10 @@ class MainActivity : Activity() {
         startForegroundService(Intent(this, SshSessionService::class.java))
         if (!sessionBound) bindSessionService() else {
             pendingConnection = null
-            sessionService?.connect(host, credential)
+            sessionService?.let { service ->
+                service.connect(host, credential)
+                renderTerminal(service)
+            }
         }
     }
 

@@ -258,29 +258,54 @@ class GhosttyTerminalView(
     override fun onCheckIsTextEditor(): Boolean = true
 
     override fun onCreateInputConnection(outAttrs: EditorInfo): InputConnection {
-        outAttrs.inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS or
-            InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD
+        outAttrs.inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_NORMAL or
+            InputType.TYPE_TEXT_FLAG_AUTO_CORRECT
         outAttrs.imeOptions = EditorInfo.IME_FLAG_NO_EXTRACT_UI or EditorInfo.IME_FLAG_NO_FULLSCREEN
         return object : BaseInputConnection(this, false) {
+            private var composingText = ""
+
             override fun commitText(text: CharSequence?, newCursorPosition: Int): Boolean {
+                composingText = ""
                 if (!text.isNullOrEmpty()) sendInput(text.toString())
                 return true
             }
 
             override fun setComposingText(text: CharSequence?, newCursorPosition: Int): Boolean {
-                // Terminal input has no local editable buffer. Commit IME composition as input.
-                if (!text.isNullOrEmpty()) sendInput(text.toString())
+                composingText = text?.toString().orEmpty()
                 return true
             }
 
-            override fun finishComposingText(): Boolean = true
+            override fun finishComposingText(): Boolean {
+                flushComposition()
+                return true
+            }
 
             override fun deleteSurroundingText(beforeLength: Int, afterLength: Int): Boolean {
+                if (composingText.isNotEmpty()) {
+                    composingText = composingText.dropLast(beforeLength.coerceAtLeast(1))
+                    return true
+                }
                 repeat(beforeLength.coerceAtLeast(1)) { sendInput("\u007f") }
                 return true
             }
 
-            override fun sendKeyEvent(event: KeyEvent): Boolean = handleTerminalKey(event) || super.sendKeyEvent(event)
+            override fun sendKeyEvent(event: KeyEvent): Boolean {
+                if (event.action == KeyEvent.ACTION_DOWN) flushComposition()
+                return handleTerminalKey(event) || super.sendKeyEvent(event)
+            }
+
+            override fun performEditorAction(actionCode: Int): Boolean {
+                flushComposition()
+                sendInput("\r")
+                return true
+            }
+
+            private fun flushComposition() {
+                if (composingText.isNotEmpty()) {
+                    sendInput(composingText)
+                    composingText = ""
+                }
+            }
         }
     }
 
