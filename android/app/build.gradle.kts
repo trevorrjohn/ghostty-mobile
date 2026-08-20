@@ -5,6 +5,7 @@ apply(plugin = "com.android.application")
 configure<ApplicationExtension> {
     namespace = "dev.ghostty.connect"
     compileSdk = 36
+    ndkVersion = "27.1.12297006"
 
     defaultConfig {
         applicationId = "dev.ghostty.connect"
@@ -12,10 +13,27 @@ configure<ApplicationExtension> {
         targetSdk = 36
         versionCode = 1
         versionName = "0.1.0"
+
+        ndk {
+            abiFilters += setOf("arm64-v8a", "x86_64")
+        }
+
+        externalNativeBuild {
+            cmake {
+                cppFlags += "-std=c++20"
+            }
+        }
     }
 
     buildFeatures {
         buildConfig = true
+    }
+
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/CMakeLists.txt")
+            version = "3.22.1"
+        }
     }
 }
 

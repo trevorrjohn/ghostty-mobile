@@ -10,6 +10,7 @@ import android.text.InputType
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
+import android.view.WindowInsets
 import android.widget.ArrayAdapter
 import android.widget.Button
 import android.widget.EditText
@@ -22,12 +23,15 @@ import dev.ghostty.connect.data.HostStore
 import dev.ghostty.connect.data.SshKeyStore
 import dev.ghostty.connect.model.Host
 import dev.ghostty.connect.terminal.SshConnection
-import dev.ghostty.connect.terminal.PlainTerminalDecoder
+import dev.ghostty.connect.terminal.bridge.GhosttyTerminal
+import dev.ghostty.connect.terminal.view.GhosttyTerminalView
 
 class MainActivity : Activity() {
     private lateinit var hostStore: HostStore
     private lateinit var keyStore: SshKeyStore
     private var connection: SshConnection? = null
+    private var previewTerminal: GhosttyTerminal? = null
+    private var liveTerminal: GhosttyTerminal? = null
     private val surface = Color.rgb(17, 19, 24)
     private val raised = Color.rgb(26, 29, 36)
     private val primary = Color.rgb(241, 243, 248)
@@ -36,6 +40,21 @@ class MainActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        window.decorView.setOnApplyWindowInsetsListener { view, insets ->
+            val bars = if (android.os.Build.VERSION.SDK_INT >= 30) {
+                insets.getInsets(WindowInsets.Type.systemBars())
+            } else {
+                @Suppress("DEPRECATION")
+                android.graphics.Insets.of(
+                    insets.systemWindowInsetLeft,
+                    insets.systemWindowInsetTop,
+                    insets.systemWindowInsetRight,
+                    insets.systemWindowInsetBottom,
+                )
+            }
+            view.setPadding(bars.left, bars.top, bars.right, bars.bottom)
+            insets
+        }
         hostStore = HostStore(this)
         keyStore = SshKeyStore(this)
         showHosts()
@@ -44,6 +63,10 @@ class MainActivity : Activity() {
     private fun showHosts() {
         connection?.disconnect()
         connection = null
+        previewTerminal?.close()
+        previewTerminal = null
+        liveTerminal?.close()
+        liveTerminal = null
         val root = vertical(24)
         root.addView(label("Ghostty Connect", 28f, primary, Typeface.BOLD))
         root.addView(label("A fast, native SSH terminal", 15f, secondary).margins(bottom = 28))
@@ -58,6 +81,7 @@ class MainActivity : Activity() {
         root.addView(button(if (hostStore.load() == null) "Add your first host" else "Add or edit host") { showHostEditor() })
         root.addView(button("Import SSH key", secondary) { openKeyPicker() }.margins(top = 10))
         root.addView(button("Paste private key", secondary) { showPasteKeyDialog() }.margins(top = 10))
+        root.addView(button("Ghostty renderer preview", secondary) { showGhosttyPreview() }.margins(top = 10))
         if (keyStore.names().isNotEmpty()) {
             root.addView(label("Imported keys: ${keyStore.names().joinToString()}", 13f, secondary).margins(top = 14))
         }
@@ -184,8 +208,31 @@ class MainActivity : Activity() {
             .show()
     }
 
+    private fun showGhosttyPreview() {
+        val terminal = GhosttyTerminal().also { previewTerminal = it }
+        terminal.write(
+            "\u001b[2J\u001b[H" +
+                "\u001b[1;38;2;139;233;179mGhostty Connect\u001b[0m\r\n" +
+                "\u001b[38;2;174;182;198mNative libghostty-vt rendering spike\u001b[0m\r\n\r\n" +
+                "\u001b[1;34m✓\u001b[0m ANSI colors and bold text\r\n" +
+                "\u001b[3;35m✓ italic text\u001b[0m  \u001b[4;33munderlined text\u001b[0m\r\n" +
+                "\u001b[48;2;40;44;52m 24-bit background color \u001b[0m\r\n" +
+                "✓ Unicode: λ → 東京 👻\r\n" +
+                "\u001b]0;this OSC title must stay invisible\u0007" +
+                "\r\nThe cursor below is maintained by Ghostty.\r\n\r\n" +
+                "~ ❯ ",
+        )
+        val root = vertical(0)
+        val toolbar = vertical(16).apply { setBackgroundColor(raised) }
+        toolbar.addView(label("Ghostty renderer", 18f, primary, Typeface.BOLD))
+        toolbar.addView(label("Recorded native terminal fixture", 13f, accent))
+        root.addView(toolbar)
+        root.addView(GhosttyTerminalView(this, terminal), LinearLayout.LayoutParams(-1, 0, 1f))
+        root.addView(button("Back to hosts", secondary) { showHosts() })
+        setContentView(root)
+    }
+
     private fun showTerminal(host: Host, credential: String) {
-        val decoder = PlainTerminalDecoder()
         val root = vertical(0)
         val status = label("Connecting…", 13f, accent)
         val toolbar = vertical(16).apply { setBackgroundColor(raised) }
@@ -193,29 +240,15 @@ class MainActivity : Activity() {
         toolbar.addView(status)
         root.addView(toolbar)
 
-        val output = TextView(this).apply {
-            setBackgroundColor(Color.rgb(10, 12, 16))
-            setTextColor(Color.rgb(210, 216, 228))
-            typeface = Typeface.MONOSPACE
-            textSize = 14f
-            setTextIsSelectable(true)
-            setPadding(dp(14), dp(14), dp(14), dp(14))
-            gravity = Gravity.BOTTOM
-        }
-        val outputScroll = ScrollView(this).apply { addView(output, ViewGroup.LayoutParams(-1, -2)) }
-        root.addView(outputScroll, LinearLayout.LayoutParams(-1, 0, 1f))
-
-        val command = field("Type a command", "").apply {
-            typeface = Typeface.MONOSPACE
-            setSingleLine(true)
+        val terminal = GhosttyTerminal().also { liveTerminal = it }
+        val terminalView = GhosttyTerminalView(this, terminal).apply {
             isEnabled = false
+            onInput = { connection?.send(it) }
+            onResize = { columns, rows, pixelWidth, pixelHeight ->
+                connection?.resize(columns, rows, pixelWidth, pixelHeight)
+            }
         }
-        command.setOnEditorActionListener { _, _, _ ->
-            connection?.send(command.text.toString() + "\n")
-            command.text.clear()
-            true
-        }
-        root.addView(command)
+        root.addView(terminalView, LinearLayout.LayoutParams(-1, 0, 1f))
         val keys = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setBackgroundColor(raised) }
         val keyButtons = mutableListOf<Button>()
         listOf("Esc" to "\u001b", "Ctrl-C" to "\u0003", "Tab" to "\t", "↑" to "\u001b[A", "↓" to "\u001b[B").forEach { (name, bytes) ->
@@ -231,13 +264,13 @@ class MainActivity : Activity() {
             override fun status(message: String) = runOnUiThread {
                 status.text = "$message · ${host.destination}"
                 val connected = message == "Connected"
-                command.isEnabled = connected
                 keyButtons.forEach { it.isEnabled = connected }
-                if (connected) command.requestFocus()
+                terminalView.isEnabled = connected
+                if (connected) terminalView.requestFocus()
             }
-            override fun output(text: String) = runOnUiThread {
-                output.append(decoder.decode(text))
-                outputScroll.post { outputScroll.fullScroll(View.FOCUS_DOWN) }
+            override fun output(bytes: ByteArray) {
+                terminal.write(bytes)
+                runOnUiThread { terminalView.refresh() }
             }
             override fun verifyHostKey(fingerprint: String, changed: Boolean, answer: (Boolean) -> Unit) {
                 runOnUiThread {
@@ -252,9 +285,12 @@ class MainActivity : Activity() {
             }
             override fun closed(error: String?) = runOnUiThread {
                 status.text = if (error == null) "Disconnected" else "Connection failed"
-                command.isEnabled = false
+                terminalView.isEnabled = false
                 keyButtons.forEach { it.isEnabled = false }
-                error?.let { output.append("\n\nConnection failed: $it\n") }
+                error?.let {
+                    terminal.write("\r\n\r\n\u001b[31mConnection failed:\u001b[0m $it\r\n")
+                    terminalView.refresh()
+                }
             }
         }).also { it.connect(host, credential) }
     }
@@ -264,6 +300,8 @@ class MainActivity : Activity() {
 
     override fun onDestroy() {
         connection?.disconnect()
+        previewTerminal?.close()
+        liveTerminal?.close()
         super.onDestroy()
     }
 

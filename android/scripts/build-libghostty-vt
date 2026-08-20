@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+project_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ghostty_dir="$project_dir/third_party/ghostty"
+ndk_dir="${ANDROID_NDK_HOME:-/opt/android-sdk/ndk/27.1.12297006}"
+strip_tool="$ndk_dir/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip"
+
+if [[ ! -f "$ghostty_dir/build.zig" ]]; then
+  echo "Ghostty submodule is missing. Run: git submodule update --init" >&2
+  exit 1
+fi
+
+if [[ ! -x "$strip_tool" ]]; then
+  echo "Android NDK llvm-strip was not found at $strip_tool" >&2
+  exit 1
+fi
+
+build_abi() {
+  local zig_target="$1"
+  local android_abi="$2"
+  local output_dir="$project_dir/app/src/main/cpp/lib/$android_abi"
+
+  (
+    cd "$ghostty_dir"
+    mise x -- zig build -Demit-lib-vt -Dtarget="$zig_target" -Doptimize=ReleaseFast
+  )
+  mkdir -p "$output_dir"
+  cp "$ghostty_dir/zig-out/lib/libghostty-vt.a" "$output_dir/libghostty-vt.a"
+  "$strip_tool" --strip-debug "$output_dir/libghostty-vt.a"
+}
+
+build_abi x86_64-linux-android x86_64
+build_abi aarch64-linux-android arm64-v8a
+
+echo "Built libghostty-vt for x86_64 and arm64-v8a."
+

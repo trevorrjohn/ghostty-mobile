@@ -22,7 +22,7 @@ class SshConnection(
 ) {
     interface Callbacks {
         fun status(message: String)
-        fun output(text: String)
+        fun output(bytes: ByteArray)
         fun verifyHostKey(fingerprint: String, changed: Boolean, answer: (Boolean) -> Unit)
         fun closed(error: String?)
     }
@@ -31,6 +31,10 @@ class SshConnection(
     private var session: Session? = null
     private var shell: Session.Shell? = null
     @Volatile private var stopping = false
+    @Volatile private var columns = 80
+    @Volatile private var rows = 24
+    @Volatile private var pixelWidth = 0
+    @Volatile private var pixelHeight = 0
 
     fun connect(host: Host, passwordOrPassphrase: String) = thread(name = "ssh-${host.hostname}") {
         var temporaryKey: File? = null
@@ -56,13 +60,13 @@ class SshConnection(
             temporaryKey?.delete()
             callbacks.status("Connected")
             val activeSession = ssh.startSession().also { session = it }
-            activeSession.allocateDefaultPTY()
+            activeSession.allocatePTY("xterm-256color", columns, rows, pixelWidth, pixelHeight, emptyMap())
             val activeShell = activeSession.startShell().also { shell = it }
             val buffer = ByteArray(8192)
             while (!stopping) {
                 val count = activeShell.inputStream.read(buffer)
                 if (count < 0) break
-                callbacks.output(String(buffer, 0, count, Charsets.UTF_8))
+                callbacks.output(buffer.copyOf(count))
             }
             callbacks.closed(null)
         } catch (error: Exception) {
@@ -81,6 +85,16 @@ class SshConnection(
                     flush()
                 }
             }.onFailure { callbacks.closed(it.message) }
+        }
+    }
+
+    fun resize(columns: Int, rows: Int, pixelWidth: Int, pixelHeight: Int) {
+        this.columns = columns
+        this.rows = rows
+        this.pixelWidth = pixelWidth
+        this.pixelHeight = pixelHeight
+        thread(name = "ssh-resize") {
+            runCatching { shell?.changeWindowDimensions(columns, rows, pixelWidth, pixelHeight) }
         }
     }
 

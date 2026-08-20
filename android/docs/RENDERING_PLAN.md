@@ -6,15 +6,17 @@ This document describes how Ghostty Connect will replace its temporary plain-tex
 
 ## Current state
 
-The application currently:
+The application initially used a sanitized `TextView`. R0 through the first live integration slice are now implemented:
 
 - opens a real SSH connection and requests a remote PTY;
 - receives and sends bytes through SSHJ;
-- appends sanitized output to an Android `TextView`;
-- accepts commands through a separate line-oriented input field;
-- removes common ANSI and OSC sequences rather than interpreting them.
+- pins Ghostty as a submodule and builds `libghostty-vt` for arm64 and x86_64;
+- feeds raw SSH bytes through a JNI-owned Ghostty terminal;
+- renders cells, styles, colors, Unicode, and cursor state with an Android Canvas View;
+- accepts direct IME and hardware-key input;
+- synchronizes View dimensions with the Ghostty grid and SSH PTY.
 
-This fallback proves the connection and authentication path, but it is not a terminal emulator. It cannot correctly represent cursor movement, local screen state, colors, alternate screens, line editing, or full-screen terminal applications.
+The current bridge copies a complete packed snapshot for each refresh. The next rendering work is incremental dirty-row transfer, mode-aware Ghostty key encoding, scrollback, and selection.
 
 ## Target experience
 
@@ -455,6 +457,8 @@ Initial targets are no per-cell Kotlin allocations during drawing, no main-threa
 
 Exit criteria: the emulator displays a deterministic colored terminal fixture without SSH.
 
+Status: complete on the Android 15/API 35 x86_64 emulator. The same native revision is built for arm64-v8a.
+
 ### R1 — Live read-only terminal
 
 - Feed live SSH output into Ghostty.
@@ -464,6 +468,8 @@ Exit criteria: the emulator displays a deterministic colored terminal fixture wi
 
 Exit criteria: shell prompts plus read-only `top` and colored command output render correctly.
 
+Status: in progress. Live SSH bytes, Canvas rendering, and PTY resizing are connected; full-screen application fixtures remain to be verified.
+
 ### R2 — Direct terminal input
 
 - Implement `InputConnection`.
@@ -472,6 +478,8 @@ Exit criteria: shell prompts plus read-only `top` and colored command output ren
 - Implement bracketed paste.
 
 Exit criteria: interactive shell editing, password prompts, Vim navigation, and modifier keys behave correctly.
+
+Status: in progress. Direct IME commit, deletion, hardware keys, control letters, and extra keys are connected. Mode-aware Ghostty key encoding and IME composition polish remain.
 
 ### R3 — Scrollback and selection
 
@@ -515,4 +523,3 @@ The following implementation choices do not change MVP scope and will be decided
 - Canvas text drawing versus a later GPU renderer;
 - whether generated native artifacts are committed or built only in CI;
 - exact handling of advanced image protocols beyond ensuring they fail safely.
-
