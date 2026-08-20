@@ -1,19 +1,23 @@
 package dev.ghostty.connect.terminal
 
 import android.content.Context
+import dev.ghostty.connect.BuildConfig
 import dev.ghostty.connect.data.KnownHostStore
 import dev.ghostty.connect.data.SshKeyStore
 import dev.ghostty.connect.model.AuthenticationType
 import dev.ghostty.connect.model.Host
 import net.schmizz.sshj.SSHClient
 import net.schmizz.sshj.common.SecurityUtils
+import net.schmizz.sshj.connection.ConnectionException
 import net.schmizz.sshj.connection.channel.direct.Session
+import net.schmizz.sshj.connection.channel.direct.Signal
 import net.schmizz.sshj.transport.verification.HostKeyVerifier
 import org.bouncycastle.jce.provider.BouncyCastleProvider
 import java.io.File
 import java.security.PublicKey
 import java.security.Security
 import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import kotlin.concurrent.thread
 
@@ -23,6 +27,9 @@ class SshConnection(
     private val callbacks: Callbacks,
 ) {
     private val knownHostStore = KnownHostStore(context)
+    private val channelExecutor = Executors.newSingleThreadExecutor { task ->
+        Thread(task, "ssh-channel")
+    }
 
     interface Callbacks {
         fun status(message: String)
@@ -66,8 +73,21 @@ class SshConnection(
             temporaryKey?.delete()
             callbacks.status("Connected")
             val activeSession = ssh.startSession().also { session = it }
+            setOptionalEnvironment(activeSession, "COLORTERM", "truecolor")
+            setOptionalEnvironment(activeSession, "TERM_PROGRAM", "ghostty")
+            setOptionalEnvironment(activeSession, "TERM_PROGRAM_VERSION", BuildConfig.VERSION_NAME)
             activeSession.allocatePTY("xterm-256color", columns, rows, pixelWidth, pixelHeight, emptyMap())
             val activeShell = activeSession.startShell().also { shell = it }
+            thread(name = "ssh-stderr", isDaemon = true) {
+                val errorBuffer = ByteArray(4096)
+                runCatching {
+                    while (!stopping) {
+                        val count = activeShell.errorStream.read(errorBuffer)
+                        if (count < 0) break
+                        if (count > 0) callbacks.output(errorBuffer.copyOf(count))
+                    }
+                }
+            }
             val buffer = ByteArray(8192)
             while (!stopping) {
                 val count = activeShell.inputStream.read(buffer)
@@ -88,14 +108,15 @@ class SshConnection(
     }
 
     fun send(bytes: ByteArray) {
-        thread(name = "ssh-write") {
+        if (stopping) return
+        runCatching { channelExecutor.execute {
             runCatching {
                 shell?.outputStream?.apply {
                     write(bytes)
                     flush()
                 }
             }.onFailure { callbacks.closed(it.message) }
-        }
+        } }
     }
 
     fun resize(columns: Int, rows: Int, pixelWidth: Int, pixelHeight: Int) {
@@ -103,9 +124,15 @@ class SshConnection(
         this.rows = rows
         this.pixelWidth = pixelWidth
         this.pixelHeight = pixelHeight
-        thread(name = "ssh-resize") {
+        if (stopping) return
+        runCatching { channelExecutor.execute {
             runCatching { shell?.changeWindowDimensions(columns, rows, pixelWidth, pixelHeight) }
-        }
+        } }
+    }
+
+    fun signal(signal: Signal) {
+        if (stopping) return
+        runCatching { channelExecutor.execute { runCatching { shell?.signal(signal) } } }
     }
 
     fun disconnect() {
@@ -132,7 +159,16 @@ class SshConnection(
         override fun findExistingAlgorithms(hostname: String, port: Int): MutableList<String> = mutableListOf()
     }
 
+    private fun setOptionalEnvironment(session: Session, name: String, value: String) {
+        try {
+            session.setEnvVar(name, value)
+        } catch (error: ConnectionException) {
+            if (error.message != "Request failed") throw error
+        }
+    }
+
     private fun closeResources() {
+        channelExecutor.shutdownNow()
         runCatching { shell?.close() }
         runCatching { session?.close() }
         runCatching { client?.disconnect() }

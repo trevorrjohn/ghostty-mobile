@@ -72,6 +72,8 @@ class GhosttyTerminal(
         return nativeIsMouseTracking(handle)
     }
 
+    fun encodeFocus(focused: Boolean): ByteArray = nativeEncodeFocus(handle, focused)
+
     fun encodeMouse(
         action: Int,
         button: Int,
@@ -90,6 +92,11 @@ class GhosttyTerminal(
     fun selectWord(column: Int, row: Int): Boolean = nativeSelectWord(handle, column, row)
 
     fun extendSelection(column: Int, row: Int): Boolean = nativeExtendSelection(handle, column, row)
+
+    fun setSelectionEndpoint(start: Boolean, column: Int, row: Int): Boolean =
+        nativeSetSelectionEndpoint(handle, start, column, row)
+
+    fun selectionEndpoints(): IntArray = nativeSelectionEndpoints(handle)
 
     fun selectedText(): String = nativeSelectedText(handle)
 
@@ -249,13 +256,16 @@ class GhosttyTerminal(
             cachedCells = MutableList(columns * rows) { TerminalCell.empty(foreground, background) }
         }
         require(updatedRows in 0..rows) { "Invalid Ghostty dirty row count" }
-        repeat(updatedRows) {
+        val dirtyRows = IntArray(updatedRows)
+        repeat(updatedRows) { dirtyIndex ->
             val row = input.int
+            dirtyRows[dirtyIndex] = row
             require(row in 0 until rows) { "Invalid Ghostty dirty row" }
             repeat(columns) { column ->
             val cellForeground = input.int
             val cellBackground = input.int
             val flags = input.int
+            val underlineColor = input.int
             val textLength = input.int
             require(textLength in 0..input.remaining()) { "Invalid Ghostty cell text" }
             val textBytes = ByteArray(textLength)
@@ -267,10 +277,12 @@ class GhosttyTerminal(
                 bold = flags and 1 != 0,
                 italic = flags and 2 != 0,
                 faint = flags and 4 != 0,
-                underline = flags and 8 != 0,
+                underlineStyle = flags shr 8 and 7,
+                underlineColor = underlineColor,
                 strikeThrough = flags and 16 != 0,
                 invisible = flags and 32 != 0,
                 selected = flags and 64 != 0,
+                overline = flags and 128 != 0,
                 )
             }
         }
@@ -292,6 +304,8 @@ class GhosttyTerminal(
             cursorAtPrompt = cursorFlags and 8 != 0,
             title = title,
             pwd = pwd,
+            dirty = dirty,
+            dirtyRows = dirtyRows,
             cells = cachedCells.toList(),
         )
     }
@@ -357,6 +371,7 @@ class GhosttyTerminal(
     private external fun nativePasteIsSafe(text: String): Boolean
     private external fun nativeEncodePaste(handle: Long, text: String): ByteArray
     private external fun nativeIsMouseTracking(handle: Long): Boolean
+    private external fun nativeEncodeFocus(handle: Long, focused: Boolean): ByteArray
     private external fun nativeEncodeMouse(
         handle: Long,
         action: Int,
@@ -372,6 +387,8 @@ class GhosttyTerminal(
     ): ByteArray
     private external fun nativeSelectWord(handle: Long, column: Int, row: Int): Boolean
     private external fun nativeExtendSelection(handle: Long, column: Int, row: Int): Boolean
+    private external fun nativeSetSelectionEndpoint(handle: Long, start: Boolean, column: Int, row: Int): Boolean
+    private external fun nativeSelectionEndpoints(handle: Long): IntArray
     private external fun nativeSelectedText(handle: Long): String
     private external fun nativeClearSelection(handle: Long)
     private external fun nativeSelectLatestOutput(handle: Long): Boolean
@@ -473,9 +490,12 @@ data class TerminalSnapshot(
     val cursorAtPrompt: Boolean,
     val title: String,
     val pwd: String,
+    val dirty: Int,
+    val dirtyRows: IntArray,
     val cells: List<TerminalCell>,
 ) {
     val isAtBottom: Boolean get() = scrollOffset + scrollVisible >= scrollTotal
+    val isFullyDirty: Boolean get() = dirty == 2
 }
 
 data class TerminalCell(
@@ -485,10 +505,12 @@ data class TerminalCell(
     val bold: Boolean,
     val italic: Boolean,
     val faint: Boolean,
-    val underline: Boolean,
+    val underlineStyle: Int,
+    val underlineColor: Int,
     val strikeThrough: Boolean,
     val invisible: Boolean,
     val selected: Boolean,
+    val overline: Boolean,
 ) {
     companion object {
         fun empty(foreground: Int, background: Int) = TerminalCell(
@@ -498,10 +520,12 @@ data class TerminalCell(
             bold = false,
             italic = false,
             faint = false,
-            underline = false,
+            underlineStyle = 0,
+            underlineColor = foreground,
             strikeThrough = false,
             invisible = false,
             selected = false,
+            overline = false,
         )
     }
 }

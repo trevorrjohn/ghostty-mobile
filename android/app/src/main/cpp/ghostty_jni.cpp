@@ -73,6 +73,10 @@ struct NativeTerminal {
   std::string pending_notification_title;
   std::string pending_notification_body;
   std::string pending_pty_write;
+  std::string search_query;
+  size_t search_row = 0;
+  size_t search_start = 0;
+  size_t search_end = 0;
   std::mutex mutex;
 
   ~NativeTerminal() {
@@ -351,9 +355,14 @@ Java_dev_ghostty_connect_terminal_bridge_GhosttyTerminal_nativeCreate(
     const size_t scrollback_lines = 10000;
     require_success(ghostty_terminal_set(instance->terminal,
         GHOSTTY_TERMINAL_OPT_SCROLLBACK_MAX_LINES, &scrollback_lines), "scrollback limit");
-    const size_t continuation_limit = 4096;
+    const size_t continuation_limit = kKittyApcLimit;
     require_success(ghostty_terminal_set(instance->terminal,
         GHOSTTY_TERMINAL_OPT_CONTINUATION_MAX_BYTES, &continuation_limit), "continuation limit");
+    static constexpr char kTerminfoName[] = "xterm-256color";
+    const GhosttyString terminfo_name{
+        reinterpret_cast<const uint8_t*>(kTerminfoName), sizeof(kTerminfoName) - 1};
+    require_success(ghostty_terminal_set(instance->terminal,
+        GHOSTTY_TERMINAL_OPT_TERMINFO_NAME, &terminfo_name), "terminfo name");
 
     require_success(ghostty_render_state_new(nullptr, &instance->render), "render create");
     require_success(ghostty_render_state_row_iterator_new(nullptr, &instance->rows), "row iterator create");
@@ -433,6 +442,14 @@ Java_dev_ghostty_connect_terminal_bridge_GhosttyTerminal_nativeRestore(
     const size_t unknown_sequence_limit = 256;
     require_success(ghostty_terminal_set(instance->terminal,
         GHOSTTY_TERMINAL_OPT_UNKNOWN_MAX_BYTES, &unknown_sequence_limit), "unknown sequence limit");
+    const size_t continuation_limit = kKittyApcLimit;
+    require_success(ghostty_terminal_set(instance->terminal,
+        GHOSTTY_TERMINAL_OPT_CONTINUATION_MAX_BYTES, &continuation_limit), "continuation limit");
+    static constexpr char kTerminfoName[] = "xterm-256color";
+    const GhosttyString terminfo_name{
+        reinterpret_cast<const uint8_t*>(kTerminfoName), sizeof(kTerminfoName) - 1};
+    require_success(ghostty_terminal_set(instance->terminal,
+        GHOSTTY_TERMINAL_OPT_TERMINFO_NAME, &terminfo_name), "terminfo name");
     require_success(ghostty_key_encoder_new(nullptr, &instance->key_encoder), "key encoder create");
     require_success(ghostty_key_event_new(nullptr, &instance->key_event), "key event create");
     require_success(ghostty_mouse_encoder_new(nullptr, &instance->mouse_encoder), "mouse encoder create");
@@ -496,6 +513,28 @@ Java_dev_ghostty_connect_terminal_bridge_GhosttyTerminal_nativeIsMouseTracking(
   } catch (const std::exception& error) {
     throw_java(env, error);
     return false;
+  }
+}
+
+extern "C" JNIEXPORT jbyteArray JNICALL
+Java_dev_ghostty_connect_terminal_bridge_GhosttyTerminal_nativeEncodeFocus(
+    JNIEnv* env, jobject, jlong handle, jboolean focused) {
+  try {
+    NativeTerminal* instance = from_handle(handle);
+    std::lock_guard lock(instance->mutex);
+    GhosttyTerminalModeConfig mode{GHOSTTY_MODE_FOCUS_EVENT, false};
+    require_success(ghostty_terminal_get(instance->terminal,
+        GHOSTTY_TERMINAL_DATA_MODE, &mode), "read focus mode");
+    if (!mode.value) return env->NewByteArray(0);
+    char buffer[8];
+    size_t written = 0;
+    require_success(ghostty_focus_encode(
+        focused ? GHOSTTY_FOCUS_GAINED : GHOSTTY_FOCUS_LOST,
+        buffer, sizeof(buffer), &written), "focus encode");
+    return byte_array(env, buffer, written);
+  } catch (const std::exception& error) {
+    throw_java(env, error);
+    return nullptr;
   }
 }
 
@@ -578,6 +617,62 @@ Java_dev_ghostty_connect_terminal_bridge_GhosttyTerminal_nativeExtendSelection(
     throw_java(env, error);
     return false;
   }
+}
+
+extern "C" JNIEXPORT jboolean JNICALL
+Java_dev_ghostty_connect_terminal_bridge_GhosttyTerminal_nativeSetSelectionEndpoint(
+    JNIEnv* env, jobject, jlong handle, jboolean start, jint column, jint row) {
+  try {
+    NativeTerminal* instance = from_handle(handle);
+    std::lock_guard lock(instance->mutex);
+    auto selection = GHOSTTY_INIT_SIZED(GhosttySelection);
+    if (ghostty_terminal_get(instance->terminal, GHOSTTY_TERMINAL_DATA_SELECTION, &selection) != GHOSTTY_SUCCESS) {
+      return false;
+    }
+    GhosttyPoint point{GHOSTTY_POINT_TAG_VIEWPORT,
+        {.coordinate = {static_cast<uint16_t>(column), static_cast<uint32_t>(row)}}};
+    auto ref = GHOSTTY_INIT_SIZED(GhosttyGridRef);
+    if (ghostty_terminal_grid_ref(instance->terminal, point, &ref) != GHOSTTY_SUCCESS) return false;
+    if (start) selection.start = ref;
+    else selection.end = ref;
+    require_success(ghostty_terminal_set(instance->terminal, GHOSTTY_TERMINAL_OPT_SELECTION, &selection),
+        "update selection endpoint");
+    return true;
+  } catch (const std::exception& error) {
+    throw_java(env, error);
+    return false;
+  }
+}
+
+extern "C" JNIEXPORT jintArray JNICALL
+Java_dev_ghostty_connect_terminal_bridge_GhosttyTerminal_nativeSelectionEndpoints(
+    JNIEnv* env, jobject, jlong handle) {
+  jint points[4] = {-1, -1, -1, -1};
+  try {
+    NativeTerminal* instance = from_handle(handle);
+    std::lock_guard lock(instance->mutex);
+    auto selection = GHOSTTY_INIT_SIZED(GhosttySelection);
+    if (ghostty_terminal_get(instance->terminal, GHOSTTY_TERMINAL_DATA_SELECTION, &selection) == GHOSTTY_SUCCESS) {
+      GhosttyPointCoordinate start{};
+      GhosttyPointCoordinate end{};
+      if (ghostty_terminal_point_from_grid_ref(instance->terminal, &selection.start,
+          GHOSTTY_POINT_TAG_VIEWPORT, &start) == GHOSTTY_SUCCESS) {
+        points[0] = start.x;
+        points[1] = static_cast<jint>(start.y);
+      }
+      if (ghostty_terminal_point_from_grid_ref(instance->terminal, &selection.end,
+          GHOSTTY_POINT_TAG_VIEWPORT, &end) == GHOSTTY_SUCCESS) {
+        points[2] = end.x;
+        points[3] = static_cast<jint>(end.y);
+      }
+    }
+  } catch (const std::exception& error) {
+    throw_java(env, error);
+    return nullptr;
+  }
+  jintArray result = env->NewIntArray(4);
+  env->SetIntArrayRegion(result, 0, 4, points);
+  return result;
 }
 
 extern "C" JNIEXPORT jstring JNICALL
@@ -704,26 +799,71 @@ Java_dev_ghostty_connect_terminal_bridge_GhosttyTerminal_nativeJumpPrompt(
   }
 }
 
-bool row_contains(GhosttyTerminal terminal, size_t row, uint16_t columns, const std::string& query) {
-  auto selection = GHOSTTY_INIT_SIZED(GhosttySelection);
-  if (!screen_ref(terminal, row, 0, &selection.start) ||
-      !screen_ref(terminal, row, columns - 1, &selection.end)) return false;
-  auto options = GHOSTTY_INIT_SIZED(GhosttyTerminalSelectionFormatOptions);
-  options.emit = GHOSTTY_FORMATTER_FORMAT_PLAIN;
-  options.unwrap = false;
-  options.trim = true;
-  options.selection = &selection;
-  uint8_t* bytes = nullptr;
-  size_t length = 0;
-  if (ghostty_terminal_selection_format_alloc(terminal, nullptr, options, &bytes, &length) != GHOSTTY_SUCCESS) {
-    return false;
+void append_utf8(std::string& output, uint32_t value) {
+  if (value <= 0x7f) output.push_back(static_cast<char>(value));
+  else if (value <= 0x7ff) {
+    output.push_back(static_cast<char>(0xc0 | (value >> 6)));
+    output.push_back(static_cast<char>(0x80 | (value & 0x3f)));
+  } else if (value <= 0xffff) {
+    output.push_back(static_cast<char>(0xe0 | (value >> 12)));
+    output.push_back(static_cast<char>(0x80 | ((value >> 6) & 0x3f)));
+    output.push_back(static_cast<char>(0x80 | (value & 0x3f)));
+  } else {
+    output.push_back(static_cast<char>(0xf0 | (value >> 18)));
+    output.push_back(static_cast<char>(0x80 | ((value >> 12) & 0x3f)));
+    output.push_back(static_cast<char>(0x80 | ((value >> 6) & 0x3f)));
+    output.push_back(static_cast<char>(0x80 | (value & 0x3f)));
   }
-  std::string text(reinterpret_cast<char*>(bytes), length);
-  ghostty_free(nullptr, bytes, length);
-  auto lower = [](unsigned char value) { return static_cast<char>(std::tolower(value)); };
-  std::transform(text.begin(), text.end(), text.begin(), lower);
-  return text.find(query) != std::string::npos;
 }
+
+struct SearchableRow {
+  std::string text;
+  struct Cell { size_t row; uint16_t column; };
+  std::vector<Cell> byte_cells;
+};
+
+SearchableRow searchable_row(GhosttyTerminal terminal, size_t row, uint16_t columns) {
+  SearchableRow result;
+  for (uint16_t column = 0; column < columns; column++) {
+    auto ref = GHOSTTY_INIT_SIZED(GhosttyGridRef);
+    if (!screen_ref(terminal, row, column, &ref)) continue;
+    GhosttyCell cell = 0;
+    GhosttyCellWide wide = GHOSTTY_CELL_WIDE_NARROW;
+    if (ghostty_grid_ref_cell(&ref, &cell) != GHOSTTY_SUCCESS) continue;
+    ghostty_cell_get(cell, GHOSTTY_CELL_DATA_WIDE, &wide);
+    if (wide == GHOSTTY_CELL_WIDE_SPACER_TAIL) continue;
+    size_t grapheme_length = 0;
+    GhosttyResult grapheme_result = ghostty_grid_ref_graphemes(&ref, nullptr, 0, &grapheme_length);
+    std::string grapheme;
+    if (grapheme_result == GHOSTTY_OUT_OF_SPACE && grapheme_length > 0) {
+      std::vector<uint32_t> codepoints(grapheme_length);
+      if (ghostty_grid_ref_graphemes(&ref, codepoints.data(), codepoints.size(), &grapheme_length) ==
+          GHOSTTY_SUCCESS) {
+        for (size_t index = 0; index < grapheme_length; index++) append_utf8(grapheme, codepoints[index]);
+      }
+    }
+    if (grapheme.empty()) grapheme = " ";
+    result.text.append(grapheme);
+    result.byte_cells.insert(result.byte_cells.end(), grapheme.size(), SearchableRow::Cell{row, column});
+  }
+  std::transform(result.text.begin(), result.text.end(), result.text.begin(),
+      [](unsigned char value) { return static_cast<char>(std::tolower(value)); });
+  return result;
+}
+
+bool row_wraps(GhosttyTerminal terminal, size_t row) {
+  auto ref = GHOSTTY_INIT_SIZED(GhosttyGridRef);
+  if (!screen_ref(terminal, row, 0, &ref)) return false;
+  GhosttyRow raw_row = 0;
+  bool wraps = false;
+  return ghostty_grid_ref_row(&ref, &raw_row) == GHOSTTY_SUCCESS &&
+      ghostty_row_get(raw_row, GHOSTTY_ROW_DATA_WRAP, &wraps) == GHOSTTY_SUCCESS && wraps;
+}
+
+struct SearchMatch {
+  SearchableRow::Cell start;
+  SearchableRow::Cell end;
+};
 
 extern "C" JNIEXPORT jboolean JNICALL
 Java_dev_ghostty_connect_terminal_bridge_GhosttyTerminal_nativeSearch(
@@ -745,28 +885,58 @@ Java_dev_ghostty_connect_terminal_bridge_GhosttyTerminal_nativeSearch(
     require_success(ghostty_terminal_get(instance->terminal,
         GHOSTTY_TERMINAL_DATA_SCROLLBAR, &scrollbar), "read scrollbar");
     if (total_rows == 0 || columns == 0) return false;
-    for (size_t step = 1; step <= total_rows; step++) {
-      const size_t row = direction < 0
-          ? (scrollbar.offset + total_rows - step) % total_rows
-          : (scrollbar.offset + step) % total_rows;
-      if (!row_contains(instance->terminal, row, columns, query)) continue;
-      auto ref = GHOSTTY_INIT_SIZED(GhosttyGridRef);
-      if (!screen_ref(instance->terminal, row, 0, &ref)) continue;
-      auto options = GHOSTTY_INIT_SIZED(GhosttyTerminalSelectLineOptions);
-      options.ref = ref;
-      options.semantic_prompt_boundary = false;
-      auto selection = GHOSTTY_INIT_SIZED(GhosttySelection);
-      require_success(ghostty_terminal_select_line(instance->terminal, &options, &selection),
-          "select search line");
-      require_success(ghostty_terminal_set(instance->terminal,
-          GHOSTTY_TERMINAL_OPT_SELECTION, &selection), "install search selection");
-      GhosttyTerminalScrollViewport behavior{};
-      behavior.tag = GHOSTTY_SCROLL_VIEWPORT_ROW;
-      behavior.value.row = row > scrollbar.len / 3 ? row - scrollbar.len / 3 : 0;
-      ghostty_terminal_scroll_viewport(instance->terminal, behavior);
-      return true;
+    std::vector<SearchMatch> matches;
+    SearchableRow logical;
+    for (size_t row = 0; row < total_rows; row++) {
+      SearchableRow physical = searchable_row(instance->terminal, row, columns);
+      logical.text.append(physical.text);
+      logical.byte_cells.insert(logical.byte_cells.end(), physical.byte_cells.begin(), physical.byte_cells.end());
+      if (row_wraps(instance->terminal, row) && row + 1 < total_rows) continue;
+      size_t offset = logical.text.find(query);
+      while (offset != std::string::npos && offset + query.size() <= logical.byte_cells.size()) {
+        matches.push_back(SearchMatch{
+            logical.byte_cells[offset], logical.byte_cells[offset + query.size() - 1]});
+        offset = logical.text.find(query, offset + 1);
+      }
+      logical = SearchableRow{};
     }
-    return false;
+    if (matches.empty()) return false;
+    const bool continuing = instance->search_query == query && instance->search_row < total_rows;
+    size_t selected = 0;
+    if (continuing) {
+      auto current = std::find_if(matches.begin(), matches.end(), [&](const SearchMatch& match) {
+        return match.start.row == instance->search_row && match.start.column == instance->search_start;
+      });
+      if (current != matches.end()) {
+        const size_t index = static_cast<size_t>(current - matches.begin());
+        selected = direction < 0 ? (index + matches.size() - 1) % matches.size() : (index + 1) % matches.size();
+      }
+    } else if (direction < 0) {
+      selected = matches.size() - 1;
+      for (size_t index = matches.size(); index-- > 0;) {
+        if (matches[index].start.row <= scrollbar.offset) { selected = index; break; }
+      }
+    } else {
+      auto next = std::find_if(matches.begin(), matches.end(), [&](const SearchMatch& match) {
+        return match.start.row >= scrollbar.offset;
+      });
+      selected = next == matches.end() ? 0 : static_cast<size_t>(next - matches.begin());
+    }
+    const SearchMatch& match = matches[selected];
+    auto selection = GHOSTTY_INIT_SIZED(GhosttySelection);
+    if (!screen_ref(instance->terminal, match.start.row, match.start.column, &selection.start) ||
+        !screen_ref(instance->terminal, match.end.row, match.end.column, &selection.end)) return false;
+    require_success(ghostty_terminal_set(instance->terminal,
+        GHOSTTY_TERMINAL_OPT_SELECTION, &selection), "install search selection");
+    instance->search_query = query;
+    instance->search_row = match.start.row;
+    instance->search_start = match.start.column;
+    instance->search_end = match.end.column;
+    GhosttyTerminalScrollViewport behavior{};
+    behavior.tag = GHOSTTY_SCROLL_VIEWPORT_ROW;
+    behavior.value.row = match.start.row > scrollbar.len / 3 ? match.start.row - scrollbar.len / 3 : 0;
+    ghostty_terminal_scroll_viewport(instance->terminal, behavior);
+    return true;
   } catch (const std::exception& error) {
     throw_java(env, error);
     return false;
@@ -875,6 +1045,7 @@ Java_dev_ghostty_connect_terminal_bridge_GhosttyTerminal_nativeWrite(
     std::vector<uint8_t> copy(static_cast<size_t>(length));
     env->GetByteArrayRegion(data, offset, length, reinterpret_cast<jbyte*>(copy.data()));
     std::lock_guard lock(instance->mutex);
+    instance->search_query.clear();
     ghostty_terminal_vt_write(instance->terminal, copy.data(), copy.size());
   } catch (const std::exception& error) {
     throw_java(env, error);
@@ -1101,10 +1272,17 @@ Java_dev_ghostty_connect_terminal_bridge_GhosttyTerminal_nativeSnapshot(
 
         int32_t foreground_argb = fg_result == GHOSTTY_SUCCESS ? argb(foreground) : argb(colors.foreground);
         int32_t background_argb = bg_result == GHOSTTY_SUCCESS ? argb(background) : argb(colors.background);
+        int32_t underline_argb = foreground_argb;
+        if (style.underline_color.tag == GHOSTTY_STYLE_COLOR_RGB) {
+          underline_argb = argb(style.underline_color.value.rgb);
+        } else if (style.underline_color.tag == GHOSTTY_STYLE_COLOR_PALETTE) {
+          underline_argb = argb(colors.palette[style.underline_color.value.palette]);
+        }
         if (style.inverse) std::swap(foreground_argb, background_argb);
         int32_t flags = (style.bold ? 1 : 0) | (style.italic ? 2 : 0) |
-            (style.faint ? 4 : 0) | (style.underline ? 8 : 0) |
-            (style.strikethrough ? 16 : 0) | (style.invisible ? 32 : 0);
+            (style.faint ? 4 : 0) |
+            (style.strikethrough ? 16 : 0) | (style.invisible ? 32 : 0) |
+            (style.overline ? 128 : 0) | ((style.underline & 7) << 8);
         bool selected = false;
         if (ghostty_render_state_row_cells_get(instance->cells,
             GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_SELECTED, &selected) == GHOSTTY_SUCCESS && selected) {
@@ -1124,6 +1302,7 @@ Java_dev_ghostty_connect_terminal_bridge_GhosttyTerminal_nativeSnapshot(
         append_i32(result, foreground_argb);
         append_i32(result, background_argb);
         append_i32(result, flags);
+        append_i32(result, underline_argb);
         append_i32(result, static_cast<int32_t>(text.len));
         result.insert(result.end(), grapheme.begin(), grapheme.begin() + text.len);
         cells_written++;
@@ -1132,6 +1311,7 @@ Java_dev_ghostty_connect_terminal_bridge_GhosttyTerminal_nativeSnapshot(
         append_i32(result, argb(colors.foreground));
         append_i32(result, argb(colors.background));
         append_i32(result, 0);
+        append_i32(result, argb(colors.foreground));
         append_i32(result, 0);
       }
       rows_written++;

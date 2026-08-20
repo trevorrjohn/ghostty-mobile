@@ -1,12 +1,21 @@
 package dev.ghostty.connect.terminal.view
 
 import android.content.Context
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.annotation.TargetApi
 import android.graphics.Canvas
 import android.graphics.Bitmap
 import android.graphics.Paint
 import android.graphics.Rect
 import android.graphics.RectF
+import android.graphics.DashPathEffect
+import android.graphics.Path
 import android.graphics.Typeface
+import android.graphics.RenderNode
+import android.graphics.fonts.Font
+import android.graphics.text.TextRunShaper
+import android.os.Build
 import android.text.InputType
 import android.util.TypedValue
 import android.view.KeyEvent
@@ -20,14 +29,20 @@ import android.view.View
 import android.view.VelocityTracker
 import android.view.ViewConfiguration
 import android.os.SystemClock
+import android.os.Bundle
+import android.view.accessibility.AccessibilityEvent
+import android.view.accessibility.AccessibilityManager
+import android.view.accessibility.AccessibilityNodeInfo
 import android.view.inputmethod.BaseInputConnection
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputConnection
 import android.view.inputmethod.InputMethodManager
 import android.widget.OverScroller
+import android.widget.TextView
 import dev.ghostty.connect.terminal.bridge.GhosttyTerminal
 import dev.ghostty.connect.terminal.bridge.KittyFrame
 import dev.ghostty.connect.terminal.bridge.KittyImage
+import dev.ghostty.connect.terminal.bridge.TerminalCell
 import dev.ghostty.connect.terminal.bridge.TerminalSnapshot
 import kotlin.math.floor
 import kotlin.math.max
@@ -45,10 +60,11 @@ class GhosttyTerminalView(
     var isMouseTracking: () -> Boolean = { false }
     var onMouseEvent: (
         action: Int, button: Int, x: Float, y: Float,
-        width: Int, height: Int, cellWidth: Int, cellHeight: Int, anyPressed: Boolean,
-    ) -> Unit = { _, _, _, _, _, _, _, _, _ -> }
+        width: Int, height: Int, cellWidth: Int, cellHeight: Int, anyPressed: Boolean, metaState: Int,
+    ) -> Unit = { _, _, _, _, _, _, _, _, _, _ -> }
+    var onTerminalFocusChanged: (Boolean) -> Unit = {}
     var onSelectionStart: (column: Int, row: Int) -> Boolean = { _, _ -> false }
-    var onSelectionUpdate: (column: Int, row: Int) -> Unit = { _, _ -> }
+    var onSelectionUpdate: (start: Boolean, column: Int, row: Int) -> Unit = { _, _, _ -> }
     var onSelectionFinished: () -> Unit = {}
     var onMetadataChanged: (title: String, pwd: String, atPrompt: Boolean, passwordInput: Boolean) -> Unit =
         { _, _, _, _ -> }
@@ -71,6 +87,13 @@ class GhosttyTerminalView(
     private var snapshot: TerminalSnapshot = terminal.snapshot()
     private var kittyFrame: KittyFrame = terminal.kittyFrame()
     private val kittyBitmaps = mutableMapOf<Int, Pair<Long, Bitmap>>()
+    private data class CachedRow(
+        val backgrounds: RenderNode,
+        val foregrounds: RenderNode,
+    )
+    private val rowCaches = mutableListOf<CachedRow>()
+    private val dirtyCachedRows = mutableSetOf<Int>()
+    private var allCachedRowsDirty = true
     private val scroller = OverScroller(context)
     private val touchSlop = ViewConfiguration.get(context).scaledTouchSlop
     private val minimumFlingVelocity = ViewConfiguration.get(context).scaledMinimumFlingVelocity
@@ -87,24 +110,40 @@ class GhosttyTerminalView(
     private var remoteDownX = 0f
     private var remoteDownY = 0f
     private var remoteWheelPixels = 0f
+    private var pointerMetaState = 0
     private var selectionActive = false
     private var selectionVisible = false
+    private var selectionStartVisible = false
+    private var selectionEndVisible = false
     private var selectionStartX = 0f
     private var selectionStartY = 0f
     private var selectionEndX = 0f
     private var selectionEndY = 0f
+    private var selectionDragX = 0f
+    private var selectionDragY = 0f
+    private var draggedHandle = HANDLE_NONE
     private var selectionEdgeDirection = 0
     private val selectionAutoScroll = object : Runnable {
         override fun run() {
             if (!selectionActive || selectionEdgeDirection == 0) return
             terminal.scrollRows(selectionEdgeDirection)
-            onSelectionUpdate(cellColumn(selectionEndX), cellRow(selectionEndY))
+            onSelectionUpdate(
+                draggedHandle == HANDLE_START,
+                cellColumn(selectionDragX),
+                cellRow(selectionDragY),
+            )
             refresh()
             postDelayed(this, SELECTION_SCROLL_INTERVAL_MS)
         }
     }
     private var pendingLongPress: Runnable? = null
     private var passwordInput = false
+    private var accessibilityText: String? = null
+    private var accessibilityUpdatePending = false
+    private val accessibilityUpdate = Runnable {
+        accessibilityUpdatePending = false
+        if (!snapshot.passwordInput) sendAccessibilityEvent(AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED)
+    }
     private var lastFlingY = 0
     private val liveButton = RectF()
     private val scaleDetector = ScaleGestureDetector(context,
@@ -131,17 +170,46 @@ class GhosttyTerminalView(
     init {
         isFocusable = true
         isFocusableInTouchMode = true
-        contentDescription = "Ghostty terminal"
+        importantForAccessibility = IMPORTANT_FOR_ACCESSIBILITY_YES
     }
 
     fun refresh() {
         val wasAtBottom = snapshot.isAtBottom
+        val previousColumns = snapshot.columns
+        val previousRows = snapshot.rows
         snapshot = terminal.snapshot()
+        if (snapshot.isFullyDirty || snapshot.columns != previousColumns || snapshot.rows != previousRows) {
+            invalidateRowCaches()
+        } else {
+            dirtyCachedRows.addAll(snapshot.dirtyRows.toList())
+        }
+        accessibilityText = null
+        if (!accessibilityUpdatePending &&
+            context.getSystemService(AccessibilityManager::class.java)?.isEnabled == true) {
+            accessibilityUpdatePending = true
+            postDelayed(accessibilityUpdate, ACCESSIBILITY_UPDATE_INTERVAL_MS)
+        }
         kittyFrame = terminal.kittyFrame()
+        updateSelectionHandles()
         updateKittyBitmaps()
         onMetadataChanged(snapshot.title, snapshot.pwd, snapshot.cursorAtPrompt, snapshot.passwordInput)
         if (snapshot.isAtBottom != wasAtBottom) onScrollPositionChanged(snapshot.isAtBottom)
         invalidate()
+    }
+
+    private fun updateSelectionHandles() {
+        val endpoints = terminal.selectionEndpoints()
+        selectionStartVisible = endpoints[0] >= 0
+        selectionEndVisible = endpoints[2] >= 0
+        selectionVisible = selectionStartVisible || selectionEndVisible
+        if (selectionStartVisible) {
+            selectionStartX = endpoints[0] * cellWidth
+            selectionStartY = (endpoints[1] + 1) * cellHeight
+        }
+        if (selectionEndVisible) {
+            selectionEndX = (endpoints[2] + 1) * cellWidth
+            selectionEndY = (endpoints[3] + 1) * cellHeight
+        }
     }
 
     override fun onSizeChanged(width: Int, height: Int, oldWidth: Int, oldHeight: Int) {
@@ -151,8 +219,11 @@ class GhosttyTerminalView(
 
     override fun onDetachedFromWindow() {
         removeCallbacks(selectionAutoScroll)
+        removeCallbacks(accessibilityUpdate)
+        accessibilityUpdatePending = false
         kittyBitmaps.values.forEach { it.second.recycle() }
         kittyBitmaps.clear()
+        discardRowCaches()
         super.onDetachedFromWindow()
     }
 
@@ -171,46 +242,234 @@ class GhosttyTerminalView(
         drawKitty(canvas) { it < KITTY_BELOW_BACKGROUND }
         val visibleColumns = minOf(snapshot.columns, floor(width / cellWidth).toInt())
         val visibleRows = minOf(snapshot.rows, floor(height / cellHeight).toInt())
-        for (row in 0 until visibleRows) {
-            val top = row * cellHeight
-            for (column in 0 until visibleColumns) {
-                val cell = snapshot.cells[row * snapshot.columns + column]
-                val left = column * cellWidth
-                if (cell.background != snapshot.background) {
-                    paint.color = cell.background
-                    paint.style = Paint.Style.FILL
-                    canvas.drawRect(left, top, left + cellWidth + 1f, top + cellHeight + 1f, paint)
-                }
-                if (cell.selected) {
-                    paint.color = 0xff315849.toInt()
-                    paint.style = Paint.Style.FILL
-                    canvas.drawRect(left, top, left + cellWidth + 1f, top + cellHeight + 1f, paint)
-                }
-            }
-        }
+        val cached = canvas.isHardwareAccelerated
+        if (cached) drawCachedRows(canvas, visibleColumns, visibleRows, foreground = false)
+        else for (row in 0 until visibleRows) drawRowBackgrounds(canvas, row, visibleColumns, row * cellHeight)
         drawKitty(canvas) { it in KITTY_BELOW_BACKGROUND until 0 }
-        for (row in 0 until visibleRows) {
-            val top = row * cellHeight
-            for (column in 0 until visibleColumns) {
-                val cell = snapshot.cells[row * snapshot.columns + column]
-                val left = column * cellWidth
-                if (!cell.invisible && cell.text.isNotEmpty()) {
-                    paint.color = cell.foreground
-                    paint.alpha = if (cell.faint) 150 else 255
-                    paint.typeface = if (cell.bold) boldTypeface else regularTypeface
-                    paint.textSkewX = if (cell.italic) -0.2f else 0f
-                    paint.style = Paint.Style.FILL
-                    paint.isUnderlineText = cell.underline
-                    paint.isStrikeThruText = cell.strikeThrough
-                    canvas.drawText(cell.text, left, top + baselineOffset, paint)
-                }
-            }
-        }
+        if (cached) drawCachedRows(canvas, visibleColumns, visibleRows, foreground = true)
+        else for (row in 0 until visibleRows) drawRowForegrounds(canvas, row, visibleColumns, row * cellHeight, false)
         drawKitty(canvas) { it >= 0 }
         drawCursor(canvas, visibleColumns, visibleRows)
         drawScrollPosition(canvas)
         drawSelectionHandles(canvas)
         resetPaint()
+    }
+
+    private fun drawCachedRows(canvas: Canvas, columns: Int, rows: Int, foreground: Boolean) {
+        ensureRowCaches(rows)
+        for (row in 0 until rows) {
+            val cache = rowCaches[row]
+            val node = if (foreground) cache.foregrounds else cache.backgrounds
+            if (allCachedRowsDirty || row in dirtyCachedRows || !node.hasDisplayList()) {
+                recordRow(node, row, columns, foreground)
+            }
+            val save = canvas.save()
+            canvas.translate(0f, row * cellHeight)
+            canvas.drawRenderNode(node)
+            canvas.restoreToCount(save)
+        }
+        if (foreground) {
+            allCachedRowsDirty = false
+            dirtyCachedRows.removeAll(0 until rows)
+        }
+    }
+
+    private fun ensureRowCaches(rows: Int) {
+        while (rowCaches.size < rows) {
+            val row = rowCaches.size
+            rowCaches += CachedRow(RenderNode("terminal-bg-$row"), RenderNode("terminal-fg-$row"))
+        }
+        while (rowCaches.size > rows) {
+            rowCaches.removeAt(rowCaches.lastIndex).also {
+                it.backgrounds.discardDisplayList()
+                it.foregrounds.discardDisplayList()
+            }
+        }
+    }
+
+    private fun recordRow(node: RenderNode, row: Int, columns: Int, foreground: Boolean) {
+        val rowWidth = kotlin.math.ceil(columns * cellWidth).toInt().coerceAtLeast(1)
+        val rowHeight = kotlin.math.ceil(cellHeight).toInt().coerceAtLeast(1)
+        node.setPosition(0, 0, rowWidth, rowHeight)
+        val recording = node.beginRecording(rowWidth, rowHeight)
+        try {
+            if (foreground) drawRowForegrounds(recording, row, columns, 0f, Build.VERSION.SDK_INT >= 31)
+            else drawRowBackgrounds(recording, row, columns, 0f)
+        } finally {
+            node.endRecording()
+        }
+    }
+
+    private fun drawRowBackgrounds(canvas: Canvas, row: Int, columns: Int, top: Float) {
+        for (column in 0 until columns) {
+            val cell = snapshot.cells[row * snapshot.columns + column]
+            val left = column * cellWidth
+            if (cell.background != snapshot.background) {
+                paint.color = cell.background
+                paint.style = Paint.Style.FILL
+                canvas.drawRect(left, top, left + cellWidth + 1f, top + cellHeight + 1f, paint)
+            }
+            if (cell.selected) {
+                paint.color = 0xff315849.toInt()
+                paint.style = Paint.Style.FILL
+                canvas.drawRect(left, top, left + cellWidth + 1f, top + cellHeight + 1f, paint)
+            }
+        }
+    }
+
+    private fun drawRowForegrounds(canvas: Canvas, row: Int, columns: Int, top: Float, shaped: Boolean) {
+        if (shaped && Build.VERSION.SDK_INT >= 31) drawShapedRow(canvas, row, columns, top)
+        else drawCellRow(canvas, row, columns, top)
+    }
+
+    private fun drawCellRow(canvas: Canvas, row: Int, columns: Int, top: Float) {
+        for (column in 0 until columns) {
+            val cell = snapshot.cells[row * snapshot.columns + column]
+            if (cell.invisible || cell.text.isEmpty()) continue
+            val left = column * cellWidth
+            configureTextPaint(cell)
+            paint.isStrikeThruText = false
+            canvas.drawText(cell.text, left, top + baselineOffset, paint)
+            drawCellDecorations(canvas, cell, left, top)
+        }
+    }
+
+    @TargetApi(31)
+    private fun drawShapedRow(canvas: Canvas, row: Int, columns: Int, top: Float) {
+        var column = 0
+        while (column < columns) {
+            val first = snapshot.cells[row * snapshot.columns + column]
+            if (first.invisible || first.text.isEmpty()) {
+                column++
+                continue
+            }
+            val start = column
+            val text = StringBuilder(first.text)
+            column++
+            while (column < columns) {
+                val next = snapshot.cells[row * snapshot.columns + column]
+                if (next.invisible || next.text.isEmpty() || !first.canShapeWith(next)) break
+                text.append(next.text)
+                column++
+            }
+            val left = start * cellWidth
+            val right = column * cellWidth
+            configureTextPaint(first)
+            paint.isStrikeThruText = false
+            val glyphs = TextRunShaper.shapeTextRun(
+                text, 0, text.length, 0, text.length, left, top + baselineOffset, false, paint,
+            )
+            val save = canvas.save()
+            canvas.clipRect(left, top, right, top + cellHeight)
+            drawPositionedGlyphs(canvas, glyphs)
+            canvas.restoreToCount(save)
+            for (decorationColumn in start until column) {
+                drawCellDecorations(
+                    canvas,
+                    snapshot.cells[row * snapshot.columns + decorationColumn],
+                    decorationColumn * cellWidth,
+                    top,
+                )
+            }
+        }
+    }
+
+    @TargetApi(31)
+    private fun drawPositionedGlyphs(canvas: Canvas, glyphs: android.graphics.text.PositionedGlyphs) {
+        var start = 0
+        while (start < glyphs.glyphCount()) {
+            val font: Font = glyphs.getFont(start)
+            var end = start + 1
+            while (end < glyphs.glyphCount() && glyphs.getFont(end) == font) end++
+            val count = end - start
+            val ids = IntArray(count)
+            val positions = FloatArray(count * 2)
+            repeat(count) { index ->
+                ids[index] = glyphs.getGlyphId(start + index)
+                positions[index * 2] = glyphs.getGlyphX(start + index)
+                positions[index * 2 + 1] = glyphs.getGlyphY(start + index)
+            }
+            canvas.drawGlyphs(ids, 0, positions, 0, count, font, paint)
+            start = end
+        }
+    }
+
+    private fun TerminalCell.canShapeWith(other: TerminalCell): Boolean =
+        foreground == other.foreground && bold == other.bold && italic == other.italic && faint == other.faint &&
+            strikeThrough == other.strikeThrough && overline == other.overline &&
+            underlineStyle == other.underlineStyle && underlineColor == other.underlineColor
+
+    private fun configureTextPaint(cell: TerminalCell) {
+        paint.color = cell.foreground
+        paint.alpha = if (cell.faint) 150 else 255
+        paint.typeface = if (cell.bold) boldTypeface else regularTypeface
+        paint.textSkewX = if (cell.italic) -0.2f else 0f
+        paint.style = Paint.Style.FILL
+        paint.isUnderlineText = false
+    }
+
+    private fun drawCellDecorations(canvas: Canvas, cell: TerminalCell, left: Float, top: Float) {
+        drawUnderline(canvas, cell.underlineStyle, cell.underlineColor, left, top)
+        paint.color = cell.foreground
+        paint.alpha = if (cell.faint) 150 else 255
+        paint.strokeWidth = resources.displayMetrics.density.coerceAtLeast(1f)
+        if (cell.strikeThrough) {
+            val y = top + baselineOffset - cellHeight * 0.3f
+            canvas.drawLine(left, y, left + cellWidth, y, paint)
+        }
+        if (cell.overline) {
+            canvas.drawLine(left, top + paint.strokeWidth, left + cellWidth, top + paint.strokeWidth, paint)
+        }
+    }
+
+    private fun invalidateRowCaches() {
+        allCachedRowsDirty = true
+        dirtyCachedRows.clear()
+        rowCaches.forEach {
+            it.backgrounds.discardDisplayList()
+            it.foregrounds.discardDisplayList()
+        }
+    }
+
+    private fun discardRowCaches() {
+        invalidateRowCaches()
+        rowCaches.clear()
+    }
+
+    private fun drawUnderline(canvas: Canvas, style: Int, color: Int, left: Float, top: Float) {
+        if (style == 0) return
+        val y = top + baselineOffset + resources.displayMetrics.density
+        paint.color = color
+        paint.style = Paint.Style.STROKE
+        paint.strokeWidth = resources.displayMetrics.density.coerceAtLeast(1f)
+        when (style) {
+            2 -> {
+                canvas.drawLine(left, y - paint.strokeWidth, left + cellWidth, y - paint.strokeWidth, paint)
+                canvas.drawLine(left, y + paint.strokeWidth, left + cellWidth, y + paint.strokeWidth, paint)
+            }
+            3 -> {
+                val path = Path().apply {
+                    moveTo(left, y)
+                    val quarter = cellWidth / 4f
+                    cubicTo(left + quarter, y - paint.strokeWidth * 2, left + quarter, y + paint.strokeWidth * 2,
+                        left + quarter * 2, y)
+                    cubicTo(left + quarter * 3, y - paint.strokeWidth * 2, left + quarter * 3,
+                        y + paint.strokeWidth * 2, left + cellWidth, y)
+                }
+                canvas.drawPath(path, paint)
+            }
+            4, 5 -> {
+                paint.pathEffect = DashPathEffect(
+                    if (style == 4) floatArrayOf(paint.strokeWidth, paint.strokeWidth * 2)
+                    else floatArrayOf(paint.strokeWidth * 4, paint.strokeWidth * 2),
+                    0f,
+                )
+                canvas.drawLine(left, y, left + cellWidth, y, paint)
+                paint.pathEffect = null
+            }
+            else -> canvas.drawLine(left, y, left + cellWidth, y, paint)
+        }
+        paint.style = Paint.Style.FILL
     }
 
     private fun updateKittyBitmaps() {
@@ -280,6 +539,7 @@ class GhosttyTerminalView(
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
         if (!isEnabled) return false
+        pointerMetaState = event.metaState
         if (!remoteMouseGesture && !remoteTwoFingerGesture) scaleDetector.onTouchEvent(event)
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
@@ -296,8 +556,11 @@ class GhosttyTerminalView(
                 remoteTwoFingerGesture = false
                 remoteDownX = event.x
                 remoteDownY = event.y
-                if (selectionVisible && isNearSelectionHandle(event.x, event.y)) {
+                draggedHandle = selectionHandleAt(event.x, event.y)
+                if (draggedHandle != HANDLE_NONE) {
                     selectionActive = true
+                    selectionDragX = event.x
+                    selectionDragY = event.y
                     cancelPendingLongPress()
                     return true
                 }
@@ -307,10 +570,9 @@ class GhosttyTerminalView(
                         selectionActive = onSelectionStart(cellColumn(remoteDownX), cellRow(remoteDownY))
                         if (selectionActive) {
                             selectionVisible = true
-                            selectionStartX = remoteDownX
-                            selectionStartY = remoteDownY
-                            selectionEndX = remoteDownX
-                            selectionEndY = remoteDownY
+                            draggedHandle = HANDLE_END
+                            selectionDragX = remoteDownX
+                            selectionDragY = remoteDownY
                             refresh()
                         }
                     }
@@ -334,9 +596,9 @@ class GhosttyTerminalView(
             }
             MotionEvent.ACTION_MOVE -> {
                 if (selectionActive) {
-                    selectionEndX = event.x.coerceIn(0f, width.toFloat())
-                    selectionEndY = event.y.coerceIn(0f, height.toFloat())
-                    onSelectionUpdate(cellColumn(event.x), cellRow(event.y))
+                    selectionDragX = event.x.coerceIn(0f, width.toFloat())
+                    selectionDragY = event.y.coerceIn(0f, height.toFloat())
+                    onSelectionUpdate(draggedHandle == HANDLE_START, cellColumn(event.x), cellRow(event.y))
                     updateSelectionAutoScroll(event.y)
                     refresh()
                     return true
@@ -374,6 +636,7 @@ class GhosttyTerminalView(
                 cancelPendingLongPress()
                 if (selectionActive) {
                     selectionActive = false
+                    draggedHandle = HANDLE_NONE
                     updateSelectionAutoScroll(height / 2f)
                     startActionMode(selectionActions, ActionMode.TYPE_FLOATING)
                     refresh()
@@ -424,6 +687,7 @@ class GhosttyTerminalView(
                 remotePressSent = false
                 remoteTwoFingerGesture = false
                 selectionActive = false
+                draggedHandle = HANDLE_NONE
                 updateSelectionAutoScroll(height / 2f)
                 endTouch()
                 return true
@@ -436,6 +700,7 @@ class GhosttyTerminalView(
         if (!isEnabled || !isMouseTracking() || event.source and InputDevice.SOURCE_CLASS_POINTER == 0) {
             return super.onGenericMotionEvent(event)
         }
+        pointerMetaState = event.metaState
         when (event.actionMasked) {
             MotionEvent.ACTION_SCROLL -> {
                 val vertical = event.getAxisValue(MotionEvent.AXIS_VSCROLL)
@@ -510,10 +775,19 @@ class GhosttyTerminalView(
         if (direction != 0) post(selectionAutoScroll)
     }
 
-    private fun isNearSelectionHandle(x: Float, y: Float): Boolean {
+    private fun selectionHandleAt(x: Float, y: Float): Int {
         val radius = 28f * resources.displayMetrics.density
-        return Math.hypot((x - selectionStartX).toDouble(), (y - selectionStartY).toDouble()) <= radius ||
-            Math.hypot((x - selectionEndX).toDouble(), (y - selectionEndY).toDouble()) <= radius
+        val startDistance = if (selectionStartVisible) {
+            Math.hypot((x - selectionStartX).toDouble(), (y - selectionStartY).toDouble())
+        } else Double.MAX_VALUE
+        val endDistance = if (selectionEndVisible) {
+            Math.hypot((x - selectionEndX).toDouble(), (y - selectionEndY).toDouble())
+        } else Double.MAX_VALUE
+        return when {
+            startDistance <= radius && startDistance <= endDistance -> HANDLE_START
+            endDistance <= radius -> HANDLE_END
+            else -> HANDLE_NONE
+        }
     }
 
     private fun drawSelectionHandles(canvas: Canvas) {
@@ -521,15 +795,21 @@ class GhosttyTerminalView(
         paint.color = 0xff8be9b3.toInt()
         paint.style = Paint.Style.FILL
         val radius = 5f * resources.displayMetrics.density
-        canvas.drawCircle(selectionStartX, selectionStartY + cellHeight, radius, paint)
-        canvas.drawCircle(selectionEndX, selectionEndY + cellHeight, radius, paint)
+        if (selectionStartVisible) canvas.drawCircle(selectionStartX, selectionStartY, radius, paint)
+        if (selectionEndVisible) canvas.drawCircle(selectionEndX, selectionEndY, radius, paint)
     }
 
     private fun sendRemoteMouse(action: Int, button: Int, x: Float, y: Float, pressed: Boolean) {
         onMouseEvent(
             action, button, x, y, width, height,
             cellWidth.toInt().coerceAtLeast(1), cellHeight.toInt().coerceAtLeast(1), pressed,
+            pointerMetaState,
         )
+    }
+
+    override fun onWindowFocusChanged(hasWindowFocus: Boolean) {
+        super.onWindowFocusChanged(hasWindowFocus)
+        onTerminalFocusChanged(hasWindowFocus)
     }
 
     private fun pointerAverageY(event: MotionEvent): Float =
@@ -584,6 +864,7 @@ class GhosttyTerminalView(
         cellHeight = paint.fontMetrics.run { descent - ascent + leading }
         baselineOffset = -paint.fontMetrics.ascent
         scrollPixels = 0f
+        invalidateRowCaches()
     }
 
     private fun drawScrollPosition(canvas: Canvas) {
@@ -611,6 +892,86 @@ class GhosttyTerminalView(
     }
 
     override fun onCheckIsTextEditor(): Boolean = true
+
+    override fun onInitializeAccessibilityNodeInfo(info: AccessibilityNodeInfo) {
+        super.onInitializeAccessibilityNodeInfo(info)
+        info.className = TextView::class.java.name
+        info.isFocusable = true
+        info.contentDescription = null
+        if (snapshot.passwordInput) {
+            info.isPassword = true
+            info.text = null
+            info.contentDescription = "Terminal password input"
+            return
+        }
+        val text = visibleAccessibilityText()
+        info.text = text
+        val canScrollBackward = snapshot.scrollOffset > 0
+        val canScrollForward = !snapshot.isAtBottom
+        info.isScrollable = canScrollBackward || canScrollForward
+        if (canScrollBackward) info.addAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_BACKWARD)
+        if (canScrollForward) info.addAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_FORWARD)
+        if (text.isNotBlank()) {
+            info.addAction(AccessibilityNodeInfo.AccessibilityAction(
+                AccessibilityNodeInfo.ACTION_COPY,
+                "Copy visible terminal text",
+            ))
+        }
+        info.addAction(AccessibilityNodeInfo.AccessibilityAction(ACTION_PREVIOUS_PROMPT, "Previous prompt"))
+        info.addAction(AccessibilityNodeInfo.AccessibilityAction(ACTION_NEXT_PROMPT, "Next prompt"))
+        info.addAction(AccessibilityNodeInfo.AccessibilityAction(ACTION_COPY_OUTPUT, "Copy latest command output"))
+    }
+
+    override fun onInitializeAccessibilityEvent(event: AccessibilityEvent) {
+        super.onInitializeAccessibilityEvent(event)
+        if (event.eventType == AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED) {
+            event.contentChangeTypes = AccessibilityEvent.CONTENT_CHANGE_TYPE_TEXT
+        }
+    }
+
+    override fun performAccessibilityAction(action: Int, arguments: Bundle?): Boolean {
+        if (snapshot.passwordInput) return super.performAccessibilityAction(action, arguments)
+        val page = max(1, snapshot.scrollVisible - 1)
+        when (action) {
+            AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD -> terminal.scrollRows(-page)
+            AccessibilityNodeInfo.ACTION_SCROLL_FORWARD -> terminal.scrollRows(page)
+            AccessibilityNodeInfo.ACTION_COPY -> {
+                context.getSystemService(ClipboardManager::class.java).setPrimaryClip(
+                    ClipData.newPlainText("Visible terminal", visibleAccessibilityText()),
+                )
+                return true
+            }
+            ACTION_PREVIOUS_PROMPT -> {
+                if (!terminal.jumpPrompt(-1)) return false
+            }
+            ACTION_NEXT_PROMPT -> {
+                if (!terminal.jumpPrompt(1)) return false
+            }
+            ACTION_COPY_OUTPUT -> {
+                if (!terminal.selectLatestOutput()) return false
+                context.getSystemService(ClipboardManager::class.java).setPrimaryClip(
+                    ClipData.newPlainText("Latest command output", terminal.selectedText()),
+                )
+            }
+            else -> return super.performAccessibilityAction(action, arguments)
+        }
+        refresh()
+        return true
+    }
+
+    private fun visibleAccessibilityText(): String {
+        accessibilityText?.let { return it }
+        return (0 until snapshot.rows).joinToString("\n") { row ->
+            buildString {
+                for (column in 0 until snapshot.columns) {
+                    val cell = snapshot.cells[row * snapshot.columns + column]
+                    append(if (cell.invisible || cell.text.isEmpty()) " " else cell.text)
+                }
+            }.trimEnd()
+        }.trimEnd().let { text ->
+            if (kittyFrame.placements.isEmpty()) text else "$text\n[Inline graphic]"
+        }.also { accessibilityText = it }
+    }
 
     fun setPasswordInput(enabled: Boolean) {
         if (passwordInput == enabled) return
@@ -714,6 +1075,7 @@ class GhosttyTerminalView(
         paint.style = Paint.Style.FILL
         paint.isUnderlineText = false
         paint.isStrikeThruText = false
+        paint.pathEffect = null
     }
 
     private fun sp(value: Float): Float = TypedValue.applyDimension(
@@ -733,6 +1095,13 @@ class GhosttyTerminalView(
         private const val MOUSE_WHEEL_DOWN = 5
         private const val CURSOR_BLINK_INTERVAL_MS = 500L
         private const val SELECTION_SCROLL_INTERVAL_MS = 50L
+        private const val ACCESSIBILITY_UPDATE_INTERVAL_MS = 150L
+        private const val HANDLE_NONE = 0
+        private const val HANDLE_START = 1
+        private const val HANDLE_END = 2
+        private const val ACTION_PREVIOUS_PROMPT = 0x01020001
+        private const val ACTION_NEXT_PROMPT = 0x01020002
+        private const val ACTION_COPY_OUTPUT = 0x01020003
         private const val KITTY_BELOW_BACKGROUND = Int.MIN_VALUE / 2
     }
 }

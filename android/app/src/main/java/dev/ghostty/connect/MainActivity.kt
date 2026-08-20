@@ -61,6 +61,7 @@ import dev.ghostty.connect.terminal.SshSessionService
 import dev.ghostty.connect.terminal.bridge.GhosttyTerminal
 import dev.ghostty.connect.terminal.bridge.TerminalEffects
 import dev.ghostty.connect.terminal.view.GhosttyTerminalView
+import net.schmizz.sshj.connection.channel.direct.Signal
 import java.util.UUID
 
 class MainActivity : Activity() {
@@ -86,6 +87,7 @@ class MainActivity : Activity() {
     private var imeVisible = false
     private var terminalAtBottom = true
     private var settingsVisible = false
+    private var terminalSearchQuery = ""
     private val activeModifiers = mutableSetOf<KeyboardModifier>()
     private val lockedModifiers = mutableSetOf<KeyboardModifier>()
     private var lastUsedModifier: KeyboardModifier? = null
@@ -762,7 +764,7 @@ class MainActivity : Activity() {
             acceptsInput = false
             isMouseTracking = { false }
             onSelectionStart = terminal::selectWord
-            onSelectionUpdate = { column, row -> terminal.extendSelection(column, row) }
+            onSelectionUpdate = { start, column, row -> terminal.setSelectionEndpoint(start, column, row) }
             onSelectionFinished = {
                 terminal.selectedText().takeIf(String::isNotEmpty)?.let { writeClipboard(it) }
             }
@@ -823,6 +825,8 @@ class MainActivity : Activity() {
                     menu.add("Previous prompt")
                     menu.add("Next prompt")
                     menu.add("Search scrollback")
+                    menu.add("Send interrupt signal")
+                    menu.add("Send terminate signal")
                     setOnMenuItemClickListener { item ->
                         when (item.title) {
                             "Disconnect" -> {
@@ -855,6 +859,14 @@ class MainActivity : Activity() {
                                 showScrollbackSearch(terminal)
                                 true
                             }
+                            "Send interrupt signal" -> {
+                                service.signal(Signal.INT)
+                                true
+                            }
+                            "Send terminate signal" -> {
+                                service.signal(Signal.TERM)
+                                true
+                            }
                             else -> false
                         }
                     }
@@ -879,13 +891,13 @@ class MainActivity : Activity() {
             onSpecialKey = { key -> sendBarKey(key, activeModifiers) }
             onKeyEvent = { event -> sendHardwareKey(terminal, event) }
             isMouseTracking = terminal::isMouseTracking
-            onMouseEvent = { action, button, x, y, width, height, cellWidth, cellHeight, pressed ->
+            onMouseEvent = { action, button, x, y, width, height, cellWidth, cellHeight, pressed, metaState ->
                 sessionService?.send(terminal.encodeMouse(
                     action = action,
                     button = button,
                     x = x,
                     y = y,
-                    modifiers = ghosttyModifierBits(activeModifiers),
+                    modifiers = ghosttyModifierBits(activeModifiers) or ghosttyMetaBits(metaState),
                     width = width,
                     height = height,
                     cellWidth = cellWidth,
@@ -893,8 +905,11 @@ class MainActivity : Activity() {
                     anyPressed = pressed,
                 ))
             }
+            onTerminalFocusChanged = { focused ->
+                terminal.encodeFocus(focused).takeIf(ByteArray::isNotEmpty)?.let { sessionService?.send(it) }
+            }
             onSelectionStart = terminal::selectWord
-            onSelectionUpdate = { column, row -> terminal.extendSelection(column, row) }
+            onSelectionUpdate = { start, column, row -> terminal.setSelectionEndpoint(start, column, row) }
             onSelectionFinished = {
                 val selected = terminal.selectedText()
                 if (selected.isNotEmpty()) {
@@ -1094,6 +1109,14 @@ class MainActivity : Activity() {
             (if (KeyboardModifier.CAPS_LOCK in modifiers) GHOSTTY_MOD_CAPS_LOCK else 0) or
             (if (KeyboardModifier.NUM_LOCK in modifiers) GHOSTTY_MOD_NUM_LOCK else 0)
 
+    private fun ghosttyMetaBits(metaState: Int): Int =
+        (if (metaState and KeyEvent.META_SHIFT_ON != 0) GHOSTTY_MOD_SHIFT else 0) or
+            (if (metaState and KeyEvent.META_CTRL_ON != 0) GHOSTTY_MOD_CTRL else 0) or
+            (if (metaState and KeyEvent.META_ALT_ON != 0) GHOSTTY_MOD_ALT else 0) or
+            (if (metaState and KeyEvent.META_META_ON != 0) GHOSTTY_MOD_SUPER else 0) or
+            (if (metaState and KeyEvent.META_CAPS_LOCK_ON != 0) GHOSTTY_MOD_CAPS_LOCK else 0) or
+            (if (metaState and KeyEvent.META_NUM_LOCK_ON != 0) GHOSTTY_MOD_NUM_LOCK else 0)
+
     private fun pasteFromClipboard(service: SshSessionService) {
         val text = getSystemService(ClipboardManager::class.java).primaryClip
             ?.getItemAt(0)?.coerceToText(this)?.toString().orEmpty()
@@ -1220,7 +1243,7 @@ class MainActivity : Activity() {
     }.getOrDefault(value)
 
     private fun showScrollbackSearch(terminal: GhosttyTerminal) {
-        val query = field("Search scrollback", "")
+        val query = field("Search scrollback", terminalSearchQuery)
         val dialog = AlertDialog.Builder(this)
             .setTitle("Search scrollback")
             .setView(query)
@@ -1231,7 +1254,8 @@ class MainActivity : Activity() {
         dialog.setOnShowListener {
             fun search(direction: Int) {
                 if (query.text.isBlank()) return
-                if (!terminal.search(query.text.toString(), direction)) toast("No match")
+                terminalSearchQuery = query.text.toString()
+                if (!terminal.search(terminalSearchQuery, direction)) toast("No match")
                 terminalView?.refresh()
             }
             dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener { search(-1) }

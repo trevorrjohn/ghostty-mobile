@@ -22,6 +22,7 @@ import dev.ghostty.connect.model.Host
 import dev.ghostty.connect.terminal.bridge.GhosttyTerminal
 import dev.ghostty.connect.terminal.bridge.TerminalEffects
 import java.util.concurrent.atomic.AtomicBoolean
+import net.schmizz.sshj.connection.channel.direct.Signal
 
 class SshSessionService : Service(), SshConnection.Callbacks {
     interface Listener {
@@ -46,6 +47,9 @@ class SshSessionService : Service(), SshConnection.Callbacks {
     private val mainHandler = Handler(Looper.getMainLooper())
     private var connection: SshConnection? = null
     private var listener: Listener? = null
+    private var itermImageParser: ItermInlineImageParser? = null
+    private var tmuxPassthroughParser: TmuxPassthroughParser? = null
+    private var terminalMetrics = TerminalPixelMetrics(80, 24, 640, 384)
     private var pendingVerification: PendingVerification? = null
     private val pendingEffects = ArrayDeque<TerminalEffects>()
     private val framePending = AtomicBoolean(false)
@@ -85,12 +89,22 @@ class SshSessionService : Service(), SshConnection.Callbacks {
         disconnectResources()
         this.host = host
         val theme = TerminalThemeStore(applicationContext).load()
-        terminal = GhosttyTerminal(
+        val activeTerminal = GhosttyTerminal(
             foreground = theme.foreground,
             background = theme.background,
             cursor = theme.cursor,
             palette = theme.palette,
         )
+        terminal = activeTerminal
+        itermImageParser = ItermInlineImageParser(
+            onBytes = activeTerminal::write,
+            onImage = { image ->
+                runCatching { ItermImageTranslator.translate(image, terminalMetrics) }
+                    .getOrDefault(emptyList())
+                    .forEach(activeTerminal::write)
+            },
+        )
+        tmuxPassthroughParser = TmuxPassthroughParser(itermImageParser!!::feed)
         status = "Connecting…"
         startInForeground(status)
         listener?.onSessionStatus(status)
@@ -103,9 +117,12 @@ class SshSessionService : Service(), SshConnection.Callbacks {
 
     fun send(bytes: ByteArray) = connection?.send(bytes) ?: Unit
 
+    fun signal(signal: Signal) = connection?.signal(signal) ?: Unit
+
     fun statusText(): String = status
 
     fun resize(columns: Int, rows: Int, pixelWidth: Int, pixelHeight: Int) {
+        terminalMetrics = TerminalPixelMetrics(columns, rows, pixelWidth, pixelHeight)
         connection?.resize(columns, rows, pixelWidth, pixelHeight)
     }
 
@@ -127,7 +144,7 @@ class SshSessionService : Service(), SshConnection.Callbacks {
 
     override fun output(bytes: ByteArray) {
         val activeTerminal = terminal ?: return
-        activeTerminal.write(bytes)
+        tmuxPassthroughParser?.feed(bytes) ?: activeTerminal.write(bytes)
         val effects = activeTerminal.drainEffects()
         if (effects.ptyWrite.isNotEmpty()) connection?.send(effects.ptyWrite)
         val visibleEffects = if (effects.ptyWrite.isNotEmpty()) effects.copy(ptyWrite = byteArrayOf()) else effects
@@ -174,6 +191,10 @@ class SshSessionService : Service(), SshConnection.Callbacks {
     private fun disconnectResources() {
         connection?.disconnect()
         connection = null
+        itermImageParser?.reset()
+        itermImageParser = null
+        tmuxPassthroughParser?.reset()
+        tmuxPassthroughParser = null
         val stateHost = host
         val stateTerminal = terminal
         if (stateHost != null && stateTerminal != null) {

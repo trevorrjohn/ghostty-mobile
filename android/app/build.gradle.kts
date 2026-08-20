@@ -13,6 +13,7 @@ configure<ApplicationExtension> {
         targetSdk = 36
         versionCode = 1
         versionName = "0.1.0"
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
         ndk {
             abiFilters += setOf("arm64-v8a", "x86_64")
@@ -40,4 +41,7 @@ configure<ApplicationExtension> {
 dependencies {
     add("implementation", "com.hierynomus:sshj:0.40.0")
     add("implementation", "org.bouncycastle:bcprov-jdk18on:1.80.2")
+    add("testImplementation", "junit:junit:4.13.2")
+    add("androidTestImplementation", "androidx.test:runner:1.6.2")
+    add("androidTestImplementation", "androidx.test.ext:junit:1.2.1")
 }
