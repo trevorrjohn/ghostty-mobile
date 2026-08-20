@@ -47,4 +47,4 @@ mise install
 4. Add biometric unlock for imported identities.
 5. Add explicit reconnect controls and lifecycle/process-death test coverage.
 
-The agreed product boundaries are documented in [docs/PRODUCT_SCOPE.md](docs/PRODUCT_SCOPE.md). The native terminal architecture and delivery sequence are documented in [docs/RENDERING_PLAN.md](docs/RENDERING_PLAN.md).
+The overall delivery plan is documented in [docs/PRODUCT_ROADMAP.md](docs/PRODUCT_ROADMAP.md). The original MVP boundaries are documented in [docs/PRODUCT_SCOPE.md](docs/PRODUCT_SCOPE.md), and the native terminal architecture is documented in [docs/RENDERING_PLAN.md](docs/RENDERING_PLAN.md).

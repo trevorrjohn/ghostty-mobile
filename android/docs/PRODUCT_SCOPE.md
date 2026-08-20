@@ -40,6 +40,8 @@ Ghostty Connect is a focused Android SSH client powered by Ghostty's terminal en
 
 The implementation architecture, staged delivery, and acceptance tests for this area are specified in [RENDERING_PLAN.md](RENDERING_PLAN.md). That plan deepens this scope without adding product features.
 
+The current implementation status and post-MVP delivery plan are tracked in [PRODUCT_ROADMAP.md](PRODUCT_ROADMAP.md).
+
 ### Connection behavior
 
 - One interactive SSH shell per terminal tab
