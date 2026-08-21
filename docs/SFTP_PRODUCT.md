@@ -35,6 +35,7 @@ A user can:
 8. Create a directory, rename an entry, and delete a file or empty directory after confirmation.
 9. See byte progress, completion, cancellation, interruption, and an actionable failure message for a transfer.
 10. Open a separate terminal for the same saved host without ending the file browser.
+11. Save favorite remote folders for a saved host and reopen them from later file-browser connections.
 
 ## Entry Points
 
@@ -69,6 +70,8 @@ Credentials are scoped to one connection attempt. Reconnect and **Open terminal*
 ## Browser Experience
 
 The browser header shows the host display name and current remote path. The primary actions are **Upload**, **New folder**, **Refresh**, **Open terminal**, and **Close**. Parent navigation is available whenever the current location is not the initial remote root.
+
+The path can be entered directly as an absolute or current-directory-relative path. The server canonicalizes it before use, and navigation remains within the account's initial canonical remote home. Favorite folders are stored encrypted against the saved host ID, remain available across browser connections, and never retain credentials or connection state.
 
 Directories sort before other entries, and each group sorts by display name without changing the remote name. `.` and `..` are never displayed as ordinary entries.
 

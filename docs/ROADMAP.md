@@ -135,7 +135,7 @@ The matrix reflects the current working tree, not only the last commit.
 
 | Capability | Android | iOS | Direction or reason |
 | --- | --- | --- | --- |
-| SFTP browsing, upload, and download | `Planned` | `Planned` | Post-core work; must use platform document APIs without broad storage access. |
+| SFTP browsing, upload, and download | `Partial` | `Planned` | Android has an independent SFTP browser with shared trust/authentication, canonical path entry, encrypted per-host folder favorites, bounded document-URI transfers, conservative symlink handling, remote mutations, conflict prompts, progress, cancellation, and rotation reattachment. Disposable-server, connected lifecycle, interruption, and TalkBack validation remain before this becomes `Implemented`. |
 | Local, remote, and dynamic port forwarding | `Planned` | `Planned` | Post-core work; tunnels need visible ownership and shutdown controls. |
 | Tablet, landscape, split-screen, and external-keyboard workflows | `Partial` | `Partial` | Basic layouts work; neither platform has completed its device and interaction matrix. |
 | Safe share and deep-link connection entry points | `Planned` | `Planned` | External input requires explicit confirmation and must not carry credentials. |

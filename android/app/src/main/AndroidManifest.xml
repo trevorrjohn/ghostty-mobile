@@ -6,6 +6,7 @@
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
 
     <application
         android:allowBackup="false"
@@ -26,6 +27,11 @@
             android:name=".terminal.SshSessionService"
             android:exported="false"
             android:foregroundServiceType="connectedDevice"
+            android:stopWithTask="false" />
+        <service
+            android:name=".sftp.SftpBrowserService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync"
             android:stopWithTask="false" />
     </application>
 </manifest>

@@ -17,6 +17,7 @@ This document maps the shared [architecture](../ARCHITECTURE.md) to Android and 
 | Product state | Models plus specialized stores under `data/` |
 | Session coordinator | Bound `SshSessionService` with isolated session records |
 | SSH transport | `SshConnection` using SSHJ |
+| SFTP transport | Independent `SftpBrowserService` and `SftpConnection` using SSHJ |
 | Output preprocessing | tmux and iTerm parsers in `terminal/` |
 | Terminal adapter | Kotlin `GhosttyTerminal` plus `ghostty_jni.cpp` |
 | Terminal surface | `GhosttyTerminalView` using Canvas and `RenderNode` |
@@ -28,6 +29,8 @@ This document maps the shared [architecture](../ARCHITECTURE.md) to Android and 
 The foreground service, not the activity, owns live transports and Ghostty terminals. Activities attach listeners while visible and may be recreated without terminating sessions. Each runtime session ID is independent from its saved host ID.
 
 The service is `START_NOT_STICKY`. Process death ends live SSH transports. Automatic reconnect is bounded and creates a new shell; tmux or screen is required for remote process continuity.
+
+The file browser uses a separate started and bound service with an independent SSH connection. It reuses host trust and authentication semantics but never creates a PTY or shares terminal credentials. Canonical path entry remains within the remote home, and per-host favorite folder paths use the encrypted local store independently of live connections. Uploads and downloads use document URIs and fixed-size buffers; an active transfer temporarily uses a generic `dataSync` foreground notification with cancellation and no host or path details. Process death and interruption do not resume transfers.
 
 ## Ghostty Integration
 
@@ -89,4 +92,4 @@ Connected tests require a compatible emulator or device. Public release also req
 
 ## Current Platform Gaps
 
-Current status is maintained in the [roadmap](../ROADMAP.md). Important Android-specific engineering gaps include concurrent secure-store updates, key/trust management, full shell-integration validation, large-screen workflows, and release automation.
+Current status is maintained in the [roadmap](../ROADMAP.md). Important Android-specific engineering gaps include concurrent secure-store updates, key/trust management, full shell-integration validation, large-screen workflows, and release automation. The SFTP slice still needs disposable-server coverage, document-provider and network interruption testing, lifecycle/UI automation, and TalkBack validation.
