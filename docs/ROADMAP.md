@@ -18,6 +18,7 @@ Shared product boundaries are defined in [PRODUCT_SCOPE.md](PRODUCT_SCOPE.md), a
 6. Compatibility work is bounded. Protocol parsers enforce input, memory, image, and processing limits.
 7. Accessibility, touch, and external keyboards are primary interaction modes.
 8. Shared product behavior matters more than identical platform architecture.
+9. Product priorities come from deliberate dogfooding and privacy-preserving feedback, not speculative feature breadth.
 
 ## Status Model
 
@@ -33,13 +34,27 @@ Shared product boundaries are defined in [PRODUCT_SCOPE.md](PRODUCT_SCOPE.md), a
 
 | Phase | Outcome | Why this comes next |
 | --- | --- | --- |
-| 1. Trust and connection reliability | Complete identity management, explicit host trust, typed failures, cancellation, retry, keepalives, and atomic secure stores. | A trustworthy connection is more important than adding protocol breadth. |
-| 2. Terminal workflow parity | Bring iOS scrollback, selection, paste safety, search, prompt navigation, and shell integration to the Android baseline; harden Android's partial input and shell-integration work. | Both apps need a complete daily terminal workflow before broader product features. |
-| 3. Sessions and mobile lifecycle | Multiple isolated sessions, visible reconnect behavior, background/foreground handling, and platform-appropriate restoration. | Mobile network and lifecycle interruptions are routine, not edge cases. |
+| 0. Android feedback loop | Capture encrypted in-app dogfooding notes, review them in context, and explicitly export a sanitized report. | Product priorities need evidence from daily use before more scope is added. |
+| 1. Android core quality | Complete identity management, trust, cancellation, retry, secure-store safety, input, shell integration, and error recovery on Android. | Android is the reference implementation for discovering and validating the product workflow. |
+| 2. Android lifecycle and release baseline | Validate multiple sessions, interruptions, accessibility, device layouts, live SSH, and UI automation. | The reference behavior must be dependable before it is copied. |
+| 3. iOS core parity | Implement the validated Android connection, terminal, session, and privacy behavior using iOS-native architecture. | iOS should inherit product decisions, not repeat product discovery from scratch. |
 | 4. Remote integrations | Enforce remote clipboard and notification policy, complete title/CWD/link handling, and render bounded inline graphics. | These features must preserve consent and parser limits before being enabled broadly. |
 | 5. Files and tunnels | SFTP plus local, remote, and dynamic forwarding with ownership, progress, and safe cancellation. | Valuable post-core workflows that add substantial transport and security surface. |
 | 6. Organization and portability | Search, favorites, groups, workspaces, archive controls, and encrypted configuration import/export. | Organization becomes important after connection and session behavior are dependable. |
 | 7. Security, accessibility, and release | Biometrics, app protection, audits, accessibility completion, diagnostics, localization, CI, signing, and store delivery. | Public release requires evidence that the complete product is safe and operable. |
+
+## Product Discovery Loop
+
+Android is the product reference implementation until its core SSH and terminal workflow is dependable. During daily use:
+
+1. Record `Bug`, `Friction`, or `Idea` notes without leaving the current workflow.
+2. Review notes by product area and resolve repeated connection, trust, input, terminal, and lifecycle problems first.
+3. Export reviewed notes as plaintext only when intentionally sharing them for triage.
+4. Never automatically collect terminal contents, host details, credentials, clipboard data, or screenshots.
+5. Update the roadmap and shared contracts when dogfooding changes accepted product behavior.
+6. Port validated behavior to iOS after critical Android workflow issues are resolved.
+
+The first implementation stores a bounded feedback log in Android's encrypted local storage. Safe context is limited to app/build version, Android API, device model, product area, and optional session state and authentication class. The user can review or delete every note before export.
 
 ## Capability Matrix
 
@@ -129,6 +144,7 @@ The matrix reflects the current working tree, not only the last commit.
 
 | Capability | Android | iOS | Direction or reason |
 | --- | --- | --- | --- |
+| In-app dogfooding feedback log and reviewed export | `Implemented` | `Planned` | Android stores bounded encrypted manual notes with allowlisted context and explicit plaintext sharing. Port the validated workflow to iOS later. |
 | Unit and native terminal tests | `Partial` | `Implemented` | Both have useful coverage; Android still needs its full device suite run consistently. |
 | Disposable live SSH-server integration tests | `Planned` | `Planned` | Needed for authentication, host-key rotation, interruption, routing, files, and tunnels. |
 | UI and lifecycle automation | `Planned` | `Planned` | Required before public release because session ownership and interruption behavior are product-critical. |
@@ -159,13 +175,13 @@ The matrix reflects the current working tree, not only the last commit.
 
 ## Near-Term Execution
 
-1. Finish SSH key and trusted-host management on both platforms.
-2. Add explicit first-use host-key approval and connection reliability to iOS.
-3. Make secure-store updates atomic under concurrent sessions and management screens.
-4. Complete iOS scrollback, selection, copy/paste safety, and search.
-5. Complete and validate Bash/zsh OSC 133 shell integration on Android, then implement the same product flow on iOS.
-6. Build iOS multi-session ownership and platform-appropriate lifecycle behavior.
-7. Enforce iOS remote clipboard and notification policy and connect terminal effects.
-8. Add disposable SSH-server, lifecycle, accessibility, and release automation before broadening into SFTP and forwarding.
+1. Use the Android feedback log during daily host, terminal, and interruption workflows and triage by severity and repetition.
+2. Finish Android SSH key and trusted-host management, then make aggregate secure-store updates concurrency-safe.
+3. Complete Android cancellation, configurable retry, input hardening, and Bash/zsh shell-integration validation.
+4. Exercise Android multi-session ownership through backgrounding, rotation, network changes, VPN changes, and process death.
+5. Add disposable SSH-server, lifecycle, accessibility, and UI automation for the validated Android behavior.
+6. Update shared contracts and fixtures with product decisions discovered through Android dogfooding.
+7. Implement iOS first-use host approval, connection reliability, terminal workflow parity, and platform-appropriate session ownership.
+8. Connect iOS remote-effect policy only after its core daily workflow reaches parity.
 
-This order prioritizes trust, daily terminal usability, and interruption recovery over additional protocol breadth.
+This order uses Android to validate trust, daily terminal usability, and interruption recovery before duplicating behavior or adding protocol breadth.

@@ -26,7 +26,7 @@ iOS currently uses trust on first use without confirmation; this is a roadmap ga
 
 Android uses AES-GCM files protected by a non-exportable Android Keystore key and disables application backup. iOS uses Keychain records restricted to the unlocked device and excluded from migration to another device.
 
-Both implementations must add explicit atomic update and migration behavior before concurrent management or synchronization ships.
+Android encrypted-file replacement is atomic. Both implementations still need explicit concurrent update and migration behavior before concurrent management or synchronization ships.
 
 ## Remote Effects
 
@@ -42,6 +42,15 @@ Both implementations must add explicit atomic update and migration behavior befo
 - Password input suppresses screen previews and accessibility text where the platform can detect it.
 - Reconnect starts a new shell and never claims remote process continuity.
 - Android terminal archives are encrypted, bounded, read-only local aids; they are not recordings or live restoration.
+
+## Dogfooding Feedback
+
+- Feedback contains only manually entered notes plus allowlisted app and device context.
+- Terminal contents, host details, credentials, clipboard data, and screenshots are not collected automatically.
+- Local feedback is encrypted and bounded like other product records.
+- Users review entries before an explicit plaintext share action.
+- Shared plaintext is no longer protected by Ghostty Connect and may contain secrets the user typed despite the warning.
+- Automatic upload, telemetry, attachments, or broader diagnostics require a new security review.
 
 ## Review Requirements
 

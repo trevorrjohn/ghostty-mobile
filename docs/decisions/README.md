@@ -12,6 +12,7 @@ Architecture decision records capture durable choices that affect both applicati
 | [0004](0004-own-sessions-explicitly-and-reconnect-honestly.md) | Accepted | Own sessions explicitly and reconnect honestly |
 | [0005](0005-use-platform-secure-storage-and-explicit-host-trust.md) | Accepted | Use platform-secure storage and explicit host trust |
 | [0006](0006-treat-remote-effects-as-bounded-untrusted-input.md) | Accepted | Treat remote effects as bounded untrusted input |
+| [0007](0007-keep-dogfooding-feedback-local-and-user-controlled.md) | Accepted | Keep dogfooding feedback local and user-controlled |
 
 ## Process
 

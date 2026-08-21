@@ -77,4 +77,4 @@ Connected tests require a compatible emulator or device. Public release also req
 
 ## Current Platform Gaps
 
-Current status is maintained in the [roadmap](../ROADMAP.md). Important Android-specific engineering gaps include secure-store atomicity, key/trust management, full shell-integration validation, large-screen workflows, and release automation.
+Current status is maintained in the [roadmap](../ROADMAP.md). Important Android-specific engineering gaps include concurrent secure-store updates, key/trust management, full shell-integration validation, large-screen workflows, and release automation.

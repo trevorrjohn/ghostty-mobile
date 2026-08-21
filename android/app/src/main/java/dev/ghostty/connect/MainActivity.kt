@@ -46,19 +46,26 @@ import android.widget.ScrollView
 import android.widget.Spinner
 import android.widget.TextView
 import android.widget.Toast
+import dev.ghostty.connect.data.DogfoodFeedbackStore
 import dev.ghostty.connect.data.HostStore
 import dev.ghostty.connect.data.KeyboardBarStore
 import dev.ghostty.connect.data.SshKeyStore
 import dev.ghostty.connect.data.TerminalThemeStore
 import dev.ghostty.connect.data.TerminalStateStore
 import dev.ghostty.connect.model.AuthenticationType
+import dev.ghostty.connect.model.DogfoodFeedbackEntry
+import dev.ghostty.connect.model.DogfoodFeedbackDraft
+import dev.ghostty.connect.model.FeedbackKind
 import dev.ghostty.connect.model.Host
+import dev.ghostty.connect.model.createDogfoodFeedbackEntry
 import dev.ghostty.connect.model.duplicate
+import dev.ghostty.connect.model.formatDogfoodFeedbackExport
 import dev.ghostty.connect.model.KeyboardBarCatalog
 import dev.ghostty.connect.model.KeyboardBarConfig
 import dev.ghostty.connect.model.KeyboardBarItem
 import dev.ghostty.connect.model.KeyboardBarItemType
 import dev.ghostty.connect.model.KeyboardModifier
+import dev.ghostty.connect.model.MAX_FEEDBACK_ENTRIES
 import dev.ghostty.connect.model.TerminalThemes
 import dev.ghostty.connect.terminal.SshSessionService
 import dev.ghostty.connect.terminal.AuthenticationChallenge
@@ -66,6 +73,7 @@ import dev.ghostty.connect.terminal.bridge.GhosttyTerminal
 import dev.ghostty.connect.terminal.bridge.TerminalEffects
 import dev.ghostty.connect.terminal.view.GhosttyTerminalView
 import net.schmizz.sshj.connection.channel.direct.Signal
+import java.time.Instant
 import java.util.UUID
 
 class MainActivity : Activity() {
@@ -74,11 +82,20 @@ class MainActivity : Activity() {
     private lateinit var keyboardBarStore: KeyboardBarStore
     private lateinit var terminalThemeStore: TerminalThemeStore
     private lateinit var terminalStateStore: TerminalStateStore
+    private lateinit var feedbackStore: DogfoodFeedbackStore
     private var keyboardBarConfig = KeyboardBarConfig()
     private var sessionService: SshSessionService? = null
     private var sessionBound = false
     private var shouldBindSession = false
     private data class PendingConnection(val sessionId: String, val host: Host, val credential: CharArray)
+    private data class FeedbackDraftViews(
+        val id: String,
+        val kind: Spinner,
+        val area: EditText,
+        val note: EditText,
+        val expected: EditText,
+        val sessionId: String?,
+    )
 
     private var pendingConnection: PendingConnection? = null
     private var selectedSessionId: String? = null
@@ -98,6 +115,8 @@ class MainActivity : Activity() {
     private var imeVisible = false
     private var terminalAtBottom = true
     private var settingsVisible = false
+    private var feedbackVisible = false
+    private var feedbackDraftViews: FeedbackDraftViews? = null
     private var terminalSearchQuery = ""
     private val activeModifiers = mutableSetOf<KeyboardModifier>()
     private val lockedModifiers = mutableSetOf<KeyboardModifier>()
@@ -210,6 +229,7 @@ class MainActivity : Activity() {
                 selectedSessionId = pending.sessionId
                 service.selectListenerSession(pending.sessionId)
             }
+            if (feedbackVisible || settingsVisible || feedbackDraftViews != null) return
             val requested = selectedSessionId?.takeIf { service.host(it) != null }
             val sessionId = requested ?: service.summaries().singleOrNull()?.sessionId
             if (sessionId != null) openSession(sessionId) else showHosts(disconnect = false)
@@ -254,10 +274,26 @@ class MainActivity : Activity() {
         keyboardBarStore = KeyboardBarStore(this)
         terminalThemeStore = TerminalThemeStore(this)
         terminalStateStore = TerminalStateStore(this)
+        feedbackStore = DogfoodFeedbackStore(this)
         keyboardBarConfig = keyboardBarStore.load()
         selectedSessionId = intent?.getStringExtra(SshSessionService.EXTRA_SESSION_ID)
         shouldBindSession = intent?.action == SshSessionService.ACTION_OPEN_SESSION || SshSessionService.active
-        showHosts(disconnect = false)
+        when (savedInstanceState?.getString(STATE_SCREEN)) {
+            SCREEN_FEEDBACK -> showFeedbackLog()
+            SCREEN_SETTINGS -> showKeyboardSettings()
+            else -> showHosts(disconnect = false)
+        }
+        runCatching { feedbackStore.loadDraft() }.getOrNull()?.let { draft ->
+            showFeedbackDialog(
+                areaName = draft.area,
+                sessionId = draft.sessionId,
+                draftId = draft.id,
+                initialKind = draft.kind,
+                initialNote = draft.note,
+                initialExpected = draft.expectedBehavior,
+                restoreSessionOnDismiss = draft.sessionId != null,
+            )
+        }
         if (Build.VERSION.SDK_INT >= 33) {
             onBackInvokedDispatcher.registerOnBackInvokedCallback(OnBackInvokedDispatcher.PRIORITY_DEFAULT) {
                 handleBackNavigation()
@@ -294,6 +330,7 @@ class MainActivity : Activity() {
         window.clearFlags(WindowManager.LayoutParams.FLAG_SECURE)
         editingHostId = null
         settingsVisible = false
+        feedbackVisible = false
         if (disconnect) {
             selectedSessionId?.let { sessionService?.disconnect(it) }
         }
@@ -360,6 +397,7 @@ class MainActivity : Activity() {
         root.addView(button(if (hosts.isEmpty()) "Add your first host" else "Add host") { showHostEditor() })
         root.addView(button("Import SSH key", secondary) { openKeyPicker() }.margins(top = 10))
         root.addView(button("Paste private key", secondary) { showPasteKeyDialog() }.margins(top = 10))
+        root.addView(button("Record feedback", secondary) { showFeedbackDialog("Hosts") }.margins(top = 10))
         root.addView(button("Settings", secondary) { showKeyboardSettings() }.margins(top = 10))
         root.addView(button("Ghostty renderer preview", secondary) { showGhosttyPreview() }.margins(top = 10))
         if (keyStore.names().isNotEmpty()) {
@@ -640,6 +678,7 @@ class MainActivity : Activity() {
 
     private fun showKeyboardSettings() {
         settingsVisible = true
+        feedbackVisible = false
         val root = vertical(24)
         root.addView(label("Settings", 28f, primary, Typeface.BOLD))
 
@@ -733,8 +772,220 @@ class MainActivity : Activity() {
         root.addView(button("Reset to defaults", secondary) {
             saveKeyboardBarConfig(keyboardBarConfig.copy(items = KeyboardBarCatalog.defaultItems))
         }.margins(top = 8))
+        root.addView(label("Dogfooding", 18f, primary, Typeface.BOLD).margins(top = 24, bottom = 6))
+        root.addView(label(
+            "Feedback notes stay encrypted on this device until you explicitly share them.",
+            14f,
+            secondary,
+        ).margins(bottom = 10))
+        root.addView(button("Feedback log", secondary) { showFeedbackLog() })
+        root.addView(button("Record feedback", secondary) { showFeedbackDialog("Settings") }.margins(top = 8))
         root.addView(button("Back", secondary) { showHosts(disconnect = false) }.margins(top = 16))
         setContentView(scroll(root))
+    }
+
+    private fun showFeedbackLog() {
+        settingsVisible = false
+        feedbackVisible = true
+        val root = vertical(24)
+        root.addView(label("Feedback log", 28f, primary, Typeface.BOLD))
+        root.addView(label(
+            "Only notes you enter are saved. Ghostty Connect does not automatically collect terminal contents, host details, credentials, or clipboard data.",
+            14f,
+            secondary,
+        ).margins(top = 8, bottom = 16))
+        val entries = runCatching { feedbackStore.loadAll() }.getOrElse { error ->
+            root.addView(label("Feedback could not be read: ${error.message ?: "unknown error"}", 14f, Color.RED))
+            root.addView(button("Reset unreadable feedback", secondary) {
+                confirmResetUnreadableFeedback()
+            }.margins(top = 12))
+            root.addView(button("Back to settings", secondary) { showKeyboardSettings() }.margins(top = 16))
+            setContentView(scroll(root))
+            return
+        }
+        root.addView(button("Add note") { showFeedbackDialog("Feedback log") })
+        if (entries.isEmpty()) {
+            root.addView(label("No feedback notes yet.", 15f, secondary).margins(top = 20))
+        } else {
+            root.addView(label(
+                "Up to $MAX_FEEDBACK_ENTRIES notes are retained. Adding another removes the oldest note.",
+                13f,
+                secondary,
+            ).margins(top = 12, bottom = 14))
+            entries.forEach { entry -> root.addView(feedbackCard(entry).margins(bottom = 12)) }
+            root.addView(button("Share reviewed notes as plaintext", secondary) {
+                confirmFeedbackShare(entries)
+            }.margins(top = 8))
+            root.addView(button("Clear all feedback", secondary) { confirmClearFeedback() }.margins(top = 8))
+        }
+        root.addView(button("Back to settings", secondary) { showKeyboardSettings() }.margins(top = 16))
+        setContentView(scroll(root))
+    }
+
+    private fun feedbackCard(entry: DogfoodFeedbackEntry): View = vertical(14).apply {
+        setBackgroundColor(raised)
+        addView(label("${entry.kind.label} · ${entry.area}", 17f, primary, Typeface.BOLD))
+        addView(label(Instant.ofEpochMilli(entry.createdAtEpochMillis).toString(), 12f, secondary).margins(bottom = 8))
+        addView(label(entry.note, 15f, primary))
+        entry.expectedBehavior?.let {
+            addView(label("Expected: $it", 13f, secondary).margins(top = 8))
+        }
+        addView(label(
+            "${entry.appVersion} (${entry.versionCode}) · API ${entry.androidApi} · ${entry.deviceModel}" +
+                listOfNotNull(entry.sessionState, entry.authenticationType).joinToString(" · ").let {
+                    if (it.isBlank()) "" else " · $it"
+                },
+            12f,
+            secondary,
+        ).margins(top = 10))
+        addView(compactButton("Delete") {
+            runCatching { feedbackStore.delete(entry.id) }
+                .onSuccess { showFeedbackLog() }
+                .onFailure { toast("Could not delete feedback: ${it.message}") }
+        }.margins(top = 8))
+    }
+
+    private fun showFeedbackDialog(
+        areaName: String,
+        sessionId: String? = null,
+        initialKind: FeedbackKind = FeedbackKind.FRICTION,
+        initialNote: String = "",
+        initialExpected: String = "",
+        restoreSessionOnDismiss: Boolean = false,
+        draftId: String = UUID.randomUUID().toString(),
+    ) {
+        if (sessionId != null) selectedSessionId = sessionId
+        val kind = Spinner(this).apply {
+            adapter = ArrayAdapter(
+                this@MainActivity,
+                android.R.layout.simple_spinner_dropdown_item,
+                FeedbackKind.entries.map(FeedbackKind::label),
+            )
+            setBackgroundColor(raised)
+            setSelection(initialKind.ordinal)
+        }
+        val area = field("Area", areaName)
+        val note = feedbackField("What happened or felt difficult?", 4).apply { setText(initialNote) }
+        val expected = feedbackField("Expected behavior (optional)", 2).apply { setText(initialExpected) }
+        val content = vertical(12).apply {
+            addView(label(
+                "Do not include passwords, private keys, host details, terminal output, or clipboard contents.",
+                13f,
+                secondary,
+            ).margins(bottom = 10))
+            addView(kind.margins(bottom = 10))
+            addView(area.margins(bottom = 10))
+            addView(note.margins(bottom = 10))
+            addView(expected)
+        }
+        val dialog = AlertDialog.Builder(this)
+            .setTitle("Record feedback")
+            .setView(content)
+            .setNegativeButton("Cancel", null)
+            .setPositiveButton("Save", null)
+            .create()
+        feedbackDraftViews = FeedbackDraftViews(draftId, kind, area, note, expected, sessionId)
+        dialog.setOnDismissListener {
+            if (feedbackDraftViews?.note === note) feedbackDraftViews = null
+            if (restoreSessionOnDismiss) {
+                sessionId?.let { id -> sessionService?.takeIf { it.host(id) != null }?.let { openSession(id) } }
+            }
+        }
+        dialog.setOnShowListener {
+            dialog.getButton(AlertDialog.BUTTON_NEGATIVE).setOnClickListener {
+                runCatching { feedbackStore.clearDraft() }
+                    .onFailure { toast("Could not clear encrypted feedback draft: ${it.message}") }
+                dialog.dismiss()
+            }
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                val service = sessionService
+                val entry = runCatching {
+                    createDogfoodFeedbackEntry(
+                        id = draftId,
+                        createdAtEpochMillis = System.currentTimeMillis(),
+                        kind = FeedbackKind.entries[kind.selectedItemPosition],
+                        area = area.text.toString(),
+                        note = note.text.toString(),
+                        expectedBehavior = expected.text.toString(),
+                        appVersion = BuildConfig.VERSION_NAME,
+                        versionCode = BuildConfig.VERSION_CODE,
+                        androidApi = Build.VERSION.SDK_INT,
+                        deviceModel = "${Build.MANUFACTURER} ${Build.MODEL}".trim(),
+                        sessionState = sessionId?.let { service?.status(it) },
+                        authenticationType = sessionId?.let { service?.host(it)?.authenticationType?.name },
+                    )
+                }.getOrElse {
+                    toast(it.message ?: "Feedback is invalid.")
+                    return@setOnClickListener
+                }
+                runCatching { feedbackStore.append(entry) }
+                    .onSuccess { removedOldest ->
+                        val draftCleanupFailed = runCatching { feedbackStore.clearDraft() }.isFailure
+                        dialog.dismiss()
+                        if (feedbackVisible) showFeedbackLog()
+                        toast(if (draftCleanupFailed) {
+                            "Feedback saved; encrypted draft cleanup will retry"
+                        } else if (removedOldest) {
+                            "Feedback saved; the oldest note was removed"
+                        } else {
+                            "Feedback saved on this device"
+                        })
+                    }
+                    .onFailure { toast("Could not save feedback: ${it.message}") }
+            }
+        }
+        dialog.setOnCancelListener {
+            runCatching { feedbackStore.clearDraft() }
+                .onFailure { toast("Could not clear encrypted feedback draft: ${it.message}") }
+        }
+        dialog.show()
+        dialog.window?.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_VISIBLE)
+        note.requestFocus()
+    }
+
+    private fun confirmFeedbackShare(entries: List<DogfoodFeedbackEntry>) {
+        AlertDialog.Builder(this)
+            .setTitle("Share plaintext feedback?")
+            .setMessage("Review the notes above first. Sharing decrypts the feedback and sends plaintext to the app you choose.")
+            .setNegativeButton("Cancel", null)
+            .setPositiveButton("Share") { _, _ ->
+                val export = runCatching { formatDogfoodFeedbackExport(entries) }.getOrElse {
+                    toast(it.message ?: "Feedback is too large to share.")
+                    return@setPositiveButton
+                }
+                startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).apply {
+                    type = "text/plain"
+                    putExtra(Intent.EXTRA_SUBJECT, "Ghostty Connect Android feedback")
+                    putExtra(Intent.EXTRA_TEXT, export)
+                }, "Share feedback"))
+            }
+            .show()
+    }
+
+    private fun confirmClearFeedback() {
+        AlertDialog.Builder(this)
+            .setTitle("Clear all feedback?")
+            .setMessage("This removes every saved feedback note from Ghostty Connect.")
+            .setNegativeButton("Cancel", null)
+            .setPositiveButton("Clear") { _, _ ->
+                runCatching { feedbackStore.clear() }
+                    .onSuccess { showFeedbackLog() }
+                    .onFailure { toast("Could not clear feedback: ${it.message}") }
+            }
+            .show()
+    }
+
+    private fun confirmResetUnreadableFeedback() {
+        AlertDialog.Builder(this)
+            .setTitle("Reset unreadable feedback?")
+            .setMessage("The encrypted feedback file cannot be read. Resetting permanently replaces it with an empty log.")
+            .setNegativeButton("Cancel", null)
+            .setPositiveButton("Reset") { _, _ ->
+                runCatching { feedbackStore.clear() }
+                    .onSuccess { showFeedbackLog() }
+                    .onFailure { toast("Could not reset feedback: ${it.message}") }
+            }
+            .show()
     }
 
     private fun settingsBarPreview(): View {
@@ -946,6 +1197,7 @@ class MainActivity : Activity() {
         lockedModifiers.clear()
         terminalAtBottom = true
         settingsVisible = false
+        feedbackVisible = false
         val root = vertical(0)
         val status = label("Connecting…", 13f, accent).also { terminalStatus = it }
         val toolbar = vertical(16).apply { setBackgroundColor(raised) }
@@ -969,6 +1221,7 @@ class MainActivity : Activity() {
                     menu.add("Next prompt")
                     menu.add("Search scrollback")
                     menu.add("Shell integration setup")
+                    menu.add("Record feedback")
                     menu.add("Send interrupt signal")
                     menu.add("Send terminate signal")
                     setOnMenuItemClickListener { item ->
@@ -1014,6 +1267,10 @@ class MainActivity : Activity() {
                             }
                             "Shell integration setup" -> {
                                 showShellIntegrationSetup()
+                                true
+                            }
+                            "Record feedback" -> {
+                                showFeedbackDialog("Terminal", sessionId)
                                 true
                             }
                             "Send interrupt signal" -> {
@@ -1522,7 +1779,8 @@ class MainActivity : Activity() {
     }
 
     private fun handleBackNavigation() {
-        if (settingsVisible) showHosts(disconnect = false)
+        if (feedbackVisible) showKeyboardSettings()
+        else if (settingsVisible) showHosts(disconnect = false)
         else if (terminalView != null || previewTerminal != null) showHosts()
         else finish()
     }
@@ -1530,6 +1788,27 @@ class MainActivity : Activity() {
     @SuppressLint("GestureBackNavigation")
     @Deprecated("Fallback for Android 10 through 12")
     override fun onBackPressed() = handleBackNavigation()
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        outState.putString(STATE_SCREEN, when {
+            feedbackVisible -> SCREEN_FEEDBACK
+            settingsVisible -> SCREEN_SETTINGS
+            else -> SCREEN_OTHER
+        })
+        feedbackDraftViews?.let { draft ->
+            runCatching {
+                feedbackStore.saveDraft(DogfoodFeedbackDraft(
+                    id = draft.id,
+                    kind = FeedbackKind.entries[draft.kind.selectedItemPosition],
+                    area = draft.area.text.toString(),
+                    note = draft.note.text.toString(),
+                    expectedBehavior = draft.expected.text.toString(),
+                    sessionId = draft.sessionId,
+                ))
+            }.onFailure { toast("Could not protect feedback draft: ${it.message}") }
+        }
+        super.onSaveInstanceState(outState)
+    }
 
     override fun onDestroy() {
         cancelShellIntegrationNotice()
@@ -1551,6 +1830,14 @@ class MainActivity : Activity() {
     private fun field(hint: String, value: String, type: Int = InputType.TYPE_CLASS_TEXT) = EditText(this).apply {
         this.hint = hint; setHintTextColor(secondary); setTextColor(primary); setText(value); inputType = type
         setSingleLine(true); setBackgroundColor(raised); setPadding(dp(14), dp(12), dp(14), dp(12))
+    }
+    private fun feedbackField(hint: String, lines: Int) = EditText(this).apply {
+        this.hint = hint; setHintTextColor(secondary); setTextColor(primary)
+        inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE or
+            InputType.TYPE_TEXT_FLAG_CAP_SENTENCES or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
+        imeOptions = android.view.inputmethod.EditorInfo.IME_FLAG_NO_PERSONALIZED_LEARNING
+        minLines = lines; maxLines = lines * 2; gravity = Gravity.TOP
+        setBackgroundColor(raised); setPadding(dp(14), dp(12), dp(14), dp(12))
     }
     private fun button(text: String, color: Int = accent, action: () -> Unit) = Button(this).apply {
         this.text = text; setTextColor(Color.rgb(8, 15, 12)); setBackgroundColor(color); isAllCaps = false; setOnClickListener { action() }
@@ -1581,5 +1868,9 @@ class MainActivity : Activity() {
         const val GHOSTTY_MOD_NUM_LOCK = 1 shl 5
         const val REMOTE_NOTIFICATION_CHANNEL = "remote_terminal"
         private const val SHELL_INTEGRATION_NOTICE_DELAY_MS = 15_000L
+        private const val STATE_SCREEN = "screen"
+        private const val SCREEN_OTHER = "other"
+        private const val SCREEN_SETTINGS = "settings"
+        private const val SCREEN_FEEDBACK = "feedback"
     }
 }

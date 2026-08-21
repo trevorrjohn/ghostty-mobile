@@ -120,6 +120,18 @@ A secure store reads, writes, and deletes versioned product records using platfo
 - Backups and exports exclude secrets unless an explicitly reviewed encrypted format says otherwise.
 - Transient credentials are not valid secure-store records.
 
+## Product Feedback Entry
+
+Dogfooding feedback is manually authored product data, not automatic diagnostics.
+
+- An entry contains a category, product area, note, optional expected behavior, timestamp, and allowlisted technical context.
+- Allowlisted context is app/build version, OS version, device model, product area, and optional session state and authentication class.
+- Hostname, username, IP address, terminal content, command history, credentials, clipboard data, and screenshots are never captured automatically.
+- Entries are bounded and stored through the platform secure store.
+- Users can review and delete entries before export.
+- Export is an explicit plaintext operation with a warning that data leaves application protection.
+- A future network submission service requires a separate security review and decision record.
+
 ## Shared Behavioral Fixtures
 
 Algorithms duplicated in Kotlin and Swift should use shared fixture inputs and expected outputs where practical. Priority fixtures include host-name duplication, terminal byte streams, key inspection, tmux passthrough, iTerm payload bounds, host trust transitions, retry policy, resize, and shell-integration markers.

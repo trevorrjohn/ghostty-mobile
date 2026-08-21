@@ -3,8 +3,10 @@ package dev.ghostty.connect.data
 import android.content.Context
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
+import android.util.AtomicFile
 import java.nio.ByteBuffer
 import java.security.KeyStore
+import java.io.File
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
@@ -23,13 +25,26 @@ internal class EncryptedFileStore(
             .put(cipher.iv)
             .put(encrypted)
             .array()
-        context.openFileOutput(fileName, Context.MODE_PRIVATE).use { it.write(payload) }
+        val file = atomicFile(fileName)
+        val output = file.startWrite()
+        try {
+            output.write(payload)
+            file.finishWrite(output)
+        } catch (error: Throwable) {
+            file.failWrite(output)
+            throw error
+        }
     }
 
     fun read(fileName: String): ByteArray {
-        val payload = context.openFileInput(fileName).use { it.readBytes() }
+        val payload = atomicFile(fileName).openRead().use { it.readBytes() }
+        require(payload.size >= 4 + MIN_IV_BYTES + GCM_TAG_BYTES) { "Encrypted file is truncated." }
         val buffer = ByteBuffer.wrap(payload)
-        val iv = ByteArray(buffer.int).also(buffer::get)
+        val ivSize = buffer.int
+        require(ivSize in MIN_IV_BYTES..MAX_IV_BYTES && ivSize <= buffer.remaining() - GCM_TAG_BYTES) {
+            "Encrypted file has invalid framing."
+        }
+        val iv = ByteArray(ivSize).also(buffer::get)
         val encrypted = ByteArray(buffer.remaining()).also(buffer::get)
         return Cipher.getInstance("AES/GCM/NoPadding").run {
             init(Cipher.DECRYPT_MODE, secretKey(), GCMParameterSpec(128, iv))
@@ -37,7 +52,11 @@ internal class EncryptedFileStore(
         }
     }
 
-    fun exists(fileName: String): Boolean = context.getFileStreamPath(fileName).exists()
+    fun exists(fileName: String): Boolean = atomicFile(fileName).baseFile.let { base ->
+        base.exists() || File("${base.path}.bak").exists()
+    }
+
+    private fun atomicFile(fileName: String) = AtomicFile(context.getFileStreamPath(fileName))
 
     private fun secretKey(): SecretKey {
         val keyStore = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
@@ -54,5 +73,11 @@ internal class EncryptedFileStore(
             )
             generateKey()
         }
+    }
+
+    companion object {
+        private const val MIN_IV_BYTES = 12
+        private const val MAX_IV_BYTES = 16
+        private const val GCM_TAG_BYTES = 16
     }
 }
