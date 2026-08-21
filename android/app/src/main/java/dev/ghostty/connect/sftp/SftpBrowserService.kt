@@ -60,7 +60,6 @@ class SftpBrowserService : Service() {
     ) {
         val executor = Executors.newSingleThreadExecutor { task -> Thread(task, "sftp-browser") }
         val pathStack = ArrayDeque<String>()
-        var homePath: String? = null
         val credentialLock = Any()
         val pendingCredentials = mutableListOf<CharArray>()
         var connection: SftpConnection? = null
@@ -227,10 +226,9 @@ class SftpBrowserService : Service() {
     }
 
     fun openPath(browserId: String, path: String) = operation(browserId, STATUS_LOADING) { record, connection ->
-        val home = checkNotNull(record.homePath) { "The remote home directory is unavailable." }
-        val target = connection.openDirectoryPath(record.pathStack.last(), home, path)
+        val target = connection.openDirectoryPath(record.pathStack.last(), path)
         record.pathStack.clear()
-        record.pathStack.addAll(remotePathStack(home, target))
+        record.pathStack.addAll(remoteAbsolutePathStack(target))
         refreshState(record, connection)
     }
 
@@ -349,7 +347,6 @@ class SftpBrowserService : Service() {
                     onMain {
                         if (!isCurrent(record, generation)) return@onMain
                     record.pathStack.clear()
-                    record.homePath = home
                     record.pathStack.addLast(home)
                         update(record, record.state.copy(
                             status = if (entries.isEmpty()) STATUS_EMPTY else STATUS_READY,

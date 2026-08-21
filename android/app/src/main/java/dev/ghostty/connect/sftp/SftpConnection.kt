@@ -68,7 +68,7 @@ internal class SftpConnection(
         return client().canonicalize(path)
     }
 
-    fun openDirectoryPath(currentPath: String, homePath: String, input: String): String {
+    fun openDirectoryPath(currentPath: String, input: String): String {
         val requested = input.trim()
         require(requested.isNotEmpty()) { "Enter a remote path." }
         require('\u0000' !in requested) { "Remote paths cannot contain NUL characters." }
@@ -76,7 +76,6 @@ internal class SftpConnection(
         val candidate = client().canonicalize(
             if (requested.startsWith('/')) requested else if (currentPath == "/") "/$requested" else "$currentPath/$requested",
         )
-        require(remotePathWithinHome(homePath, candidate)) { "The path must remain within the remote home directory." }
         requireType(candidate, FileMode.Type.DIRECTORY)
         return candidate
     }

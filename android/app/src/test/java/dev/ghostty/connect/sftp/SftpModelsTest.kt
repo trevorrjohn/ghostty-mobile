@@ -43,22 +43,14 @@ class SftpModelsTest {
     }
 
     @Test
-    fun canonicalPathContainmentDoesNotAcceptPrefixLookalikes() {
-        assertTrue(remotePathWithinHome("/home/ghost", "/home/ghost"))
-        assertTrue(remotePathWithinHome("/home/ghost", "/home/ghost/projects/app"))
-        assertFalse(remotePathWithinHome("/home/ghost", "/home/ghost-other/private"))
-        assertFalse(remotePathWithinHome("/home/ghost", "/etc"))
-        assertTrue(remotePathWithinHome("/", "/var/tmp"))
-    }
-
-    @Test
-    fun canonicalPathStackProvidesRealParentNavigation() {
+    fun canonicalAbsolutePathStackProvidesParentNavigationToRoot() {
         assertEquals(
-            listOf("/home/ghost", "/home/ghost/projects", "/home/ghost/projects/app"),
-            remotePathStack("/home/ghost", "/home/ghost/projects/app"),
+            listOf("/", "/home", "/home/ghost", "/home/ghost/projects", "/home/ghost/projects/app"),
+            remoteAbsolutePathStack("/home/ghost/projects/app"),
         )
-        assertEquals(listOf("/"), remotePathStack("/", "/"))
-        assertEquals(listOf("/", "/var", "/var/tmp"), remotePathStack("/", "/var/tmp"))
+        assertEquals(listOf("/"), remoteAbsolutePathStack("/"))
+        assertEquals(listOf("/", "/var", "/var/tmp"), remoteAbsolutePathStack("/var/tmp"))
+        assertTrue(runCatching { remoteAbsolutePathStack("relative/path") }.isFailure)
     }
 
     @Test

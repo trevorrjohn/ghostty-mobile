@@ -58,16 +58,11 @@ fun remoteFolderPath(parentPath: String, childName: String): String {
     return if (parentPath == "/") "/$childName" else "${parentPath.trimEnd('/')}/$childName"
 }
 
-internal fun remotePathWithinHome(homePath: String, candidatePath: String): Boolean =
-    candidatePath == homePath || homePath == "/" && candidatePath.startsWith('/') ||
-        candidatePath.startsWith(homePath.trimEnd('/') + "/")
-
-internal fun remotePathStack(homePath: String, targetPath: String): List<String> {
-    require(remotePathWithinHome(homePath, targetPath))
-    if (targetPath == homePath) return listOf(homePath)
-    val relative = targetPath.removePrefix(homePath.trimEnd('/') + "/")
-    val result = mutableListOf(homePath)
-    relative.split('/').filter(String::isNotEmpty).forEach { child ->
+internal fun remoteAbsolutePathStack(targetPath: String): List<String> {
+    require(targetPath.startsWith('/'))
+    if (targetPath == "/") return listOf("/")
+    val result = mutableListOf("/")
+    targetPath.removePrefix("/").split('/').filter(String::isNotEmpty).forEach { child ->
         result += if (result.last() == "/") "/$child" else "${result.last()}/$child"
     }
     return result
