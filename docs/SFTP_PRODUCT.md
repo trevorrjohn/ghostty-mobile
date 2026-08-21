@@ -126,7 +126,7 @@ Rename changes only the selected entry's child name within the current directory
 
 ### Delete
 
-Delete always names the selected entry and requires confirmation. Files and symlinks are unlinked without following them. Directories are removed only when empty. Permission failures, non-empty directories, and network interruption leave the browser in a refreshable state without claiming success.
+Remote deletion is disabled by default for every saved host and must be explicitly enabled in that host's settings before delete actions appear. Delete always names the selected entry and requires confirmation. Files and symlinks are unlinked without following them. Directories are removed only when empty. Permission failures, non-empty directories, and network interruption leave the browser in a refreshable state without claiming success.
 
 ## Transfers and Concurrency
 

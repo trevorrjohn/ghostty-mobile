@@ -15,6 +15,7 @@ data class Host(
     val identityId: String? = null,
     val allowRemoteClipboard: Boolean? = null,
     val allowRemoteNotifications: Boolean? = null,
+    val allowSftpDelete: Boolean = false,
 ) {
     val name: String get() = alias ?: hostname
     val destination: String get() = "$username@$hostname:$port"

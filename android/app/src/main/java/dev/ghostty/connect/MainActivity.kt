@@ -665,6 +665,18 @@ class MainActivity : Activity() {
         }
         val clipboardPolicy = policySpinner("Clipboard writes", existing?.allowRemoteClipboard)
         val notificationPolicy = policySpinner("Terminal notifications", existing?.allowRemoteNotifications)
+        root.addView(label("File browser", 14f, secondary).margins(top = 10, bottom = 4))
+        val allowSftpDelete = CheckBox(this).apply {
+            text = "Allow remote file deletion"
+            setTextColor(primary)
+            isChecked = existing?.allowSftpDelete == true
+        }
+        root.addView(allowSftpDelete)
+        root.addView(label(
+            "Disabled by default. When enabled, files, links, and empty directories can be permanently deleted after confirmation.",
+            12f,
+            secondary,
+        ).margins(bottom = 12))
         fun selectedPolicy(spinner: Spinner): Boolean? = when (spinner.selectedItemPosition) {
             1 -> true
             2 -> false
@@ -700,6 +712,7 @@ class MainActivity : Activity() {
                 identityId = identityId.takeIf { authenticationType == AuthenticationType.SSH_KEY },
                 allowRemoteClipboard = selectedPolicy(clipboardPolicy),
                 allowRemoteNotifications = selectedPolicy(notificationPolicy),
+                allowSftpDelete = allowSftpDelete.isChecked,
             ))
             editingHostId = null
             showHosts()
@@ -1785,7 +1798,8 @@ class MainActivity : Activity() {
 
     private fun showEntryActions(browserId: String, entry: SftpEntry) {
         val state = sftpService?.state(browserId)
-        val hostId = sftpService?.host(browserId)?.id
+        val host = sftpService?.host(browserId)
+        val hostId = host?.id
         val folderPath = if (entry.type == SftpEntryType.DIRECTORY && state?.path != null) {
             remoteFolderPath(state.path, entry.name)
         } else null
@@ -1796,7 +1810,9 @@ class MainActivity : Activity() {
             if (folderPath != null) add(if (folderFavorite) "Remove favorite" else "Favorite folder")
             if (entry.type == SftpEntryType.FILE) add("Download")
             add("Rename")
-            add(if (entry.type == SftpEntryType.SYMLINK) "Delete link" else "Delete")
+            if (host?.allowSftpDelete == true) {
+                add(if (entry.type == SftpEntryType.SYMLINK) "Delete link" else "Delete")
+            }
         }
         AlertDialog.Builder(this)
             .setTitle(entry.name)
@@ -1811,7 +1827,7 @@ class MainActivity : Activity() {
                     } else Unit
                     "Download" -> openDownloadPicker(browserId, entry)
                     "Rename" -> showRenameDialog(browserId, entry)
-                    else -> confirmDelete(browserId, entry)
+                    "Delete", "Delete link" -> confirmDelete(browserId, entry)
                 }
             }
             .setNegativeButton("Cancel", null)

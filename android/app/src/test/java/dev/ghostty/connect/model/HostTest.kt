@@ -16,6 +16,7 @@ class HostTest {
             identityId = "identity-id",
             allowRemoteClipboard = true,
             allowRemoteNotifications = false,
+            allowSftpDelete = true,
         )
 
         val duplicate = host.duplicate("duplicate", listOf(host.name))
@@ -35,5 +36,12 @@ class HostTest {
         )
 
         assertEquals("example.com copy 3", duplicate.alias)
+    }
+
+    @Test
+    fun remoteFileDeletionDefaultsToDisabled() {
+        val host = Host(id = "host", hostname = "example.com", username = "ghost")
+
+        assertEquals(false, host.allowSftpDelete)
     }
 }

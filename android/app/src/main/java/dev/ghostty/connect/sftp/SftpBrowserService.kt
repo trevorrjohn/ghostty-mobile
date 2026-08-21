@@ -14,6 +14,8 @@ import android.os.IBinder
 import android.os.Looper
 import android.provider.OpenableColumns
 import dev.ghostty.connect.MainActivity
+import dev.ghostty.connect.data.HostStore
+import dev.ghostty.connect.data.SshKeyStore
 import dev.ghostty.connect.model.Host
 import dev.ghostty.connect.terminal.AuthenticationChallenge
 import dev.ghostty.connect.terminal.ExactlyOnceAnswer
@@ -243,6 +245,9 @@ class SftpBrowserService : Service() {
     }
 
     fun delete(browserId: String, entry: SftpEntry) = operation(browserId, "Deleting…") { record, connection ->
+        val storedHost = HostStore(applicationContext, SshKeyStore(applicationContext))
+            .loadAll().firstOrNull { it.id == record.host.id }
+        check(storedHost?.allowSftpDelete == true) { "Remote file deletion is disabled for this host." }
         connection.delete(record.pathStack.last(), entry)
         refreshState(record, connection)
     }

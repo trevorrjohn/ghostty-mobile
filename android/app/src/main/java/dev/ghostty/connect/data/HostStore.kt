@@ -64,6 +64,7 @@ class HostStore(context: Context, private val keyStore: SshKeyStore) {
                 put("keyName", host.identityId?.let(identityNamesById::get) ?: JSONObject.NULL)
                 put("allowRemoteClipboard", host.allowRemoteClipboard ?: JSONObject.NULL)
                 put("allowRemoteNotifications", host.allowRemoteNotifications ?: JSONObject.NULL)
+                put("allowSftpDelete", host.allowSftpDelete)
             })
         }
     }.toString().toByteArray()
@@ -109,6 +110,7 @@ class HostStore(context: Context, private val keyStore: SshKeyStore) {
                     allowRemoteNotifications = value.optBoolean("allowRemoteNotifications").takeUnless {
                         value.isNull("allowRemoteNotifications")
                     },
+                    allowSftpDelete = value.optBoolean("allowSftpDelete", false),
                 ))
             }
         }
