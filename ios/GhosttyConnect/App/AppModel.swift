@@ -65,10 +65,16 @@ final class AppModel: ObservableObject {
         }
     }
 
-    func importKey(data: Data) throws -> StoredKey {
+    func importKey(data: Data, name: String? = nil) throws -> StoredKey {
         guard data.count <= 1_048_576 else { throw KeyInspectionError.tooLarge }
-        let details = try SSHKeyInspector.inspect(data, existingNames: keys.map(\.name))
-        let key = StoredKey(name: details.suggestedName, data: data, requiresPassphrase: details.requiresPassphrase)
+        let details = try SSHKeyInspector.inspect(data)
+        let requestedName = String(name?.trimmingCharacters(in: .whitespacesAndNewlines).prefix(80) ?? "")
+        let baseName = requestedName.isEmpty ? details.suggestedName : requestedName
+        let key = StoredKey(
+            name: SSHKeyInspector.uniqueName(baseName, keys.map(\.name)),
+            data: data,
+            requiresPassphrase: details.requiresPassphrase
+        )
         let updated = keys + [key]
         try store.write(updated, account: "keys")
         keys = updated

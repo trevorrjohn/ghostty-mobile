@@ -15,6 +15,8 @@ final class TerminalSessionModel: ObservableObject {
     private var requestedDimensions: TerminalDimensions?
     private var appliedDimensions: TerminalDimensions?
     private var connectionAttemptID: UUID?
+    private var activeDestination: String?
+    private(set) var hasConnectedShell = false
 
     init(transportFactory: @escaping () -> any SSHTransport = { CitadelSSHTransport() }) {
         self.transportFactory = transportFactory
@@ -25,11 +27,11 @@ final class TerminalSessionModel: ObservableObject {
             snapshot = initialSnapshot
         } catch {
             self.engine = nil
-            state = .failed(error.localizedDescription)
+            state = .failed(SessionFailure(kind: .configuration, message: error.localizedDescription))
         }
     }
 
-    func connect(to host: Host, secret: String?, key: StoredKey? = nil) async {
+    func connect(to host: Host, secret: String?, key: StoredKey? = nil, isReconnect: Bool = false) async {
         guard let engine, connectionAttemptID == nil, transport == nil else { return }
         let credential: SSHCredential
         switch host.authenticationType {
@@ -37,7 +39,10 @@ final class TerminalSessionModel: ObservableObject {
             credential = .password(secret ?? "")
         case .sshKey:
             guard let key else {
-                state = .failed("The selected SSH key is unavailable.")
+                state = .failed(SessionFailure(
+                    kind: .configuration,
+                    message: "The selected SSH key is unavailable."
+                ))
                 return
             }
             credential = .privateKey(key.data, passphrase: secret)
@@ -46,6 +51,7 @@ final class TerminalSessionModel: ObservableObject {
         let transport = transportFactory()
         connectionAttemptID = attemptID
         self.transport = transport
+        activeDestination = host.destination
         appliedDimensions = nil
         state = .connecting
         hostTrustTask = Task { [weak self] in
@@ -72,7 +78,7 @@ final class TerminalSessionModel: ObservableObject {
                 await finishAttempt(
                     attemptID: attemptID,
                     transport: transport,
-                    failure: error.localizedDescription
+                    failure: SSHFailureClassifier.classify(error, destination: host.destination)
                 )
             }
         }
@@ -83,13 +89,18 @@ final class TerminalSessionModel: ObservableObject {
                 await transport.disconnect()
                 return
             }
+            if isReconnect && hasConnectedShell {
+                engine.feed(Data("\r\n\u{1b}[2m[Connected with a new SSH shell]\u{1b}[0m\r\n".utf8))
+                snapshot = try engine.snapshot()
+            }
+            hasConnectedShell = true
             state = .connected
             scheduleResize()
         } catch {
             await finishAttempt(
                 attemptID: attemptID,
                 transport: transport,
-                failure: error.localizedDescription
+                failure: SSHFailureClassifier.classify(error, destination: host.destination)
             )
         }
     }
@@ -103,6 +114,7 @@ final class TerminalSessionModel: ObservableObject {
 
     func send(_ text: String) {
         guard let engine, let transport, let attemptID = connectionAttemptID, state == .connected else { return }
+        let destination = activeDestination ?? "the remote host"
         let data = engine.encode(text: text)
         Task {
             do { try await transport.write(data) }
@@ -110,7 +122,7 @@ final class TerminalSessionModel: ObservableObject {
                 await finishAttempt(
                     attemptID: attemptID,
                     transport: transport,
-                    failure: error.localizedDescription
+                    failure: SSHFailureClassifier.classify(error, destination: destination)
                 )
             }
         }
@@ -132,6 +144,7 @@ final class TerminalSessionModel: ObservableObject {
               let engine,
               let transport,
               let attemptID = connectionAttemptID,
+              let destination = activeDestination,
               let dimensions = requestedDimensions,
               dimensions != appliedDimensions else { return }
         resizeTask = Task {
@@ -153,7 +166,7 @@ final class TerminalSessionModel: ObservableObject {
                 await finishAttempt(
                     attemptID: attemptID,
                     transport: transport,
-                    failure: error.localizedDescription
+                    failure: SSHFailureClassifier.classify(error, destination: destination)
                 )
             }
         }
@@ -162,7 +175,7 @@ final class TerminalSessionModel: ObservableObject {
     private func finishAttempt(
         attemptID: UUID,
         transport: any SSHTransport,
-        failure: String?
+        failure: SessionFailure?
     ) async {
         guard connectionAttemptID == attemptID else { return }
         connectionAttemptID = nil
@@ -177,6 +190,7 @@ final class TerminalSessionModel: ObservableObject {
         await transport.disconnect()
         guard connectionAttemptID == nil, self.transport === transport else { return }
         self.transport = nil
+        activeDestination = nil
         state = failure.map(SessionState.failed) ?? .disconnected
     }
 
@@ -194,6 +208,7 @@ final class TerminalSessionModel: ObservableObject {
         await transport?.disconnect()
         guard connectionAttemptID == nil else { return }
         self.transport = nil
+        activeDestination = nil
         state = .disconnected
     }
 }

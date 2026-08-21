@@ -66,12 +66,13 @@ The matrix reflects the current working tree, not only the last commit.
 | --- | --- | --- | --- |
 | Saved host add, edit, delete, and duplicate | `Implemented` | `Implemented` | Shared baseline with collision-safe duplicate names and independent host IDs. |
 | Password authentication | `Implemented` | `Implemented` | Passwords remain memory-only and are never saved. |
+| SSH key naming and import during host setup, with sole-key auto-selection | `Implemented` | `Implemented` | Both host editors can add and name an identity without leaving setup and automatically select the only available key when SSH-key authentication is chosen. |
 | Imported Ed25519 and RSA keys, including encrypted keys | `Implemented` | `Implemented` | Shared baseline; additional key formats require transport support, not only import recognition. |
 | Keyboard-interactive, OTP, and MFA challenges | `Implemented` | `Planned` | iOS has not reached transport-level challenge handling yet. |
 | Key inspection, rename, deletion, and public-key export | `Partial` | `Partial` | Android imports into collision-safe UUID identities with encrypted metadata and host references; rename, deletion, export UI, and affected-host warnings remain. |
 | Unknown and changed host-key verification | `Implemented` | `Implemented` | Both block the handshake for explicit approval and display the full SHA-256 fingerprint; iOS also displays the algorithm and previous fingerprint for changed keys. |
 | Trusted-host inspection and removal | `Partial` | `Implemented` | Both list full fingerprints and isolate malformed records for removal. Android serializes aggregate trust updates; iOS enumerates authoritative per-destination Keychain pins. Both guard active-attempt removal; destination normalization remains. |
-| Cancellation, retry, keepalive, and typed failures | `Partial` | `Planned` | Android has retry, reauthentication, keepalive, and failure classification but still needs complete cancellation and user-configurable policy. iOS has not reached this phase. |
+| Cancellation, retry, keepalive, and typed failures | `Partial` | `Partial` | Android has retry, reauthentication, keepalive, and failure classification but still needs complete cancellation and user-configurable policy. iOS has typed failures and manual retry with fresh credentials and a new transport; keepalive, comprehensive cancellation, and network-aware policy remain. |
 | ProxyJump and bastion routing | `Planned` | `Planned` | Accepted after trust management; each hop must have independent host verification and credentials. |
 | Per-host startup command, environment, and initial directory | `Planned` | `Planned` | Deferred until connection setup has typed, auditable configuration. |
 

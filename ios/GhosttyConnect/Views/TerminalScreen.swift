@@ -8,6 +8,8 @@ struct TerminalScreen: View {
     @State private var secret = ""
     @State private var showingCredential = false
     @State private var keyboardFocused = false
+    @State private var pendingReconnect = false
+    @State private var hasRequestedConnection = false
 
     var body: some View {
         let theme = TerminalTheme.theme(id: model.settings.themeID)
@@ -61,16 +63,7 @@ struct TerminalScreen: View {
             }
         }
         .onAppear {
-            if host.authenticationType == .password {
-                showingCredential = true
-            } else {
-                let key = selectedKey
-                if key?.requiresPassphrase == true {
-                    showingCredential = true
-                } else {
-                    Task { await session.connect(to: host, secret: nil, key: key) }
-                }
-            }
+            requestConnection(isReconnect: false)
         }
         .onDisappear {
             secret = ""
@@ -82,10 +75,18 @@ struct TerminalScreen: View {
         }
         .alert(host.authenticationType == .password ? "Password" : "Key passphrase", isPresented: $showingCredential) {
             SecureField("Not saved", text: $secret)
-            Button("Connect") {
+            Button(pendingReconnect ? (session.hasConnectedShell ? "Reconnect" : "Retry") : "Connect") {
                 let credential = secret
                 secret = ""
-                Task { await session.connect(to: host, secret: credential, key: selectedKey) }
+                let reconnect = session.hasConnectedShell
+                Task {
+                    await session.connect(
+                        to: host,
+                        secret: credential,
+                        key: selectedKey,
+                        isReconnect: reconnect
+                    )
+                }
             }
             Button("Cancel", role: .cancel) { secret = "" }
         } message: {
@@ -109,6 +110,12 @@ struct TerminalScreen: View {
                 .font(.caption)
                 .lineLimit(2)
             Spacer()
+            if canReconnect {
+                Button(session.hasConnectedShell ? "Reconnect" : "Retry") {
+                    requestConnection(isReconnect: true)
+                }
+                .font(.caption.bold())
+            }
         }
         .foregroundStyle(Color.ghosttySecondary)
         .padding(.horizontal, 12)
@@ -127,7 +134,7 @@ struct TerminalScreen: View {
         case .verifyingHost: "Waiting for host key approval..."
         case .authenticating: "Authenticating..."
         case .connected: "Connected to \(host.destination)"
-        case .failed(let message): message
+        case .failed(let failure): failure.message
         }
     }
 
@@ -149,6 +156,31 @@ struct TerminalScreen: View {
         switch session.state {
         case .disconnected, .failed: true
         case .connecting, .verifyingHost, .authenticating, .connected: false
+        }
+    }
+
+    private var canReconnect: Bool {
+        switch session.state {
+        case .failed(let failure): failure.canRetry
+        case .disconnected: hasRequestedConnection
+        case .connecting, .verifyingHost, .authenticating, .connected: false
+        }
+    }
+
+    private func requestConnection(isReconnect: Bool) {
+        hasRequestedConnection = true
+        pendingReconnect = isReconnect
+        if host.authenticationType == .password || selectedKey?.requiresPassphrase == true {
+            showingCredential = true
+        } else {
+            Task {
+                await session.connect(
+                    to: host,
+                    secret: nil,
+                    key: selectedKey,
+                    isReconnect: session.hasConnectedShell
+                )
+            }
         }
     }
 

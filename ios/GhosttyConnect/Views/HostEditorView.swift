@@ -4,6 +4,7 @@ struct HostEditorView: View {
     @EnvironmentObject private var model: AppModel
     @Environment(\.dismiss) private var dismiss
     @State private var host: Host
+    @State private var showingKeyImport = false
 
     init(host: Host) { _host = State(initialValue: host) }
 
@@ -30,6 +31,7 @@ struct HostEditorView: View {
                             Text("Choose a key").tag(String?.none)
                             ForEach(model.keys) { Text($0.name).tag(String?.some($0.name)) }
                         }
+                        Button("Add SSH key") { showingKeyImport = true }
                     }
                 }
                 Section("Remote requests") {
@@ -40,6 +42,15 @@ struct HostEditorView: View {
             .scrollContentBackground(.hidden)
             .background(Color.ghosttySurface)
             .navigationTitle(host.hostname.isEmpty ? "Add host" : "Edit host")
+            .onChange(of: host.authenticationType) { _, authenticationType in
+                guard authenticationType == .sshKey,
+                      host.keyName == nil,
+                      model.keys.count == 1 else { return }
+                host.keyName = model.keys[0].name
+            }
+            .sheet(isPresented: $showingKeyImport) {
+                KeyImportView { key in host.keyName = key.name }
+            }
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
                 ToolbarItem(placement: .confirmationAction) {

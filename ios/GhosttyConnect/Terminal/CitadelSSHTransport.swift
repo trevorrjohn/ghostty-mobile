@@ -10,6 +10,7 @@ enum SSHTransportError: LocalizedError {
     case missingPassword
     case unsupportedAuthentication
     case invalidPrivateKey
+    case keyDecryptionFailed
     case sessionClosed
 
     var errorDescription: String? {
@@ -19,6 +20,7 @@ enum SSHTransportError: LocalizedError {
         case .missingPassword: "A password is required."
         case .unsupportedAuthentication: "SSH key authentication is not implemented yet. Use a password profile."
         case .invalidPrivateKey: "The imported private key is invalid or unsupported. Import an OpenSSH Ed25519 or RSA key."
+        case .keyDecryptionFailed: "The private-key passphrase was incorrect."
         case .sessionClosed: "The SSH server closed the terminal session."
         }
     }
@@ -190,6 +192,36 @@ enum SSHConnectionError: LocalizedError {
     }
 }
 
+enum SSHFailureClassifier {
+    static func classify(_ error: Error, destination: String) -> SessionFailure {
+        switch error {
+        case is SSHHostKeyRejectedError:
+            return SessionFailure(kind: .hostTrust, message: error.localizedDescription)
+        case SSHConnectionError.authenticationFailed,
+             SSHTransportError.missingPassword,
+             SSHTransportError.keyDecryptionFailed:
+            return SessionFailure(kind: .authentication, message: error.localizedDescription)
+        case SSHConnectionError.passwordNotSupported,
+             SSHConnectionError.publicKeyNotSupported,
+             SSHTransportError.unsupportedAuthentication,
+             SSHTransportError.invalidPrivateKey:
+            return SessionFailure(kind: .configuration, message: error.localizedDescription)
+        case SSHTransportError.sessionClosed:
+            return SessionFailure(kind: .network, message: "The SSH session to \(destination) closed unexpectedly.")
+        case SSHTransportError.alreadyConnected,
+             SSHTransportError.notConnected:
+            return SessionFailure(kind: .protocolFailure, message: error.localizedDescription)
+        case is CancellationError:
+            return SessionFailure(kind: .network, message: "The connection to \(destination) was cancelled.")
+        default:
+            return SessionFailure(
+                kind: .network,
+                message: "Could not connect to \(destination). Check the network, hostname, and SSH port."
+            )
+        }
+    }
+}
+
 enum CitadelAuthenticationFactory {
     static func make(username: String, credential: SSHCredential) throws -> SSHAuthenticationMethod {
         switch credential {
@@ -221,7 +253,7 @@ enum CitadelAuthenticationFactory {
             } catch let error as SSHTransportError {
                 throw error
             } catch {
-                throw SSHTransportError.invalidPrivateKey
+                throw passphrase == nil ? SSHTransportError.invalidPrivateKey : SSHTransportError.keyDecryptionFailed
             }
         }
     }

@@ -4,9 +4,16 @@ import UniformTypeIdentifiers
 struct KeyImportView: View {
     @EnvironmentObject private var model: AppModel
     @Environment(\.dismiss) private var dismiss
+    @State private var keyName = ""
     @State private var keyText = ""
+    @State private var generatedName = ""
     @State private var showingImporter = false
     @State private var errorMessage: String?
+    private let onImport: (StoredKey) -> Void
+
+    init(onImport: @escaping (StoredKey) -> Void = { _ in }) {
+        self.onImport = onImport
+    }
 
     var body: some View {
         NavigationStack {
@@ -17,6 +24,9 @@ struct KeyImportView: View {
                 Text("SSH connections currently support OpenSSH Ed25519 and RSA keys.")
                     .font(.caption)
                     .foregroundStyle(Color.ghosttySecondary)
+                TextField("Key name", text: $keyName)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
                 TextEditor(text: $keyText)
                     .font(.system(.caption, design: .monospaced))
                     .autocorrectionDisabled()
@@ -31,6 +41,16 @@ struct KeyImportView: View {
             .padding()
             .background(Color.ghosttySurface.ignoresSafeArea())
             .navigationTitle("Import key")
+            .onChange(of: keyText) { _, value in
+                guard let details = try? SSHKeyInspector.inspect(
+                    Data(value.utf8),
+                    existingNames: model.keys.map(\.name)
+                ), keyName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || keyName == generatedName else {
+                    return
+                }
+                generatedName = details.suggestedName
+                keyName = generatedName
+            }
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
                 ToolbarItem(placement: .confirmationAction) { Button("Import", action: importText).disabled(keyText.isEmpty) }
@@ -49,7 +69,11 @@ struct KeyImportView: View {
     }
 
     private func importText() {
-        do { _ = try model.importKey(data: Data(keyText.utf8)); dismiss() }
+        do {
+            let key = try model.importKey(data: Data(keyText.utf8), name: keyName)
+            onImport(key)
+            dismiss()
+        }
         catch { errorMessage = error.localizedDescription }
     }
 }

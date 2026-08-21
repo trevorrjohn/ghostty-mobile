@@ -6,7 +6,29 @@ enum SessionState: Equatable {
     case verifyingHost
     case authenticating
     case connected
-    case failed(String)
+    case failed(SessionFailure)
+}
+
+extension SessionState {
+    var isFailed: Bool {
+        if case .failed = self { return true }
+        return false
+    }
+}
+
+enum SessionFailureKind: Equatable {
+    case authentication
+    case hostTrust
+    case network
+    case protocolFailure
+    case configuration
+}
+
+struct SessionFailure: Equatable {
+    let kind: SessionFailureKind
+    let message: String
+
+    var canRetry: Bool { kind != .configuration }
 }
 
 protocol SSHTransport: AnyObject {

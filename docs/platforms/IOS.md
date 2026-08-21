@@ -25,7 +25,7 @@ This document maps the shared [architecture](../ARCHITECTURE.md) to iOS and cont
 
 ## Session Lifecycle
 
-The current terminal screen owns one observable session model, transport, Ghostty engine, output task, and debounced resize state. Leaving the screen disconnects the session.
+The current terminal screen owns one observable session model, Ghostty engine, output task, and debounced resize state. Each connection or manual retry creates a fresh transport, and leaving the screen disconnects the session.
 
 This is a maturity gap rather than a different product architecture. A future app-level registry must preserve shared isolation and reconnect contracts while respecting iOS suspension limits; it must not imitate Android foreground-service guarantees.
 
@@ -73,4 +73,4 @@ Choose a simulator available in the installed Xcode version when that destinatio
 
 ## Current Platform Gaps
 
-Current status is maintained in the [roadmap](../ROADMAP.md). Important iOS-specific gaps include connection retry and cancellation, terminal-mode-aware input, scrollback and selection, live effect policy, multiple sessions, lifecycle ownership, and accessibility.
+Current status is maintained in the [roadmap](../ROADMAP.md). Important iOS-specific gaps include comprehensive cancellation, keepalive and network-aware reconnect policy, terminal-mode-aware input, scrollback and selection, live effect policy, multiple sessions, lifecycle ownership, and accessibility.
