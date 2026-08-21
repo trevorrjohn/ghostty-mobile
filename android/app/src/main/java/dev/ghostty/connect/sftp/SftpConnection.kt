@@ -54,6 +54,7 @@ internal class SftpConnection(
                 type = type,
                 size = attrs.size.takeIf { type == SftpEntryType.FILE && attrs.has(FileAttributes.Flag.SIZE) },
                 modifiedAtSeconds = attrs.mtime.takeIf { attrs.has(FileAttributes.Flag.ACMODTIME) },
+                accessedAtSeconds = attrs.atime.takeIf { attrs.has(FileAttributes.Flag.ACMODTIME) },
                 permissions = attrs.mode.permissionsMask.takeIf { attrs.has(FileAttributes.Flag.MODE) }
                     ?.let { "%04o".format(it) },
                 supported = validName && type != SftpEntryType.UNSUPPORTED,

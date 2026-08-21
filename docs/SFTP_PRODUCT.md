@@ -28,7 +28,7 @@ A user can:
 1. Open **Files** from a saved host or **Browse files** from an active terminal.
 2. Complete the same host-trust and authentication flow used for a terminal connection.
 3. Browse from the account's remote home directory and navigate into child directories or back to a parent.
-4. Inspect an entry's name, type, size, modification time, permissions, and symlink status.
+4. Inspect an entry's name, type, size, available server timestamps, permissions, and symlink status.
 5. Refresh the current directory.
 6. Download one regular file to a destination selected with the platform document picker.
 7. Upload one document selected with the platform document picker to the current remote directory.
@@ -36,7 +36,7 @@ A user can:
 9. See byte progress, completion, cancellation, interruption, and an actionable failure message for a transfer.
 10. Open a separate terminal for the same saved host without ending the file browser.
 11. Save favorite remote folders for a saved host and reopen them from later file-browser connections.
-12. Fuzzy-filter the current directory and sort folders/files by name, modification time, or size.
+12. Fuzzy-filter the current directory and sort folders/files by name, last-updated time, last-accessed time, or size.
 13. Open a bounded regular file with an installed Android viewer without first choosing a durable download destination.
 
 ## Entry Points
@@ -77,7 +77,9 @@ The path can be entered directly as an absolute or current-directory-relative pa
 
 Search filters only the already loaded current directory using fuzzy subsequence matching; it does not recursively enumerate the server. Direct Open streams at most 25 MiB into app-private temporary cache, grants a read-only content URI to the selected Android viewer, and removes the temporary file when the app regains focus. Unsupported or larger files remain available through explicit Download.
 
-Directories sort before other entries, and each group sorts by display name without changing the remote name. `.` and `..` are never displayed as ordinary entries.
+Date sorting uses the server's SFTP modified and access timestamps when available. SFTP v3 does not expose a reliable creation timestamp, so the browser does not present or sort by a fabricated creation date.
+
+Directories remain before other entries under the selected ordering, without changing remote names. `.` and `..` are never displayed as ordinary entries.
 
 Each entry displays:
 

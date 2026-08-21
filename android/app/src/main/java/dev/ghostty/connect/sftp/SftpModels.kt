@@ -7,13 +7,14 @@ enum class SftpEntryType {
     UNSUPPORTED,
 }
 
-enum class SftpSortMode { NAME, MODIFIED, SIZE }
+enum class SftpSortMode { NAME, UPDATED, ACCESSED, SIZE }
 
 data class SftpEntry(
     val name: String,
     val type: SftpEntryType,
     val size: Long? = null,
     val modifiedAtSeconds: Long? = null,
+    val accessedAtSeconds: Long? = null,
     val permissions: String? = null,
     val supported: Boolean = true,
 )
@@ -72,7 +73,8 @@ fun filterAndSortSftpEntries(
         }
         val selected = when (sortMode) {
             SftpSortMode.NAME -> left.name.compareTo(right.name, ignoreCase = true)
-            SftpSortMode.MODIFIED -> compareNullableLong(left.modifiedAtSeconds, right.modifiedAtSeconds, descending)
+            SftpSortMode.UPDATED -> compareNullableLong(left.modifiedAtSeconds, right.modifiedAtSeconds, descending)
+            SftpSortMode.ACCESSED -> compareNullableLong(left.accessedAtSeconds, right.accessedAtSeconds, descending)
             SftpSortMode.SIZE -> compareNullableLong(left.size, right.size, descending)
         }
         if (selected != 0) {

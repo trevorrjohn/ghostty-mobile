@@ -83,10 +83,10 @@ class SftpModelsTest {
     @Test
     fun sortingKeepsDirectoriesFirstAndUnknownMetadataLast() {
         val entries = listOf(
-            SftpEntry("small", SftpEntryType.FILE, size = 10, modifiedAtSeconds = 30),
+            SftpEntry("small", SftpEntryType.FILE, size = 10, modifiedAtSeconds = 30, accessedAtSeconds = 10),
             SftpEntry("folder", SftpEntryType.DIRECTORY),
             SftpEntry("unknown", SftpEntryType.FILE),
-            SftpEntry("large", SftpEntryType.FILE, size = 100, modifiedAtSeconds = 20),
+            SftpEntry("large", SftpEntryType.FILE, size = 100, modifiedAtSeconds = 20, accessedAtSeconds = 40),
         )
 
         assertEquals(
@@ -95,7 +95,11 @@ class SftpModelsTest {
         )
         assertEquals(
             listOf("folder", "large", "small", "unknown"),
-            filterAndSortSftpEntries(entries, "", SftpSortMode.MODIFIED, false).map(SftpEntry::name),
+            filterAndSortSftpEntries(entries, "", SftpSortMode.UPDATED, false).map(SftpEntry::name),
+        )
+        assertEquals(
+            listOf("folder", "large", "small", "unknown"),
+            filterAndSortSftpEntries(entries, "", SftpSortMode.ACCESSED, true).map(SftpEntry::name),
         )
     }
 }

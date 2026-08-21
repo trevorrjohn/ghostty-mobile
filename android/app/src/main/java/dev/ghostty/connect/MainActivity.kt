@@ -1709,21 +1709,45 @@ class MainActivity : Activity() {
         actionRow.addView(compactButton("Upload", state.connected) { openUploadPicker() })
         val sortMode = sftpSortModes[state.browserId] ?: SftpSortMode.NAME
         val descending = sftpSortDescending[state.browserId] == true
-        val sort = compactButton("${sortMode.name.lowercase().replaceFirstChar(Char::uppercase)} ${if (descending) "v" else "^"}") {}
+        val sortLabel = when (sortMode) {
+            SftpSortMode.NAME -> "Name"
+            SftpSortMode.UPDATED -> "Updated"
+            SftpSortMode.ACCESSED -> "Accessed"
+            SftpSortMode.SIZE -> "Size"
+        }
+        val sort = compactButton("$sortLabel ${if (descending) "v" else "^"}") {}
         sort.contentDescription = "Sort files"
         sort.setOnClickListener { anchor ->
             PopupMenu(this, anchor).apply {
                 menu.add("Sort by name")
-                menu.add("Sort by modified time")
+                menu.add("Sort by last updated")
+                menu.add("Sort by last accessed")
                 menu.add("Sort by size")
-                menu.add(if (descending) "Ascending" else "Descending")
+                val reverseLabel = when (sortMode) {
+                    SftpSortMode.NAME -> if (descending) "A to Z" else "Z to A"
+                    SftpSortMode.UPDATED, SftpSortMode.ACCESSED -> if (descending) "Oldest first" else "Newest first"
+                    SftpSortMode.SIZE -> if (descending) "Smallest first" else "Largest first"
+                }
+                menu.add(reverseLabel)
                 setOnMenuItemClickListener { item ->
                     when (item.title) {
-                        "Sort by name" -> sftpSortModes[state.browserId] = SftpSortMode.NAME
-                        "Sort by modified time" -> sftpSortModes[state.browserId] = SftpSortMode.MODIFIED
-                        "Sort by size" -> sftpSortModes[state.browserId] = SftpSortMode.SIZE
-                        "Ascending" -> sftpSortDescending[state.browserId] = false
-                        "Descending" -> sftpSortDescending[state.browserId] = true
+                        "Sort by name" -> {
+                            sftpSortModes[state.browserId] = SftpSortMode.NAME
+                            sftpSortDescending[state.browserId] = false
+                        }
+                        "Sort by last updated" -> {
+                            sftpSortModes[state.browserId] = SftpSortMode.UPDATED
+                            sftpSortDescending[state.browserId] = true
+                        }
+                        "Sort by last accessed" -> {
+                            sftpSortModes[state.browserId] = SftpSortMode.ACCESSED
+                            sftpSortDescending[state.browserId] = true
+                        }
+                        "Sort by size" -> {
+                            sftpSortModes[state.browserId] = SftpSortMode.SIZE
+                            sftpSortDescending[state.browserId] = true
+                        }
+                        reverseLabel -> sftpSortDescending[state.browserId] = !descending
                     }
                     renderFileBrowser(state)
                     true
@@ -2863,7 +2887,10 @@ class MainActivity : Activity() {
             val metadata = entry.permissions ?: type
             val trailing = buildList {
                 entry.size?.let { add(formatBytes(it)) }
-                entry.modifiedAtSeconds?.let { add(formatRemoteTime(it)) }
+                when (sortMode) {
+                    SftpSortMode.ACCESSED -> entry.accessedAtSeconds?.let { add("Accessed ${formatRemoteTime(it)}") }
+                    else -> entry.modifiedAtSeconds?.let { add("Updated ${formatRemoteTime(it)}") }
+                }
             }.joinToString("\n")
             val row = browserEntryRow(entry, metadata, trailing, mutedColor)
             if (entry.supported) {
