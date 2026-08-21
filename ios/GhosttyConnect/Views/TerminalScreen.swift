@@ -10,6 +10,7 @@ struct TerminalScreen: View {
     @State private var keyboardFocused = false
     @State private var pendingReconnect = false
     @State private var hasRequestedConnection = false
+    @State private var keyboardBarState = KeyboardBarRuntimeState()
 
     var body: some View {
         let theme = TerminalTheme.theme(id: model.settings.themeID)
@@ -26,16 +27,28 @@ struct TerminalScreen: View {
             } else {
                 Spacer()
             }
-            HStack(spacing: 10) {
-                ForEach(TerminalKey.allCases) { key in
-                    Button(key.label) { session.send(key.sequence) }
-                        .font(.system(.caption2, design: .monospaced).weight(.semibold))
+            if model.keyboardBarConfig.enabled && keyboardFocused {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        ForEach(model.keyboardBarConfig.itemIDs) { item in
+                            Button(item.label) { activateKeyboardBarItem(item) }
+                                .font(.system(.caption2, design: .monospaced).weight(.semibold))
+                                .padding(.horizontal, 9)
+                                .frame(minWidth: 44, minHeight: 44)
+                                .foregroundStyle(isActive(item) ? Color.ghosttySurface : Color.ghosttyAccent)
+                                .background(
+                                    isActive(item) ? Color.ghosttyAccent : Color.clear,
+                                    in: RoundedRectangle(cornerRadius: 7)
+                                )
+                                .accessibilityLabel(item.accessibilityLabel)
+                                .accessibilityAddTraits(isActive(item) ? .isSelected : [])
+                        }
+                    }
+                    .padding(.horizontal, 10)
                 }
+                .frame(height: 44)
+                .background(Color.ghosttyRaised)
             }
-            .padding(.horizontal, 10)
-            .frame(height: 44)
-            .foregroundStyle(Color.ghosttyAccent)
-            .background(Color.ghosttyRaised)
             HStack(spacing: 8) {
                 Image(systemName: keyboardFocused ? "keyboard.fill" : "keyboard")
                 Text(keyboardFocused ? "Typing directly into terminal" : "Tap terminal to type")
@@ -46,7 +59,7 @@ struct TerminalScreen: View {
             .padding(10)
             .foregroundStyle(Color.ghosttySecondary)
             .background(Color.ghosttyRaised)
-            TerminalKeyboardCapture(isFocused: $keyboardFocused, onInput: session.send)
+            TerminalKeyboardCapture(isFocused: $keyboardFocused, onInput: handleInput)
                 .frame(width: 1, height: 1)
                 .opacity(0.01)
         }
@@ -68,10 +81,15 @@ struct TerminalScreen: View {
         .onDisappear {
             secret = ""
             keyboardFocused = false
+            keyboardBarState.consume()
             Task { await session.disconnect() }
         }
         .onChange(of: session.state) { _, state in
             if state == .connected { keyboardFocused = true }
+            else { keyboardBarState.consume() }
+        }
+        .onChange(of: keyboardFocused) { _, focused in
+            if !focused { keyboardBarState.consume() }
         }
         .alert(host.authenticationType == .password ? "Password" : "Key passphrase", isPresented: $showingCredential) {
             SecureField("Not saved", text: $secret)
@@ -197,6 +215,41 @@ struct TerminalScreen: View {
             pixelHeight: dimensions.pixelHeight
         )
     }
+
+    private func activateKeyboardBarItem(_ item: KeyboardBarItemID) {
+        if let modifier = item.modifier {
+            keyboardBarState.toggle(modifier)
+            return
+        }
+        guard let key = item.key else { return }
+        session.send(.key(key, modifiers: TerminalKeyModifiers(keyboardBarState.activeModifiers)))
+        keyboardBarState.consume()
+    }
+
+    private func handleInput(_ event: TerminalInputEvent) {
+        let modifiers = TerminalKeyModifiers(keyboardBarState.activeModifiers)
+        guard !modifiers.isEmpty else {
+            session.send(event)
+            return
+        }
+        switch event {
+        case .key:
+            session.send(event.adding(modifiers))
+            keyboardBarState.consume()
+        case .text(let text, let eventModifiers):
+            guard TerminalKey.fromCommittedText(text) != nil else {
+                session.send(event)
+                return
+            }
+            let output = modifiers.contains(.shift) ? text.uppercased() : text
+            session.send(.text(output, modifiers: eventModifiers.union(modifiers)))
+            keyboardBarState.consume()
+        }
+    }
+
+    private func isActive(_ item: KeyboardBarItemID) -> Bool {
+        item.modifier.map(keyboardBarState.activeModifiers.contains) == true
+    }
 }
 
 private struct HostTrustView: View {
@@ -245,40 +298,6 @@ private struct HostTrustView: View {
         VStack(alignment: .leading, spacing: 5) {
             Text(title).font(.caption).foregroundStyle(.secondary)
             Text(value).font(.system(.body, design: .monospaced)).textSelection(.enabled)
-        }
-    }
-}
-
-private enum TerminalKey: String, CaseIterable, Identifiable {
-    case escape
-    case controlC
-    case tab
-    case up
-    case down
-    case left
-    case right
-
-    var id: Self { self }
-    var label: String {
-        switch self {
-        case .escape: "ESC"
-        case .controlC: "CTRL-C"
-        case .tab: "TAB"
-        case .up: "↑"
-        case .down: "↓"
-        case .left: "←"
-        case .right: "→"
-        }
-    }
-    var sequence: String {
-        switch self {
-        case .escape: "\u{1b}"
-        case .controlC: "\u{03}"
-        case .tab: "\t"
-        case .up: "\u{1b}[A"
-        case .down: "\u{1b}[B"
-        case .left: "\u{1b}[D"
-        case .right: "\u{1b}[C"
         }
     }
 }

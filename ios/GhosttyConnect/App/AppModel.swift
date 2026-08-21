@@ -7,6 +7,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var keys: [StoredKey] = []
     @Published private(set) var trustedHosts: [TrustedHost] = []
     @Published var settings = AppSettings() { didSet { persistSettings() } }
+    @Published var keyboardBarConfig = KeyboardBarConfig.defaults { didSet { persistKeyboardBar() } }
     @Published var alertMessage: String?
 
     private let store = SecureStore()
@@ -20,6 +21,15 @@ final class AppModel: ObservableObject {
             trustedHosts = try trustedHostStore.records()
         } catch {
             alertMessage = error.localizedDescription
+        }
+        do {
+            keyboardBarConfig = try store.read(
+                KeyboardBarConfig.self,
+                account: "keyboard-bar",
+                default: .defaults
+            )
+        } catch {
+            alertMessage = "Keyboard bar settings could not be loaded. Open Settings, Keyboard Bar, then reset defaults to repair them."
         }
     }
 
@@ -86,4 +96,5 @@ final class AppModel: ObservableObject {
     }
 
     private func persistSettings() { persist(settings, account: "settings") }
+    private func persistKeyboardBar() { persist(keyboardBarConfig, account: "keyboard-bar") }
 }

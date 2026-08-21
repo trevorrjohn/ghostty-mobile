@@ -21,7 +21,51 @@ final class GhosttyTerminalEngineTests: XCTestCase {
         }
 
         let engine = try TerminalEngineFactory.make()
-        XCTAssertEqual(engine.encode(text: "λ 日本語"), Data("λ 日本語".utf8))
+        XCTAssertEqual(try engine.encode(event: .text("λ 日本語")), Data("λ 日本語".utf8))
+    }
+
+    func testEncodesCursorKeysFromTerminalMode() throws {
+        guard TerminalEngineFactory.isAvailable else {
+            throw XCTSkip("GhosttyVt XCFramework is not installed")
+        }
+
+        let engine = try TerminalEngineFactory.make()
+        XCTAssertEqual(try engine.encode(event: .key(.up)), Data("\u{1b}[A".utf8))
+
+        engine.feed(Data("\u{1b}[?1h".utf8))
+        XCTAssertEqual(try engine.encode(event: .key(.up)), Data("\u{1b}OA".utf8))
+    }
+
+    func testEncodesControlCharacterThroughKeyEncoder() throws {
+        guard TerminalEngineFactory.isAvailable else {
+            throw XCTSkip("GhosttyVt XCFramework is not installed")
+        }
+
+        let engine = try TerminalEngineFactory.make()
+        let encoded = try engine.encode(event: .key(.character("C"), text: "c", modifiers: .control))
+        XCTAssertEqual(Array(encoded), [0x03])
+    }
+
+    func testEncodesShiftedTextAndTab() throws {
+        guard TerminalEngineFactory.isAvailable else {
+            throw XCTSkip("GhosttyVt XCFramework is not installed")
+        }
+
+        let engine = try TerminalEngineFactory.make()
+        XCTAssertEqual(try engine.encode(event: .text("A", modifiers: .shift)), Data("A".utf8))
+        XCTAssertEqual(try engine.encode(event: .key(.tab, modifiers: .shift)), Data("\u{1b}[Z".utf8))
+    }
+
+    func testEncodesModifiedCharacterInKittyMode() throws {
+        guard TerminalEngineFactory.isAvailable else {
+            throw XCTSkip("GhosttyVt XCFramework is not installed")
+        }
+
+        let engine = try TerminalEngineFactory.make()
+        engine.feed(Data("\u{1b}[>1u".utf8))
+        let encoded = try engine.encode(event: .key(.character("C"), text: "c", modifiers: .control))
+
+        XCTAssertEqual(encoded, Data("\u{1b}[99;5u".utf8))
     }
 
     func testSnapshotsStylesAndCursor() throws {

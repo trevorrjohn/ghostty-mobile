@@ -14,6 +14,14 @@ struct SettingsView: View {
                         HStack { Text("Font size"); Spacer(); Text("\(Int(model.settings.fontSize)) pt").foregroundStyle(Color.ghosttySecondary) }
                         Slider(value: $model.settings.fontSize, in: 9...30, step: 1).tint(.ghosttyAccent)
                     }
+                    NavigationLink {
+                        KeyboardBarSettingsView()
+                    } label: {
+                        LabeledContent(
+                            "Keyboard bar",
+                            value: model.keyboardBarConfig.enabled ? "\(model.keyboardBarConfig.itemIDs.count) keys" : "Off"
+                        )
+                    }
                 }
                 Section("Security") {
                     LabeledContent("Saved hosts", value: "\(model.hosts.count)")
@@ -38,6 +46,60 @@ struct SettingsView: View {
             .navigationTitle("Settings")
             .onAppear { model.reloadTrustedHosts() }
         }
+    }
+}
+
+private struct KeyboardBarSettingsView: View {
+    @EnvironmentObject private var model: AppModel
+
+    private var availableItems: [KeyboardBarItemID] {
+        KeyboardBarItemID.allCases.filter { !model.keyboardBarConfig.itemIDs.contains($0) }
+    }
+
+    var body: some View {
+        List {
+            Section {
+                Toggle("Show keyboard bar", isOn: $model.keyboardBarConfig.enabled)
+            } footer: {
+                Text("The bar appears while terminal keyboard input is active. Modifiers apply once to the next named key or eligible single ASCII letter, number, or space.")
+            }
+
+            Section("Controls") {
+                if model.keyboardBarConfig.itemIDs.isEmpty {
+                    Text("No controls configured")
+                        .foregroundStyle(Color.ghosttySecondary)
+                }
+                ForEach(model.keyboardBarConfig.itemIDs) { item in
+                    Label(item.accessibilityLabel, systemImage: item.modifier == nil ? "keyboard" : "option")
+                }
+                .onMove { source, destination in
+                    model.keyboardBarConfig.itemIDs.move(fromOffsets: source, toOffset: destination)
+                }
+                .onDelete { offsets in
+                    model.keyboardBarConfig.itemIDs.remove(atOffsets: offsets)
+                }
+            }
+
+            if !availableItems.isEmpty {
+                Section("Add Control") {
+                    ForEach(availableItems) { item in
+                        Button {
+                            model.keyboardBarConfig.itemIDs.append(item)
+                        } label: {
+                            Label(item.accessibilityLabel, systemImage: "plus.circle")
+                        }
+                    }
+                }
+            }
+
+            Section {
+                Button("Reset to Defaults") {
+                    model.keyboardBarConfig = .defaults
+                }
+            }
+        }
+        .navigationTitle("Keyboard Bar")
+        .toolbar { EditButton() }
     }
 }
 

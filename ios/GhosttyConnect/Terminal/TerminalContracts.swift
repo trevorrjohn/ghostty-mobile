@@ -31,6 +31,58 @@ struct SessionFailure: Equatable {
     var canRetry: Bool { kind != .configuration }
 }
 
+enum TerminalKey: Equatable {
+    case escape
+    case tab
+    case backspace
+    case up
+    case down
+    case left
+    case right
+    case character(String)
+
+    static func fromCommittedText(_ text: String) -> TerminalKey? {
+        guard text.unicodeScalars.count == 1,
+              let scalar = text.unicodeScalars.first,
+              scalar.isASCII else { return nil }
+        let value = text.uppercased()
+        guard value.range(of: #"^[A-Z0-9 ]$"#, options: .regularExpression) != nil else { return nil }
+        return .character(value)
+    }
+}
+
+struct TerminalKeyModifiers: OptionSet, Equatable {
+    let rawValue: UInt16
+
+    static let shift = TerminalKeyModifiers(rawValue: 1 << 0)
+    static let control = TerminalKeyModifiers(rawValue: 1 << 1)
+    static let alt = TerminalKeyModifiers(rawValue: 1 << 2)
+
+    init(rawValue: UInt16) { self.rawValue = rawValue }
+
+    init(_ modifiers: Set<KeyboardModifier>) {
+        var value: TerminalKeyModifiers = []
+        if modifiers.contains(.shift) { value.insert(.shift) }
+        if modifiers.contains(.control) { value.insert(.control) }
+        if modifiers.contains(.alt) { value.insert(.alt) }
+        self = value
+    }
+}
+
+enum TerminalInputEvent: Equatable {
+    case text(String, modifiers: TerminalKeyModifiers = [])
+    case key(TerminalKey, text: String = "", modifiers: TerminalKeyModifiers = [])
+
+    func adding(_ additionalModifiers: TerminalKeyModifiers) -> TerminalInputEvent {
+        switch self {
+        case .text(let text, let modifiers):
+            return .text(text, modifiers: modifiers.union(additionalModifiers))
+        case .key(let key, let text, let modifiers):
+            return .key(key, text: text, modifiers: modifiers.union(additionalModifiers))
+        }
+    }
+}
+
 protocol SSHTransport: AnyObject {
     var output: AsyncThrowingStream<Data, Error> { get }
     var hostTrustRequests: AsyncStream<HostTrustRequest> { get }
@@ -102,7 +154,7 @@ enum SSHCredential {
 protocol TerminalEngine: AnyObject {
     func feed(_ data: Data)
     func resize(columns: Int, rows: Int)
-    func encode(text: String) -> Data
+    func encode(event: TerminalInputEvent) throws -> Data
     func visibleText() -> String
     func snapshot() throws -> TerminalSnapshot
 }
@@ -189,6 +241,8 @@ enum TerminalEngineError: LocalizedError {
     case initializationFailed
     case formatterInitializationFailed
     case renderStateInitializationFailed
+    case keyEncoderInitializationFailed
+    case keyEncodingFailed
     case snapshotFailed
 
     var errorDescription: String? {
@@ -201,6 +255,10 @@ enum TerminalEngineError: LocalizedError {
             "Ghostty could not create the terminal formatter."
         case .renderStateInitializationFailed:
             "Ghostty could not create the render state."
+        case .keyEncoderInitializationFailed:
+            "Ghostty could not create the keyboard encoder."
+        case .keyEncodingFailed:
+            "Ghostty could not encode the keyboard input."
         case .snapshotFailed:
             "Ghostty could not create a terminal snapshot."
         }

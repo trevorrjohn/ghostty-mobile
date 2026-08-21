@@ -10,6 +10,7 @@ final class TerminalSessionModel: ObservableObject {
     private let transportFactory: () -> any SSHTransport
     private var transport: (any SSHTransport)?
     private var outputTask: Task<Void, Never>?
+    private var writeTask: Task<Void, Never>?
     private var resizeTask: Task<Void, Never>?
     private var hostTrustTask: Task<Void, Never>?
     private var requestedDimensions: TerminalDimensions?
@@ -18,10 +19,13 @@ final class TerminalSessionModel: ObservableObject {
     private var activeDestination: String?
     private(set) var hasConnectedShell = false
 
-    init(transportFactory: @escaping () -> any SSHTransport = { CitadelSSHTransport() }) {
+    init(
+        transportFactory: @escaping () -> any SSHTransport = { CitadelSSHTransport() },
+        engineFactory: () throws -> any TerminalEngine = { try TerminalEngineFactory.make() }
+    ) {
         self.transportFactory = transportFactory
         do {
-            let engine = try TerminalEngineFactory.make()
+            let engine = try engineFactory()
             let initialSnapshot = try engine.snapshot()
             self.engine = engine
             snapshot = initialSnapshot
@@ -112,17 +116,37 @@ final class TerminalSessionModel: ObservableObject {
         request.answer(accepted: accepted)
     }
 
-    func send(_ text: String) {
+    func send(_ event: TerminalInputEvent) {
         guard let engine, let transport, let attemptID = connectionAttemptID, state == .connected else { return }
         let destination = activeDestination ?? "the remote host"
-        let data = engine.encode(text: text)
-        Task {
+        let data: Data
+        do { data = try engine.encode(event: event) }
+        catch {
+            Task {
+                await finishAttempt(
+                    attemptID: attemptID,
+                    transport: transport,
+                    failure: SessionFailure(kind: .protocolFailure, message: error.localizedDescription)
+                )
+            }
+            return
+        }
+        guard !data.isEmpty else { return }
+        let previousWrite = writeTask
+        writeTask = Task { [weak self] in
+            _ = await previousWrite?.result
+            guard let self,
+                  !Task.isCancelled,
+                  connectionAttemptID == attemptID,
+                  self.transport === transport,
+                  state == .connected else { return }
             do { try await transport.write(data) }
             catch {
                 await finishAttempt(
                     attemptID: attemptID,
                     transport: transport,
-                    failure: SSHFailureClassifier.classify(error, destination: destination)
+                    failure: SSHFailureClassifier.classify(error, destination: destination),
+                    waitForWrites: false
                 )
             }
         }
@@ -175,12 +199,17 @@ final class TerminalSessionModel: ObservableObject {
     private func finishAttempt(
         attemptID: UUID,
         transport: any SSHTransport,
-        failure: SessionFailure?
+        failure: SessionFailure?,
+        waitForWrites: Bool = true
     ) async {
         guard connectionAttemptID == attemptID else { return }
         connectionAttemptID = nil
         outputTask?.cancel()
         outputTask = nil
+        let pendingWrite = writeTask
+        pendingWrite?.cancel()
+        writeTask = nil
+        if waitForWrites { _ = await pendingWrite?.result }
         resizeTask?.cancel()
         resizeTask = nil
         hostTrustTask?.cancel()
@@ -199,6 +228,10 @@ final class TerminalSessionModel: ObservableObject {
         connectionAttemptID = nil
         outputTask?.cancel()
         outputTask = nil
+        let pendingWrite = writeTask
+        pendingWrite?.cancel()
+        writeTask = nil
+        _ = await pendingWrite?.result
         resizeTask?.cancel()
         resizeTask = nil
         hostTrustTask?.cancel()

@@ -33,11 +33,11 @@ This is a maturity gap rather than a different product architecture. A future ap
 
 The build script installs a checksum-verified XCFramework for the shared pinned Ghostty revision. `GhosttyTerminalEngine` confines C API ownership and converts render state into Swift values.
 
-The current adapter supports feed, resize, UTF-8 text encoding, plain-text formatting, and styled snapshots. Mode-aware key and paste encoding, scrollback, selection, effects, graphics, and archive capabilities remain parity work.
+The current adapter supports feed, resize, UTF-8 text encoding, mode-aware named-key encoding, plain-text formatting, and styled snapshots. Mode-aware paste encoding, scrollback, selection, effects, graphics, and archive capabilities remain parity work.
 
 ## Rendering and Input
 
-`TerminalGridView` renders styled cells and cursor state through SwiftUI Canvas. `TerminalKeyboardCapture` bridges UIKit keyboard input into SwiftUI.
+`TerminalGridView` renders styled cells and cursor state through SwiftUI Canvas. `TerminalKeyboardCapture` bridges UIKit keyboard input into SwiftUI. The configurable keyboard bar persists enablement and ordered built-in controls separately from ephemeral one-shot modifier state.
 
 The renderer consumes Swift-owned snapshots and never accesses mutable Ghostty memory. Viewport dimensions resize the local terminal before the remote PTY. Input is not locally echoed.
 
@@ -73,4 +73,4 @@ Choose a simulator available in the installed Xcode version when that destinatio
 
 ## Current Platform Gaps
 
-Current status is maintained in the [roadmap](../ROADMAP.md). Important iOS-specific gaps include comprehensive cancellation, keepalive and network-aware reconnect policy, terminal-mode-aware input, scrollback and selection, live effect policy, multiple sessions, lifecycle ownership, and accessibility.
+Current status is maintained in the [roadmap](../ROADMAP.md). Important iOS-specific gaps include comprehensive cancellation, keepalive and network-aware reconnect policy, broader hardware-key and modifier handling, scrollback and selection, live effect policy, multiple sessions, lifecycle ownership, and accessibility.

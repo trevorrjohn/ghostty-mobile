@@ -8,6 +8,8 @@ final class GhosttyTerminalEngine: TerminalEngine {
     private let renderState: GhosttyRenderState
     private let rowIterator: GhosttyRenderStateRowIterator
     private let rowCells: GhosttyRenderStateRowCells
+    private let keyEncoder: GhosttyKeyEncoder
+    private let keyEvent: GhosttyKeyEvent
     private let lock = NSLock()
 
     init(columns: Int, rows: Int) throws {
@@ -61,14 +63,41 @@ final class GhosttyTerminalEngine: TerminalEngine {
             throw TerminalEngineError.renderStateInitializationFailed
         }
 
+        var keyEncoder: GhosttyKeyEncoder?
+        guard ghostty_key_encoder_new(nil, &keyEncoder) == GHOSTTY_SUCCESS,
+              let keyEncoder else {
+            ghostty_render_state_row_cells_free(rowCells)
+            ghostty_render_state_row_iterator_free(rowIterator)
+            ghostty_render_state_free(renderState)
+            ghostty_formatter_free(formatter)
+            ghostty_terminal_free(terminal)
+            throw TerminalEngineError.keyEncoderInitializationFailed
+        }
+
+        var keyEvent: GhosttyKeyEvent?
+        guard ghostty_key_event_new(nil, &keyEvent) == GHOSTTY_SUCCESS,
+              let keyEvent else {
+            ghostty_key_encoder_free(keyEncoder)
+            ghostty_render_state_row_cells_free(rowCells)
+            ghostty_render_state_row_iterator_free(rowIterator)
+            ghostty_render_state_free(renderState)
+            ghostty_formatter_free(formatter)
+            ghostty_terminal_free(terminal)
+            throw TerminalEngineError.keyEncoderInitializationFailed
+        }
+
         self.terminal = terminal
         self.formatter = formatter
         self.renderState = renderState
         self.rowIterator = rowIterator
         self.rowCells = rowCells
+        self.keyEncoder = keyEncoder
+        self.keyEvent = keyEvent
     }
 
     deinit {
+        ghostty_key_event_free(keyEvent)
+        ghostty_key_encoder_free(keyEncoder)
         ghostty_render_state_row_cells_free(rowCells)
         ghostty_render_state_row_iterator_free(rowIterator)
         ghostty_render_state_free(renderState)
@@ -101,8 +130,113 @@ final class GhosttyTerminalEngine: TerminalEngine {
         )
     }
 
-    func encode(text: String) -> Data {
-        Data(text.utf8)
+    func encode(event: TerminalInputEvent) throws -> Data {
+        let key: TerminalKey
+        let text: String
+        let modifiers: TerminalKeyModifiers
+        switch event {
+        case .text(let value, let eventModifiers):
+            guard !eventModifiers.isEmpty else { return Data(value.utf8) }
+            guard let characterKey = TerminalKey.fromCommittedText(value) else {
+                return Data(value.utf8)
+            }
+            key = characterKey
+            text = value
+            modifiers = eventModifiers
+        case .key(let eventKey, let eventText, let eventModifiers):
+            key = eventKey
+            text = eventText
+            modifiers = eventModifiers
+        }
+
+        lock.lock()
+        defer { lock.unlock() }
+        ghostty_key_encoder_setopt_from_terminal(keyEncoder, terminal)
+        ghostty_key_event_set_action(keyEvent, GHOSTTY_KEY_ACTION_PRESS)
+        ghostty_key_event_set_key(keyEvent, Self.nativeKey(key))
+        ghostty_key_event_set_mods(keyEvent, modifiers.rawValue)
+        ghostty_key_event_set_consumed_mods(keyEvent, 0)
+        ghostty_key_event_set_composing(keyEvent, false)
+        ghostty_key_event_set_unshifted_codepoint(keyEvent, Self.unshiftedCodepoint(key))
+        return try text.withCString { pointer -> Data in
+            ghostty_key_event_set_utf8(keyEvent, pointer, text.utf8.count)
+
+            var buffer = [CChar](repeating: 0, count: 128)
+            var written = 0
+            var result = buffer.withUnsafeMutableBufferPointer { bytes in
+                ghostty_key_encoder_encode(keyEncoder, keyEvent, bytes.baseAddress, bytes.count, &written)
+            }
+            if result == GHOSTTY_OUT_OF_SPACE {
+                guard written <= 4_096 else { throw TerminalEngineError.keyEncodingFailed }
+                buffer = [CChar](repeating: 0, count: written)
+                result = buffer.withUnsafeMutableBufferPointer { bytes in
+                    ghostty_key_encoder_encode(keyEncoder, keyEvent, bytes.baseAddress, bytes.count, &written)
+                }
+            }
+            guard result == GHOSTTY_SUCCESS else { throw TerminalEngineError.keyEncodingFailed }
+            return buffer.withUnsafeBytes { Data($0.prefix(written)) }
+        }
+    }
+
+    private static func nativeKey(_ key: TerminalKey) -> GhosttyKey {
+        switch key {
+        case .escape: GHOSTTY_KEY_ESCAPE
+        case .tab: GHOSTTY_KEY_TAB
+        case .backspace: GHOSTTY_KEY_BACKSPACE
+        case .up: GHOSTTY_KEY_ARROW_UP
+        case .down: GHOSTTY_KEY_ARROW_DOWN
+        case .left: GHOSTTY_KEY_ARROW_LEFT
+        case .right: GHOSTTY_KEY_ARROW_RIGHT
+        case .character(let value): nativeCharacterKey(value.uppercased())
+        }
+    }
+
+    private static func nativeCharacterKey(_ value: String) -> GhosttyKey {
+        switch value {
+        case "A": GHOSTTY_KEY_A
+        case "B": GHOSTTY_KEY_B
+        case "C": GHOSTTY_KEY_C
+        case "D": GHOSTTY_KEY_D
+        case "E": GHOSTTY_KEY_E
+        case "F": GHOSTTY_KEY_F
+        case "G": GHOSTTY_KEY_G
+        case "H": GHOSTTY_KEY_H
+        case "I": GHOSTTY_KEY_I
+        case "J": GHOSTTY_KEY_J
+        case "K": GHOSTTY_KEY_K
+        case "L": GHOSTTY_KEY_L
+        case "M": GHOSTTY_KEY_M
+        case "N": GHOSTTY_KEY_N
+        case "O": GHOSTTY_KEY_O
+        case "P": GHOSTTY_KEY_P
+        case "Q": GHOSTTY_KEY_Q
+        case "R": GHOSTTY_KEY_R
+        case "S": GHOSTTY_KEY_S
+        case "T": GHOSTTY_KEY_T
+        case "U": GHOSTTY_KEY_U
+        case "V": GHOSTTY_KEY_V
+        case "W": GHOSTTY_KEY_W
+        case "X": GHOSTTY_KEY_X
+        case "Y": GHOSTTY_KEY_Y
+        case "Z": GHOSTTY_KEY_Z
+        case "0": GHOSTTY_KEY_DIGIT_0
+        case "1": GHOSTTY_KEY_DIGIT_1
+        case "2": GHOSTTY_KEY_DIGIT_2
+        case "3": GHOSTTY_KEY_DIGIT_3
+        case "4": GHOSTTY_KEY_DIGIT_4
+        case "5": GHOSTTY_KEY_DIGIT_5
+        case "6": GHOSTTY_KEY_DIGIT_6
+        case "7": GHOSTTY_KEY_DIGIT_7
+        case "8": GHOSTTY_KEY_DIGIT_8
+        case "9": GHOSTTY_KEY_DIGIT_9
+        case " ": GHOSTTY_KEY_SPACE
+        default: GHOSTTY_KEY_UNIDENTIFIED
+        }
+    }
+
+    private static func unshiftedCodepoint(_ key: TerminalKey) -> UInt32 {
+        guard case .character(let value) = key else { return 0 }
+        return value.lowercased().unicodeScalars.first?.value ?? 0
     }
 
     func visibleText() -> String {

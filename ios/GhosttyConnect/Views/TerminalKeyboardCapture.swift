@@ -12,7 +12,7 @@ enum TerminalInputEncoder {
 
 struct TerminalKeyboardCapture: UIViewRepresentable {
     @Binding var isFocused: Bool
-    let onInput: (String) -> Void
+    let onInput: (TerminalInputEvent) -> Void
 
     func makeUIView(context: Context) -> TerminalKeyboardInputView {
         let view = TerminalKeyboardInputView()
@@ -33,7 +33,7 @@ struct TerminalKeyboardCapture: UIViewRepresentable {
 }
 
 final class TerminalKeyboardInputView: UIView, UIKeyInput {
-    var onInput: ((String) -> Void)?
+    var onInput: ((TerminalInputEvent) -> Void)?
     var onFocusChange: ((Bool) -> Void)?
 
     override var canBecomeFirstResponder: Bool { true }
@@ -46,11 +46,11 @@ final class TerminalKeyboardInputView: UIView, UIKeyInput {
     var keyboardAppearance: UIKeyboardAppearance = .dark
 
     func insertText(_ text: String) {
-        onInput?(TerminalInputEncoder.encode(text))
+        onInput?(.text(TerminalInputEncoder.encode(text)))
     }
 
     func deleteBackward() {
-        onInput?(TerminalInputEncoder.backspace)
+        onInput?(.key(.backspace))
     }
 
     override func becomeFirstResponder() -> Bool {
@@ -78,12 +78,12 @@ final class TerminalKeyboardInputView: UIView, UIKeyInput {
         ]
     }
 
-    @objc private func sendEscape() { onInput?("\u{1b}") }
-    @objc private func sendUp() { onInput?("\u{1b}[A") }
-    @objc private func sendDown() { onInput?("\u{1b}[B") }
-    @objc private func sendLeft() { onInput?("\u{1b}[D") }
-    @objc private func sendRight() { onInput?("\u{1b}[C") }
-    @objc private func sendControlC() { onInput?("\u{03}") }
-    @objc private func sendControlD() { onInput?("\u{04}") }
-    @objc private func sendControlZ() { onInput?("\u{1a}") }
+    @objc private func sendEscape() { onInput?(.key(.escape)) }
+    @objc private func sendUp() { onInput?(.key(.up)) }
+    @objc private func sendDown() { onInput?(.key(.down)) }
+    @objc private func sendLeft() { onInput?(.key(.left)) }
+    @objc private func sendRight() { onInput?(.key(.right)) }
+    @objc private func sendControlC() { onInput?(.key(.character("C"), text: "c", modifiers: .control)) }
+    @objc private func sendControlD() { onInput?(.key(.character("D"), text: "d", modifiers: .control)) }
+    @objc private func sendControlZ() { onInput?(.key(.character("Z"), text: "z", modifiers: .control)) }
 }
