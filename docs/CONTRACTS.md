@@ -88,7 +88,7 @@ Input is normalized into text, named key, modifiers, action, and optional pointe
 - Key encoding is terminal-mode-aware.
 - Keyboard-bar ordering and enablement are app-global persisted preferences; active modifiers are ephemeral and session-scoped.
 - One-shot keyboard-bar modifiers are consumed by the next named key or eligible single-character committed input event; unsupported IME commits pass through without silently consuming them.
-- Persisted keyboard-bar items reference a bounded built-in catalog rather than executable user-provided sequences.
+- Persisted keyboard-bar items reference bounded built-in key IDs or custom actions composed from bounded key and modifier catalogs, never executable user-provided sequences.
 - Encoded input writes preserve invocation order and cannot cross connection attempts.
 - The client never locally echoes committed input.
 - Password-input detection suppresses accessibility or preview exposure where supported.

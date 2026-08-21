@@ -19,7 +19,7 @@ struct SettingsView: View {
                     } label: {
                         LabeledContent(
                             "Keyboard bar",
-                            value: model.keyboardBarConfig.enabled ? "\(model.keyboardBarConfig.itemIDs.count) keys" : "Off"
+                            value: model.keyboardBarConfig.enabled ? "\(model.keyboardBarConfig.items.count) keys" : "Off"
                         )
                     }
                 }
@@ -51,9 +51,12 @@ struct SettingsView: View {
 
 private struct KeyboardBarSettingsView: View {
     @EnvironmentObject private var model: AppModel
+    @State private var editedAction: KeyboardAction?
 
-    private var availableItems: [KeyboardBarItemID] {
-        KeyboardBarItemID.allCases.filter { !model.keyboardBarConfig.itemIDs.contains($0) }
+    private var availableItems: [KeyboardBarItem] {
+        let builtIns = KeyboardBarItemID.allCases.map(KeyboardBarItem.builtIn)
+        let actions = model.keyboardBarConfig.actions.map { KeyboardBarItem.action($0.id) }
+        return (builtIns + actions).filter { !model.keyboardBarConfig.items.contains($0) }
     }
 
     var body: some View {
@@ -65,18 +68,18 @@ private struct KeyboardBarSettingsView: View {
             }
 
             Section("Controls") {
-                if model.keyboardBarConfig.itemIDs.isEmpty {
+                if model.keyboardBarConfig.items.isEmpty {
                     Text("No controls configured")
                         .foregroundStyle(Color.ghosttySecondary)
                 }
-                ForEach(model.keyboardBarConfig.itemIDs) { item in
-                    Label(item.accessibilityLabel, systemImage: item.modifier == nil ? "keyboard" : "option")
+                ForEach(model.keyboardBarConfig.items) { item in
+                    Label(label(for: item), systemImage: systemImage(for: item))
                 }
                 .onMove { source, destination in
-                    model.keyboardBarConfig.itemIDs.move(fromOffsets: source, toOffset: destination)
+                    model.keyboardBarConfig.moveItems(from: source, to: destination)
                 }
                 .onDelete { offsets in
-                    model.keyboardBarConfig.itemIDs.remove(atOffsets: offsets)
+                    model.keyboardBarConfig.removeItems(at: offsets)
                 }
             }
 
@@ -84,12 +87,37 @@ private struct KeyboardBarSettingsView: View {
                 Section("Add Control") {
                     ForEach(availableItems) { item in
                         Button {
-                            model.keyboardBarConfig.itemIDs.append(item)
+                            model.keyboardBarConfig.append(item)
                         } label: {
-                            Label(item.accessibilityLabel, systemImage: "plus.circle")
+                            Label(label(for: item), systemImage: "plus.circle")
                         }
                     }
                 }
+            }
+
+            Section {
+                Button {
+                    editedAction = KeyboardAction(label: "", key: .c, modifiers: [.control])
+                } label: {
+                    Label("Create Custom Action", systemImage: "plus")
+                }
+                .disabled(model.keyboardBarConfig.actions.count >= KeyboardBarConfig.maximumActions)
+                ForEach(model.keyboardBarConfig.actions) { action in
+                    Button {
+                        editedAction = action
+                    } label: {
+                        LabeledContent(action.label, value: description(for: action))
+                    }
+                    .swipeActions {
+                        Button("Delete", role: .destructive) {
+                            model.keyboardBarConfig.deleteAction(id: action.id)
+                        }
+                    }
+                }
+            } header: {
+                Text("Custom Actions")
+            } footer: {
+                Text("Create up to \(KeyboardBarConfig.maximumActions) actions from a key and Ctrl, Alt, or Shift.")
             }
 
             Section {
@@ -100,6 +128,93 @@ private struct KeyboardBarSettingsView: View {
         }
         .navigationTitle("Keyboard Bar")
         .toolbar { EditButton() }
+        .sheet(item: $editedAction) { action in
+            KeyboardActionEditor(action: action) { savedAction in
+                let isNew = model.keyboardBarConfig.action(id: savedAction.id) == nil
+                return model.keyboardBarConfig.saveAction(savedAction, addToBar: isNew)
+            }
+        }
+    }
+
+    private func label(for item: KeyboardBarItem) -> String {
+        switch item {
+        case .builtIn(let item): item.accessibilityLabel
+        case .action(let id): model.keyboardBarConfig.action(id: id)?.label ?? "Custom action"
+        }
+    }
+
+    private func systemImage(for item: KeyboardBarItem) -> String {
+        switch item {
+        case .builtIn(let item): item.modifier == nil ? "keyboard" : "option"
+        case .action: "command"
+        }
+    }
+
+    private func description(for action: KeyboardAction) -> String {
+        let modifiers = KeyboardModifier.allCases
+            .filter(action.modifiers.contains)
+            .map(\.label)
+        return (modifiers + [action.key.label]).joined(separator: "+")
+    }
+}
+
+private struct KeyboardActionEditor: View {
+    @Environment(\.dismiss) private var dismiss
+    @State private var action: KeyboardAction
+    let onSave: (KeyboardAction) -> Bool
+
+    init(action: KeyboardAction, onSave: @escaping (KeyboardAction) -> Bool) {
+        _action = State(initialValue: action)
+        self.onSave = onSave
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section("Action") {
+                    TextField("Label", text: $action.label)
+                        .textInputAutocapitalization(.characters)
+                    Picker("Key", selection: $action.key) {
+                        ForEach(KeyboardActionKey.allCases) { key in
+                            Text(key.label).tag(key)
+                        }
+                    }
+                }
+                Section("Modifiers") {
+                    ForEach(KeyboardModifier.allCases, id: \.self) { modifier in
+                        Toggle(modifier.label, isOn: modifierBinding(modifier))
+                    }
+                }
+            }
+            .navigationTitle("Custom Action")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Save") {
+                        let saved = onSave(KeyboardAction(
+                            id: action.id,
+                            label: action.label,
+                            key: action.key,
+                            modifiers: action.modifiers
+                        ))
+                        if saved { dismiss() }
+                    }
+                    .disabled(!action.isValid)
+                }
+            }
+        }
+    }
+
+    private func modifierBinding(_ modifier: KeyboardModifier) -> Binding<Bool> {
+        Binding {
+            action.modifiers.contains(modifier)
+        } set: { enabled in
+            if enabled { action.modifiers.insert(modifier) }
+            else { action.modifiers.remove(modifier) }
+        }
     }
 }
 

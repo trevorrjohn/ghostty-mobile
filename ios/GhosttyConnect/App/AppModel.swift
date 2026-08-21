@@ -26,7 +26,8 @@ final class AppModel: ObservableObject {
             keyboardBarConfig = try store.read(
                 KeyboardBarConfig.self,
                 account: "keyboard-bar",
-                default: .defaults
+                default: .defaults,
+                maximumBytes: KeyboardBarConfig.maximumEncodedBytes
             )
         } catch {
             alertMessage = "Keyboard bar settings could not be loaded. Open Settings, Keyboard Bar, then reset defaults to repair them."

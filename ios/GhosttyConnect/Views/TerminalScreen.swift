@@ -30,8 +30,8 @@ struct TerminalScreen: View {
             if model.keyboardBarConfig.enabled && keyboardFocused {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 8) {
-                        ForEach(model.keyboardBarConfig.itemIDs) { item in
-                            Button(item.label) { activateKeyboardBarItem(item) }
+                        ForEach(model.keyboardBarConfig.items) { item in
+                            Button(keyboardBarLabel(item)) { activateKeyboardBarItem(item) }
                                 .font(.system(.caption2, design: .monospaced).weight(.semibold))
                                 .padding(.horizontal, 9)
                                 .frame(minWidth: 44, minHeight: 44)
@@ -40,7 +40,8 @@ struct TerminalScreen: View {
                                     isActive(item) ? Color.ghosttyAccent : Color.clear,
                                     in: RoundedRectangle(cornerRadius: 7)
                                 )
-                                .accessibilityLabel(item.accessibilityLabel)
+                                .accessibilityLabel(keyboardBarAccessibilityLabel(item))
+                                .accessibilityHint(keyboardBarAccessibilityHint(item))
                                 .accessibilityAddTraits(isActive(item) ? .isSelected : [])
                         }
                     }
@@ -216,14 +217,21 @@ struct TerminalScreen: View {
         )
     }
 
-    private func activateKeyboardBarItem(_ item: KeyboardBarItemID) {
-        if let modifier = item.modifier {
-            keyboardBarState.toggle(modifier)
-            return
+    private func activateKeyboardBarItem(_ item: KeyboardBarItem) {
+        switch item {
+        case .builtIn(let item):
+            if let modifier = item.modifier {
+                keyboardBarState.toggle(modifier)
+                return
+            }
+            guard let key = item.key else { return }
+            session.send(.key(key, modifiers: TerminalKeyModifiers(keyboardBarState.activeModifiers)))
+            keyboardBarState.consume()
+        case .action(let id):
+            guard let action = model.keyboardBarConfig.action(id: id) else { return }
+            session.send(action.event.adding(TerminalKeyModifiers(keyboardBarState.activeModifiers)))
+            keyboardBarState.consume()
         }
-        guard let key = item.key else { return }
-        session.send(.key(key, modifiers: TerminalKeyModifiers(keyboardBarState.activeModifiers)))
-        keyboardBarState.consume()
     }
 
     private func handleInput(_ event: TerminalInputEvent) {
@@ -247,8 +255,32 @@ struct TerminalScreen: View {
         }
     }
 
-    private func isActive(_ item: KeyboardBarItemID) -> Bool {
-        item.modifier.map(keyboardBarState.activeModifiers.contains) == true
+    private func isActive(_ item: KeyboardBarItem) -> Bool {
+        guard case .builtIn(let item) = item else { return false }
+        return item.modifier.map(keyboardBarState.activeModifiers.contains) == true
+    }
+
+    private func keyboardBarLabel(_ item: KeyboardBarItem) -> String {
+        switch item {
+        case .builtIn(let item): item.label
+        case .action(let id): model.keyboardBarConfig.action(id: id)?.label ?? "ACTION"
+        }
+    }
+
+    private func keyboardBarAccessibilityLabel(_ item: KeyboardBarItem) -> String {
+        switch item {
+        case .builtIn(let item): item.accessibilityLabel
+        case .action(let id): model.keyboardBarConfig.action(id: id)?.label ?? "Custom action"
+        }
+    }
+
+    private func keyboardBarAccessibilityHint(_ item: KeyboardBarItem) -> String {
+        guard case .action(let id) = item,
+              let action = model.keyboardBarConfig.action(id: id) else { return "" }
+        let modifiers = KeyboardModifier.allCases
+            .filter(action.modifiers.contains)
+            .map(\.label)
+        return "Sends \((modifiers + [action.key.label]).joined(separator: " plus "))"
     }
 }
 

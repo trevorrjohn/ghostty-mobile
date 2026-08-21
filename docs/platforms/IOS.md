@@ -37,7 +37,7 @@ The current adapter supports feed, resize, UTF-8 text encoding, mode-aware named
 
 ## Rendering and Input
 
-`TerminalGridView` renders styled cells and cursor state through SwiftUI Canvas. `TerminalKeyboardCapture` bridges UIKit keyboard input into SwiftUI. The configurable keyboard bar persists enablement and ordered built-in controls separately from ephemeral one-shot modifier state.
+`TerminalGridView` renders styled cells and cursor state through SwiftUI Canvas. `TerminalKeyboardCapture` bridges UIKit keyboard input into SwiftUI. The configurable keyboard bar persists enablement, ordered built-in controls, and bounded custom key-plus-modifier actions separately from ephemeral one-shot modifier state.
 
 The renderer consumes Swift-owned snapshots and never accesses mutable Ghostty memory. Viewport dimensions resize the local terminal before the remote PTY. Input is not locally echoed.
 

@@ -3,10 +3,12 @@ import Security
 
 enum SecureStoreError: LocalizedError {
     case keychain(OSStatus)
+    case oversizedData
 
     var errorDescription: String? {
         switch self {
         case .keychain(let status): "Keychain error \(status)"
+        case .oversizedData: "Stored data exceeds the supported size."
         }
     }
 }
@@ -14,8 +16,14 @@ enum SecureStoreError: LocalizedError {
 struct SecureStore {
     private let service = "dev.ghostty.connect"
 
-    func read<T: Decodable>(_ type: T.Type, account: String, default defaultValue: T) throws -> T {
+    func read<T: Decodable>(
+        _ type: T.Type,
+        account: String,
+        default defaultValue: T,
+        maximumBytes: Int? = nil
+    ) throws -> T {
         guard let data = try readData(account: account) else { return defaultValue }
+        if let maximumBytes, data.count > maximumBytes { throw SecureStoreError.oversizedData }
         return try JSONDecoder().decode(T.self, from: data)
     }
 
