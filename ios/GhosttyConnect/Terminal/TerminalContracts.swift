@@ -3,6 +3,7 @@ import Foundation
 enum SessionState: Equatable {
     case disconnected
     case connecting
+    case verifyingHost
     case authenticating
     case connected
     case failed(String)
@@ -10,10 +11,65 @@ enum SessionState: Equatable {
 
 protocol SSHTransport: AnyObject {
     var output: AsyncThrowingStream<Data, Error> { get }
+    var hostTrustRequests: AsyncStream<HostTrustRequest> { get }
     func connect(to host: Host, credential: SSHCredential) async throws
     func write(_ data: Data) async throws
     func resize(columns: Int, rows: Int, pixelWidth: Int, pixelHeight: Int) async throws
     func disconnect() async
+}
+
+enum HostTrustStatus: Equatable, Sendable {
+    case unknown
+    case changed
+}
+
+struct HostTrustRequest: Identifiable, Sendable {
+    let id: UUID
+    let destination: String
+    let algorithm: String
+    let fingerprint: String
+    let previousFingerprint: String?
+    let status: HostTrustStatus
+    private let response: HostTrustResponse
+
+    init(
+        id: UUID = UUID(),
+        destination: String,
+        algorithm: String,
+        fingerprint: String,
+        previousFingerprint: String?,
+        status: HostTrustStatus,
+        response: @escaping @Sendable (Bool) -> Void
+    ) {
+        self.id = id
+        self.destination = destination
+        self.algorithm = algorithm
+        self.fingerprint = fingerprint
+        self.previousFingerprint = previousFingerprint
+        self.status = status
+        self.response = HostTrustResponse(response)
+    }
+
+    func answer(accepted: Bool) {
+        response.answer(accepted)
+    }
+}
+
+private final class HostTrustResponse: @unchecked Sendable {
+    private let lock = NSLock()
+    private var response: (@Sendable (Bool) -> Void)?
+
+    init(_ response: @escaping @Sendable (Bool) -> Void) {
+        self.response = response
+    }
+
+    func answer(_ accepted: Bool) {
+        lock.lock()
+        let response = self.response
+        self.response = nil
+        lock.unlock()
+        response?(accepted)
+    }
 }
 
 enum SSHCredential {

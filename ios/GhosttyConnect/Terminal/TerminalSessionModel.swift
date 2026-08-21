@@ -4,16 +4,20 @@ import Foundation
 final class TerminalSessionModel: ObservableObject {
     @Published private(set) var state = SessionState.disconnected
     @Published private(set) var snapshot: TerminalSnapshot?
+    @Published private(set) var pendingHostTrust: HostTrustRequest?
 
     private let engine: (any TerminalEngine)?
-    private let transport: any SSHTransport
+    private let transportFactory: () -> any SSHTransport
+    private var transport: (any SSHTransport)?
     private var outputTask: Task<Void, Never>?
     private var resizeTask: Task<Void, Never>?
+    private var hostTrustTask: Task<Void, Never>?
     private var requestedDimensions: TerminalDimensions?
     private var appliedDimensions: TerminalDimensions?
+    private var connectionAttemptID: UUID?
 
-    init(transport: any SSHTransport = CitadelSSHTransport()) {
-        self.transport = transport
+    init(transportFactory: @escaping () -> any SSHTransport = { CitadelSSHTransport() }) {
+        self.transportFactory = transportFactory
         do {
             let engine = try TerminalEngineFactory.make()
             let initialSnapshot = try engine.snapshot()
@@ -26,7 +30,7 @@ final class TerminalSessionModel: ObservableObject {
     }
 
     func connect(to host: Host, secret: String?, key: StoredKey? = nil) async {
-        guard let engine else { return }
+        guard let engine, connectionAttemptID == nil, transport == nil else { return }
         let credential: SSHCredential
         switch host.authenticationType {
         case .password:
@@ -38,36 +42,77 @@ final class TerminalSessionModel: ObservableObject {
             }
             credential = .privateKey(key.data, passphrase: secret)
         }
+        let attemptID = UUID()
+        let transport = transportFactory()
+        connectionAttemptID = attemptID
+        self.transport = transport
+        appliedDimensions = nil
         state = .connecting
+        hostTrustTask = Task { [weak self] in
+            guard let self else { return }
+            for await request in transport.hostTrustRequests {
+                guard connectionAttemptID == attemptID else {
+                    request.answer(accepted: false)
+                    return
+                }
+                pendingHostTrust = request
+                state = .verifyingHost
+            }
+        }
         outputTask = Task { [weak self] in
             guard let self else { return }
             do {
                 for try await data in transport.output {
+                    guard connectionAttemptID == attemptID else { return }
                     engine.feed(data)
                     snapshot = try engine.snapshot()
                 }
-                if state == .connected { state = .disconnected }
+                await finishAttempt(attemptID: attemptID, transport: transport, failure: nil)
             } catch {
-                state = .failed(error.localizedDescription)
+                await finishAttempt(
+                    attemptID: attemptID,
+                    transport: transport,
+                    failure: error.localizedDescription
+                )
             }
         }
 
         do {
             try await transport.connect(to: host, credential: credential)
+            guard connectionAttemptID == attemptID else {
+                await transport.disconnect()
+                return
+            }
             state = .connected
             scheduleResize()
         } catch {
-            outputTask?.cancel()
-            state = .failed(error.localizedDescription)
+            await finishAttempt(
+                attemptID: attemptID,
+                transport: transport,
+                failure: error.localizedDescription
+            )
         }
     }
 
+    func answerHostTrust(requestID: UUID, accepted: Bool) {
+        guard let request = pendingHostTrust, request.id == requestID else { return }
+        pendingHostTrust = nil
+        state = .connecting
+        request.answer(accepted: accepted)
+    }
+
     func send(_ text: String) {
-        guard let engine, state == .connected else { return }
+        guard let engine, let transport, let attemptID = connectionAttemptID, state == .connected else { return }
         let data = engine.encode(text: text)
         Task {
             do { try await transport.write(data) }
-            catch { state = .failed(error.localizedDescription) }
+            catch {
+                await finishAttempt(
+                    attemptID: attemptID,
+                    transport: transport,
+                    failure: error.localizedDescription
+                )
+            }
         }
     }
 
@@ -85,6 +130,8 @@ final class TerminalSessionModel: ObservableObject {
         resizeTask?.cancel()
         guard state == .connected,
               let engine,
+              let transport,
+              let attemptID = connectionAttemptID,
               let dimensions = requestedDimensions,
               dimensions != appliedDimensions else { return }
         resizeTask = Task {
@@ -103,18 +150,51 @@ final class TerminalSessionModel: ObservableObject {
             } catch is CancellationError {
                 return
             } catch {
-                state = .failed(error.localizedDescription)
+                await finishAttempt(
+                    attemptID: attemptID,
+                    transport: transport,
+                    failure: error.localizedDescription
+                )
             }
         }
     }
 
-    func disconnect() async {
+    private func finishAttempt(
+        attemptID: UUID,
+        transport: any SSHTransport,
+        failure: String?
+    ) async {
+        guard connectionAttemptID == attemptID else { return }
+        connectionAttemptID = nil
         outputTask?.cancel()
         outputTask = nil
         resizeTask?.cancel()
         resizeTask = nil
+        hostTrustTask?.cancel()
+        hostTrustTask = nil
+        pendingHostTrust?.answer(accepted: false)
+        pendingHostTrust = nil
         await transport.disconnect()
-        if state == .connected || state == .connecting { state = .disconnected }
+        guard connectionAttemptID == nil, self.transport === transport else { return }
+        self.transport = nil
+        state = failure.map(SessionState.failed) ?? .disconnected
+    }
+
+    func disconnect() async {
+        let transport = self.transport
+        connectionAttemptID = nil
+        outputTask?.cancel()
+        outputTask = nil
+        resizeTask?.cancel()
+        resizeTask = nil
+        hostTrustTask?.cancel()
+        hostTrustTask = nil
+        pendingHostTrust?.answer(accepted: false)
+        pendingHostTrust = nil
+        await transport?.disconnect()
+        guard connectionAttemptID == nil else { return }
+        self.transport = nil
+        state = .disconnected
     }
 }
 

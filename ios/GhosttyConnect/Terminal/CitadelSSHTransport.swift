@@ -26,37 +26,62 @@ enum SSHTransportError: LocalizedError {
 
 actor CitadelSSHTransport: SSHTransport {
     nonisolated let output: AsyncThrowingStream<Data, Error>
+    nonisolated let hostTrustRequests: AsyncStream<HostTrustRequest>
 
     private let outputContinuation: AsyncThrowingStream<Data, Error>.Continuation
+    private let hostTrustContinuation: AsyncStream<HostTrustRequest>.Continuation
     private var client: SSHClient?
     private var writer: TTYStdinWriter?
     private var sessionTask: Task<Void, Never>?
+    private var hostKeyValidator: KeychainHostKeyValidator?
+    private var connectionAttemptID: UUID?
 
     init() {
         var continuation: AsyncThrowingStream<Data, Error>.Continuation!
         output = AsyncThrowingStream { continuation = $0 }
         outputContinuation = continuation
+        var hostTrustContinuation: AsyncStream<HostTrustRequest>.Continuation!
+        hostTrustRequests = AsyncStream { hostTrustContinuation = $0 }
+        self.hostTrustContinuation = hostTrustContinuation
     }
 
     func connect(to host: Host, credential: SSHCredential) async throws {
-        guard client == nil else { throw SSHTransportError.alreadyConnected }
+        guard client == nil, connectionAttemptID == nil else { throw SSHTransportError.alreadyConnected }
         let authenticationMethod = try CitadelAuthenticationFactory.make(
             username: host.username,
             credential: credential
         )
+        let attemptID = UUID()
+        connectionAttemptID = attemptID
 
+        let validator = KeychainHostKeyValidator(host: host.hostname, port: host.port) { [hostTrustContinuation] request in
+            if case .terminated = hostTrustContinuation.yield(request) {
+                request.answer(accepted: false)
+            }
+        }
+        hostKeyValidator = validator
         let settings = SSHClientSettings(
             host: host.hostname,
             port: host.port,
             authenticationMethod: { authenticationMethod },
-            hostKeyValidator: .custom(KeychainHostKeyValidator(host: host.hostname, port: host.port))
+            hostKeyValidator: .custom(validator)
         )
         let client: SSHClient
         do {
             client = try await SSHClient.connect(to: settings)
         } catch {
+            validator.cancelPendingRequest()
+            if connectionAttemptID == attemptID {
+                connectionAttemptID = nil
+                hostKeyValidator = nil
+            }
             throw Self.connectionError(error, host: host)
         }
+        guard connectionAttemptID == attemptID else {
+            try? await client.close()
+            throw CancellationError()
+        }
+        connectionAttemptID = nil
         self.client = client
 
         let readiness = PTYReadiness()
@@ -84,9 +109,11 @@ actor CitadelSSHTransport: SSHTransport {
                         }
                     }
                 }
+                guard !Task.isCancelled else { return }
                 self?.outputContinuation.finish()
             } catch {
                 await readiness.resolve(.failure(error))
+                guard !Task.isCancelled else { return }
                 self?.outputContinuation.finish(throwing: error)
             }
         }
@@ -119,11 +146,13 @@ actor CitadelSSHTransport: SSHTransport {
         sessionTask?.cancel()
         sessionTask = nil
         writer = nil
+        hostKeyValidator?.cancelPendingRequest()
+        hostKeyValidator = nil
+        connectionAttemptID = nil
         if let client {
             try? await client.close()
             self.client = nil
         }
-        outputContinuation.finish()
     }
 
     private func setWriter(_ writer: TTYStdinWriter) {

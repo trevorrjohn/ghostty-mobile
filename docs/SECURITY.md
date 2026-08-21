@@ -20,7 +20,7 @@ The remote host, terminal byte stream, remote file paths, links, graphics, clipb
 - Trust removal causes the next connection to prompt again.
 - ProxyJump hops must be verified independently.
 
-iOS currently uses trust on first use without confirmation; this is a roadmap gap, not an accepted exception.
+iOS and Android block the SSH handshake for explicit first-use and changed-key approval with a full SHA-256 fingerprint. Destination normalization and complete trust-management surfaces remain roadmap work.
 
 ## Local Persistence
 

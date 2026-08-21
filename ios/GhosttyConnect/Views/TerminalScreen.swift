@@ -55,6 +55,7 @@ struct TerminalScreen: View {
             Menu {
                 Button("Disconnect") { Task { await session.disconnect() } }
                 Button("Forget Host Key", role: .destructive) { model.forgetHostKey(for: host) }
+                    .disabled(!canForgetHostKey)
             } label: {
                 Image(systemName: "ellipsis.circle")
             }
@@ -90,6 +91,13 @@ struct TerminalScreen: View {
         } message: {
             Text("Enter the credential for \(host.destination). It remains in memory only for this connection.")
         }
+        .sheet(item: hostTrustBinding) { request in
+            HostTrustView(
+                request: request,
+                reject: { session.answerHostTrust(requestID: request.id, accepted: false) },
+                accept: { session.answerHostTrust(requestID: request.id, accepted: true) }
+            )
+        }
     }
 
     private var statusBar: some View {
@@ -116,9 +124,31 @@ struct TerminalScreen: View {
         switch session.state {
         case .disconnected: "Disconnected"
         case .connecting: "Connecting to \(host.destination)..."
+        case .verifyingHost: "Waiting for host key approval..."
         case .authenticating: "Authenticating..."
         case .connected: "Connected to \(host.destination)"
         case .failed(let message): message
+        }
+    }
+
+    private var hostTrustBinding: Binding<HostTrustRequest?> {
+        Binding(
+            get: { session.pendingHostTrust },
+            set: { request in
+                if request == nil && session.pendingHostTrust != nil {
+                    let requestID = session.pendingHostTrust?.id
+                    if let requestID {
+                        session.answerHostTrust(requestID: requestID, accepted: false)
+                    }
+                }
+            }
+        )
+    }
+
+    private var canForgetHostKey: Bool {
+        switch session.state {
+        case .disconnected, .failed: true
+        case .connecting, .verifyingHost, .authenticating, .connected: false
         }
     }
 
@@ -134,6 +164,56 @@ struct TerminalScreen: View {
             pixelWidth: dimensions.pixelWidth,
             pixelHeight: dimensions.pixelHeight
         )
+    }
+}
+
+private struct HostTrustView: View {
+    let request: HostTrustRequest
+    let reject: () -> Void
+    let accept: () -> Void
+
+    var body: some View {
+        NavigationStack {
+            VStack(alignment: .leading, spacing: 18) {
+                Label(
+                    request.status == .changed ? "Host key changed" : "Unknown host",
+                    systemImage: request.status == .changed ? "exclamationmark.triangle.fill" : "lock.shield"
+                )
+                .font(.title2.bold())
+                .foregroundStyle(request.status == .changed ? Color.red : Color.primary)
+
+                Text(request.status == .changed
+                     ? "The saved key does not match. Verify the new fingerprint before replacing trust."
+                     : "Verify this fingerprint with the server administrator before trusting it.")
+
+                trustField("Destination", request.destination)
+                trustField("Algorithm", request.algorithm)
+                trustField("Fingerprint", request.fingerprint)
+                if let previousFingerprint = request.previousFingerprint {
+                    trustField("Previously trusted", previousFingerprint)
+                }
+                Spacer()
+                Button("Reject", role: .cancel, action: reject)
+                    .buttonStyle(.bordered)
+                    .frame(maxWidth: .infinity)
+                Button(request.status == .changed ? "Replace Saved Key" : "Trust Host", action: accept)
+                    .buttonStyle(.borderedProminent)
+                    .tint(request.status == .changed ? .red : .accentColor)
+                    .frame(maxWidth: .infinity)
+            }
+            .padding(24)
+            .navigationTitle("Verify SSH Host")
+            .navigationBarTitleDisplayMode(.inline)
+            .interactiveDismissDisabled()
+        }
+        .presentationDetents([.large])
+    }
+
+    private func trustField(_ title: String, _ value: String) -> some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text(title).font(.caption).foregroundStyle(.secondary)
+            Text(value).font(.system(.body, design: .monospaced)).textSelection(.enabled)
+        }
     }
 }
 
