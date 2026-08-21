@@ -48,6 +48,18 @@ The UI consumes immutable snapshots. Terminal parsing and SSH I/O do not run on 
 
 ## Build
 
+Install the shared debug keystore once on every development computer:
+
+```sh
+./scripts/install-android-debug-keystore
+```
+
+The installer exits successfully when the expected key is already present at `~/.android/debug.keystore`. Otherwise it retrieves the key from the `Ghostty Mobile Android Debug Keystore` document in your 1Password Private vault, verifies its certificate fingerprint and private-key entry, and installs it with owner-only permissions. Set `GHOSTTY_DEBUG_KEYSTORE_VAULT` when a team keeps the document in a shared vault instead.
+
+The script explains how to install or authenticate 1Password CLI when `op` is unavailable. It refuses to overwrite a different existing key unless `--replace` is supplied. Replacement creates a timestamped backup; apps signed with the previous key must be uninstalled before installing the shared-key build.
+
+The keystore is not a release credential and must not be committed to this public repository. Sharing it through 1Password allows debug builds from different computers to update the same installation and preserve local dogfooding data.
+
 Initialize the Ghostty submodule, then run:
 
 ```sh
