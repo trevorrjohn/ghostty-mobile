@@ -140,6 +140,56 @@ The matrix reflects the current working tree, not only the last commit.
 | Safe share and deep-link connection entry points | `Planned` | `Planned` | External input requires explicit confirmation and must not carry credentials. |
 | Custom fonts, themes, gestures, and per-host terminal settings | `Planned` | `Planned` | Deferred until core terminal and session behavior reaches parity. |
 
+### SFTP Product Slice
+
+SFTP is part of Ghostty Mobile's SSH product, but it is not part of Ghostty's terminal engine. It reuses saved hosts, authentication, host-key trust, ProxyJump policy, and connection diagnostics while remaining a separate file-transfer subsystem. SFTP data never passes through a PTY, terminal parser, render snapshot, or shell-integration path.
+
+Status: `Planned` for Android first, followed by iOS using the validated product behavior and shared contracts.
+
+#### User Outcomes
+
+- Browse remote directories with clear loading, empty, permission-denied, and disconnected states.
+- Inspect file name, type, size, modification time, permissions, and symlink status.
+- Download a remote file to an explicit platform document destination.
+- Upload a user-selected local document to the current remote directory.
+- Create directories, rename entries, and delete files or empty directories with confirmation.
+- See transfer progress, byte counts, cancellation, completion, and actionable failure details.
+- Start a terminal session for the same host without confusing terminal and file-transfer ownership.
+
+#### Product and Security Boundaries
+
+- Use the SFTP subsystem over SSH; do not implement file transfer by sending shell commands or parsing terminal output.
+- Apply the same host-key and authentication policy as terminal connections. ProxyJump hops are verified independently.
+- Use platform document APIs and user-selected destinations; never request broad filesystem permission.
+- Treat remote names, paths, metadata, and symlink targets as untrusted data.
+- Stream transfers with bounded memory rather than loading complete files into RAM.
+- Never silently overwrite a local or remote file. Ask whether to replace, rename, or cancel.
+- Cancellation closes the transfer operation without disconnecting an unrelated terminal session.
+- Background behavior must match platform guarantees and must not imply that a transfer survived process death.
+- Transfer paths, file contents, and credentials are excluded from logs, diagnostics, notifications, and feedback context.
+
+#### First Slice Exclusions
+
+- Recursive directory upload or download.
+- Automatic synchronization or watched folders.
+- In-app remote text editing.
+- `chmod`, `chown`, ACL, and extended-attribute management.
+- Cross-host copying.
+- Guaranteed transfer continuation after process death.
+
+These are deferred rather than rejected and should be reconsidered only after ordinary browse, upload, download, conflict, and cancellation workflows are dependable.
+
+#### Acceptance Criteria
+
+- Unknown or changed host keys cannot be bypassed by entering the file browser.
+- Passwords and key passphrases remain transient and are not retained by transfer jobs.
+- Large-file upload and download use bounded memory and report progress without blocking terminal interaction.
+- Canceling one transfer does not corrupt its destination or terminate unrelated sessions.
+- Local destinations remain within the document selected by the user.
+- Remote path traversal and symlink behavior cannot escape the operation the user approved.
+- Network interruption produces a visible partial/failed state and a safe retry path.
+- Android behavior is covered by disposable SSH-server integration tests before iOS implementation begins.
+
 ### Quality and Release
 
 | Capability | Android | iOS | Direction or reason |
