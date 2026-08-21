@@ -49,6 +49,7 @@ import android.widget.Toast
 import dev.ghostty.connect.data.DogfoodFeedbackStore
 import dev.ghostty.connect.data.HostStore
 import dev.ghostty.connect.data.KeyboardBarStore
+import dev.ghostty.connect.data.KnownHostStore
 import dev.ghostty.connect.data.SshKeyStore
 import dev.ghostty.connect.data.TerminalThemeStore
 import dev.ghostty.connect.data.TerminalStateStore
@@ -67,6 +68,7 @@ import dev.ghostty.connect.model.KeyboardBarItemType
 import dev.ghostty.connect.model.KeyboardModifier
 import dev.ghostty.connect.model.MAX_FEEDBACK_ENTRIES
 import dev.ghostty.connect.model.TerminalThemes
+import dev.ghostty.connect.model.TrustedHost
 import dev.ghostty.connect.terminal.SshSessionService
 import dev.ghostty.connect.terminal.AuthenticationChallenge
 import dev.ghostty.connect.terminal.bridge.GhosttyTerminal
@@ -83,6 +85,7 @@ class MainActivity : Activity() {
     private lateinit var terminalThemeStore: TerminalThemeStore
     private lateinit var terminalStateStore: TerminalStateStore
     private lateinit var feedbackStore: DogfoodFeedbackStore
+    private lateinit var knownHostStore: KnownHostStore
     private var keyboardBarConfig = KeyboardBarConfig()
     private var sessionService: SshSessionService? = null
     private var sessionBound = false
@@ -116,6 +119,7 @@ class MainActivity : Activity() {
     private var terminalAtBottom = true
     private var settingsVisible = false
     private var feedbackVisible = false
+    private var trustedHostsVisible = false
     private var feedbackDraftViews: FeedbackDraftViews? = null
     private var terminalSearchQuery = ""
     private val activeModifiers = mutableSetOf<KeyboardModifier>()
@@ -229,7 +233,7 @@ class MainActivity : Activity() {
                 selectedSessionId = pending.sessionId
                 service.selectListenerSession(pending.sessionId)
             }
-            if (feedbackVisible || settingsVisible || feedbackDraftViews != null) return
+            if (feedbackVisible || trustedHostsVisible || settingsVisible || feedbackDraftViews != null) return
             val requested = selectedSessionId?.takeIf { service.host(it) != null }
             val sessionId = requested ?: service.summaries().singleOrNull()?.sessionId
             if (sessionId != null) openSession(sessionId) else showHosts(disconnect = false)
@@ -275,11 +279,13 @@ class MainActivity : Activity() {
         terminalThemeStore = TerminalThemeStore(this)
         terminalStateStore = TerminalStateStore(this)
         feedbackStore = DogfoodFeedbackStore(this)
+        knownHostStore = KnownHostStore(this)
         keyboardBarConfig = keyboardBarStore.load()
         selectedSessionId = intent?.getStringExtra(SshSessionService.EXTRA_SESSION_ID)
         shouldBindSession = intent?.action == SshSessionService.ACTION_OPEN_SESSION || SshSessionService.active
         when (savedInstanceState?.getString(STATE_SCREEN)) {
             SCREEN_FEEDBACK -> showFeedbackLog()
+            SCREEN_TRUSTED_HOSTS -> showTrustedHosts()
             SCREEN_SETTINGS -> showKeyboardSettings()
             else -> showHosts(disconnect = false)
         }
@@ -331,6 +337,7 @@ class MainActivity : Activity() {
         editingHostId = null
         settingsVisible = false
         feedbackVisible = false
+        trustedHostsVisible = false
         if (disconnect) {
             selectedSessionId?.let { sessionService?.disconnect(it) }
         }
@@ -679,6 +686,7 @@ class MainActivity : Activity() {
     private fun showKeyboardSettings() {
         settingsVisible = true
         feedbackVisible = false
+        trustedHostsVisible = false
         val root = vertical(24)
         root.addView(label("Settings", 28f, primary, Typeface.BOLD))
 
@@ -714,6 +722,14 @@ class MainActivity : Activity() {
                 toast("Font size saved")
             }
         }.margins(bottom = 18))
+
+        root.addView(label("Security", 18f, primary, Typeface.BOLD))
+        root.addView(label(
+            "Review fingerprints previously approved for SSH destinations.",
+            14f,
+            secondary,
+        ).margins(bottom = 10))
+        root.addView(button("Trusted hosts", secondary) { showTrustedHosts() }.margins(bottom = 20))
 
         root.addView(label("Keyboard bar", 18f, primary, Typeface.BOLD))
         root.addView(label("Shown above the keyboard while the terminal is live.", 14f, secondary).margins(bottom = 12))
@@ -784,9 +800,96 @@ class MainActivity : Activity() {
         setContentView(scroll(root))
     }
 
+    private fun showTrustedHosts() {
+        settingsVisible = false
+        feedbackVisible = false
+        trustedHostsVisible = true
+        val root = vertical(24)
+        root.addView(label("Trusted hosts", 28f, primary, Typeface.BOLD))
+        root.addView(label(
+            "Removing trust does not reverify an existing connection. The next connection will ask you to approve the fingerprint again.",
+            14f,
+            secondary,
+        ).margins(top = 8, bottom = 16))
+        val trustedHosts = runCatching { knownHostStore.loadAll() }.getOrElse { error ->
+            root.addView(label("Trusted hosts could not be read: ${error.message ?: "unknown error"}", 14f, Color.RED))
+            root.addView(button("Back to settings", secondary) { showKeyboardSettings() }.margins(top = 16))
+            setContentView(scroll(root))
+            return
+        }
+        if (trustedHosts.isEmpty()) {
+            root.addView(label("No trusted hosts yet.", 15f, secondary))
+        } else {
+            trustedHosts.forEach { trustedHost ->
+                val card = vertical(14).apply {
+                    setBackgroundColor(raised)
+                    addView(label(trustedHost.destination, 17f, primary, Typeface.BOLD))
+                    addView(label("Saved fingerprint", 12f, secondary).margins(top = 10, bottom = 4))
+                    addView(label(trustedHost.fingerprint, 14f, primary).apply {
+                        typeface = Typeface.MONOSPACE
+                        setTextIsSelectable(true)
+                    })
+                    addView(button("Remove trust", secondary) {
+                        confirmRemoveTrust(trustedHost)
+                    }.margins(top = 12))
+                }
+                root.addView(card.margins(bottom = 12))
+            }
+        }
+        root.addView(button("Back to settings", secondary) { showKeyboardSettings() }.margins(top = 16))
+        setContentView(scroll(root))
+    }
+
+    private fun confirmRemoveTrust(trustedHost: TrustedHost) {
+        trustRemovalBlockMessage(trustedHost)?.let { message ->
+            AlertDialog.Builder(this)
+                .setTitle("Disconnect active sessions first")
+                .setMessage(message)
+                .setPositiveButton("OK", null)
+                .show()
+            return
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Remove trusted host?")
+            .setMessage("Remove trust for ${trustedHost.destination}? The next connection will require fingerprint approval.")
+            .setNegativeButton("Cancel", null)
+            .setPositiveButton("Remove") { _, _ ->
+                trustRemovalBlockMessage(trustedHost)?.let {
+                    toast(it)
+                    return@setPositiveButton
+                }
+                runCatching { knownHostStore.remove(trustedHost) }
+                    .onSuccess { removed ->
+                        if (removed) toast("Trust removed for ${trustedHost.destination}")
+                        else toast("Trust was already removed")
+                        showTrustedHosts()
+                    }
+                    .onFailure { toast("Could not remove trust: ${it.message}") }
+            }
+            .show()
+    }
+
+    private fun trustRemovalBlockMessage(trustedHost: TrustedHost): String? {
+        val service = sessionService
+        if (SshSessionService.active && service == null) {
+            return "Session state is still loading. Try again in a moment."
+        }
+        val hostname = trustedHost.hostname ?: return null
+        val port = trustedHost.port ?: return null
+        val activeCount = service?.summaries().orEmpty().count { summary ->
+            service?.host(summary.sessionId)?.let { host ->
+                host.hostname == hostname && host.port == port
+            } == true
+        }
+        if (activeCount == 0) return null
+        return "$activeCount active or retryable session${if (activeCount == 1) " uses" else "s use"} ${trustedHost.destination}. " +
+            "Disconnect ${if (activeCount == 1) "it" else "them"} before removing trust."
+    }
+
     private fun showFeedbackLog() {
         settingsVisible = false
         feedbackVisible = true
+        trustedHostsVisible = false
         val root = vertical(24)
         root.addView(label("Feedback log", 28f, primary, Typeface.BOLD))
         root.addView(label(
@@ -1198,6 +1301,7 @@ class MainActivity : Activity() {
         terminalAtBottom = true
         settingsVisible = false
         feedbackVisible = false
+        trustedHostsVisible = false
         val root = vertical(0)
         val status = label("Connecting…", 13f, accent).also { terminalStatus = it }
         val toolbar = vertical(16).apply { setBackgroundColor(raised) }
@@ -1780,6 +1884,7 @@ class MainActivity : Activity() {
 
     private fun handleBackNavigation() {
         if (feedbackVisible) showKeyboardSettings()
+        else if (trustedHostsVisible) showKeyboardSettings()
         else if (settingsVisible) showHosts(disconnect = false)
         else if (terminalView != null || previewTerminal != null) showHosts()
         else finish()
@@ -1792,6 +1897,7 @@ class MainActivity : Activity() {
     override fun onSaveInstanceState(outState: Bundle) {
         outState.putString(STATE_SCREEN, when {
             feedbackVisible -> SCREEN_FEEDBACK
+            trustedHostsVisible -> SCREEN_TRUSTED_HOSTS
             settingsVisible -> SCREEN_SETTINGS
             else -> SCREEN_OTHER
         })
@@ -1872,5 +1978,6 @@ class MainActivity : Activity() {
         private const val SCREEN_OTHER = "other"
         private const val SCREEN_SETTINGS = "settings"
         private const val SCREEN_FEEDBACK = "feedback"
+        private const val SCREEN_TRUSTED_HOSTS = "trusted_hosts"
     }
 }

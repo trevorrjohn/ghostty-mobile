@@ -70,7 +70,7 @@ The matrix reflects the current working tree, not only the last commit.
 | Keyboard-interactive, OTP, and MFA challenges | `Implemented` | `Planned` | iOS has not reached transport-level challenge handling yet. |
 | Key inspection, rename, deletion, and public-key export | `Partial` | `Partial` | Import exists; complete lifecycle management and affected-host warnings are Phase 1. |
 | Unknown and changed host-key verification | `Implemented` | `Partial` | iOS pins first use but still needs fingerprint display and explicit first-use approval. |
-| Trusted-host inspection and removal | `Partial` | `Partial` | Storage exists, but both apps need a complete management surface. |
+| Trusted-host inspection and removal | `Partial` | `Partial` | Android lists full saved fingerprints, serializes trust updates, and guards removal while sessions are active. Destination normalization and host-key algorithm display remain; iOS still needs a complete management surface. |
 | Cancellation, retry, keepalive, and typed failures | `Partial` | `Planned` | Android has retry, reauthentication, keepalive, and failure classification but still needs complete cancellation and user-configurable policy. iOS has not reached this phase. |
 | ProxyJump and bastion routing | `Planned` | `Planned` | Accepted after trust management; each hop must have independent host verification and credentials. |
 | Per-host startup command, environment, and initial directory | `Planned` | `Planned` | Deferred until connection setup has typed, auditable configuration. |
