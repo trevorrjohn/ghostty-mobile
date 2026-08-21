@@ -7,12 +7,21 @@ settings:
   base:
     SWIFT_VERSION: "5.0"
     DEVELOPMENT_TEAM: ""
+    FRAMEWORK_SEARCH_PATHS: "$(inherited) $(PROJECT_DIR)/Vendor"
+packages:
+  Citadel:
+    url: https://github.com/orlandos-nl/Citadel.git
+    exactVersion: 0.12.1
 targets:
   GhosttyConnect:
     type: application
     platform: iOS
     sources:
       - GhosttyConnect
+    dependencies:
+      - framework: Vendor/ghostty-vt.xcframework
+        embed: false
+      - package: Citadel
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: dev.ghostty.connect
@@ -25,7 +34,10 @@ targets:
         INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
         INFOPLIST_KEY_UIRequiresFullScreen: NO
+        INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone: "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
+        INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad: "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
         TARGETED_DEVICE_FAMILY: "1,2"
+        "EXCLUDED_ARCHS[sdk=iphonesimulator*]": x86_64
   GhosttyConnectTests:
     type: bundle.unit-test
     platform: iOS
@@ -36,3 +48,14 @@ targets:
     settings:
       base:
         GENERATE_INFOPLIST_FILE: YES
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/Ghostty Connect.app/Ghostty Connect"
+        BUNDLE_LOADER: "$(TEST_HOST)"
+schemes:
+  GhosttyConnect:
+    build:
+      targets:
+        GhosttyConnect: all
+        GhosttyConnectTests: [test]
+    test:
+      targets:
+        - GhosttyConnectTests

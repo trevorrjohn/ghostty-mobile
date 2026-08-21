@@ -41,6 +41,13 @@ struct SecureStore {
         }
     }
 
+    func delete(account: String) throws {
+        let status = SecItemDelete(baseQuery(account: account) as CFDictionary)
+        guard status == errSecSuccess || status == errSecItemNotFound else {
+            throw SecureStoreError.keychain(status)
+        }
+    }
+
     private func baseQuery(account: String) -> [String: Any] {
         [
             kSecClass as String: kSecClassGenericPassword,

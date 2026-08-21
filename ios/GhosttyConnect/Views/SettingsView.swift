@@ -24,8 +24,8 @@ struct SettingsView: View {
                 }
                 Section("About") {
                     LabeledContent("Version", value: "0.1.0")
-                    LabeledContent("Terminal engine", value: "Pending native link")
-                    LabeledContent("SSH transport", value: "Pending native link")
+                    LabeledContent("Terminal engine", value: TerminalEngineFactory.isAvailable ? "Ghostty VT" : "Unavailable")
+                    LabeledContent("SSH transport", value: "Citadel")
                 }
             }
             .scrollContentBackground(.hidden)

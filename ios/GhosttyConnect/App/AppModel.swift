@@ -34,6 +34,15 @@ final class AppModel: ObservableObject {
         catch { alertMessage = error.localizedDescription }
     }
 
+    func forgetHostKey(for host: Host) {
+        do {
+            try store.delete(account: KeychainHostKeyValidator.account(host: host.hostname, port: host.port))
+            alertMessage = "The trusted host key for \(host.hostname):\(host.port) was removed."
+        } catch {
+            alertMessage = error.localizedDescription
+        }
+    }
+
     func importKey(data: Data) throws -> StoredKey {
         guard data.count <= 1_048_576 else { throw KeyInspectionError.tooLarge }
         let details = try SSHKeyInspector.inspect(data, existingNames: keys.map(\.name))
