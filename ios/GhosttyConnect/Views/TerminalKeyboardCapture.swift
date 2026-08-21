@@ -13,16 +13,25 @@ enum TerminalInputEncoder {
 struct TerminalKeyboardCapture: UIViewRepresentable {
     @Binding var isFocused: Bool
     let onInput: (TerminalInputEvent) -> Void
+    let canCopy: Bool
+    let onCopy: () -> Void
+    let onPaste: () -> Void
 
     func makeUIView(context: Context) -> TerminalKeyboardInputView {
         let view = TerminalKeyboardInputView()
         view.onInput = onInput
+        view.canCopy = canCopy
+        view.onCopy = onCopy
+        view.onPaste = onPaste
         view.onFocusChange = { isFocused = $0 }
         return view
     }
 
     func updateUIView(_ view: TerminalKeyboardInputView, context: Context) {
         view.onInput = onInput
+        view.canCopy = canCopy
+        view.onCopy = onCopy
+        view.onPaste = onPaste
         view.onFocusChange = { isFocused = $0 }
         guard view.isFirstResponder != isFocused else { return }
         DispatchQueue.main.async {
@@ -35,6 +44,9 @@ struct TerminalKeyboardCapture: UIViewRepresentable {
 final class TerminalKeyboardInputView: UIView, UIKeyInput {
     var onInput: ((TerminalInputEvent) -> Void)?
     var onFocusChange: ((Bool) -> Void)?
+    var canCopy = false
+    var onCopy: (() -> Void)?
+    var onPaste: (() -> Void)?
 
     override var canBecomeFirstResponder: Bool { true }
     var hasText: Bool { true }
@@ -51,6 +63,20 @@ final class TerminalKeyboardInputView: UIView, UIKeyInput {
 
     func deleteBackward() {
         onInput?(.key(.backspace))
+    }
+
+    override func copy(_ sender: Any?) {
+        onCopy?()
+    }
+
+    override func paste(_ sender: Any?) {
+        onPaste?()
+    }
+
+    override func canPerformAction(_ action: Selector, withSender sender: Any?) -> Bool {
+        if action == #selector(copy(_:)) { return canCopy }
+        if action == #selector(paste(_:)) { return UIPasteboard.general.hasStrings }
+        return super.canPerformAction(action, withSender: sender)
     }
 
     override func becomeFirstResponder() -> Bool {

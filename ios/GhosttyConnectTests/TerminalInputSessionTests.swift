@@ -24,6 +24,28 @@ final class TerminalInputSessionTests: XCTestCase {
         XCTAssertEqual(values, ["1", "2", "3"])
         await session.disconnect()
     }
+
+    func testPasteUsesTerminalEncodingAndOrderedWriteQueue() async throws {
+        let recorder = InputRecorder()
+        let transport = RecordingInputTransport(recorder: recorder)
+        let session = TerminalSessionModel(
+            transportFactory: { transport },
+            engineFactory: { InputTestEngine() }
+        )
+        var host = Host()
+        host.hostname = "example.com"
+        host.username = "user"
+
+        await session.connect(to: host, secret: "password")
+        session.send(.text("1"))
+        session.paste("two\nlines")
+        try? await Task.sleep(nanoseconds: 100_000_000)
+
+        XCTAssertFalse(session.isPasteSafe("two\nlines"))
+        let values = await recorder.values()
+        XCTAssertEqual(values, ["1", "paste:two\nlines"])
+        await session.disconnect()
+    }
 }
 
 private actor InputRecorder {
@@ -72,6 +94,14 @@ private final class InputTestEngine: TerminalEngine {
         return Data(text.utf8)
     }
 
+    func isPasteSafe(_ text: String) -> Bool { !text.contains("\n") }
+    func encodePaste(_ text: String) throws -> Data { Data("paste:\(text)".utf8) }
+    func scrollViewport(byRows rows: Int) {}
+    func scrollToBottom() {}
+    func selectWord(column: Int, row: Int) -> Bool { false }
+    func clearSelection() {}
+    func selectedText() -> String { "" }
+
     func visibleText() -> String { "" }
 
     func snapshot() throws -> TerminalSnapshot {
@@ -93,9 +123,12 @@ private final class InputTestEngine: TerminalEngine {
                 strikethrough: false,
                 overline: false,
                 blinking: false,
-                invisible: false
+                invisible: false,
+                selected: false
             )],
-            cursor: nil
+            cursor: nil,
+            viewport: TerminalViewport(totalRows: 1, offset: 0, visibleRows: 1, isAtBottom: true),
+            hasSelection: false
         )
     }
 }

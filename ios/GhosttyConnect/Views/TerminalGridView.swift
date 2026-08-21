@@ -1,8 +1,12 @@
 import SwiftUI
+import UIKit
 
 struct TerminalGridView: View {
     let snapshot: TerminalSnapshot
     let fontSize: Double
+    let onTap: () -> Void
+    let onScrollRows: (Int) -> Void
+    let onSelectWord: (Int, Int) -> Void
 
     private var cellWidth: CGFloat { Self.cellWidth(fontSize: fontSize) }
     private var cellHeight: CGFloat { Self.cellHeight(fontSize: fontSize) }
@@ -10,8 +14,22 @@ struct TerminalGridView: View {
     static func cellWidth(fontSize: Double) -> CGFloat { fontSize * 0.62 }
     static func cellHeight(fontSize: Double) -> CGFloat { fontSize * 1.35 }
 
+    init(
+        snapshot: TerminalSnapshot,
+        fontSize: Double,
+        onTap: @escaping () -> Void = {},
+        onScrollRows: @escaping (Int) -> Void = { _ in },
+        onSelectWord: @escaping (Int, Int) -> Void = { _, _ in }
+    ) {
+        self.snapshot = snapshot
+        self.fontSize = fontSize
+        self.onTap = onTap
+        self.onScrollRows = onScrollRows
+        self.onSelectWord = onSelectWord
+    }
+
     var body: some View {
-        ScrollView([.horizontal, .vertical]) {
+        ZStack(alignment: .topLeading) {
             Canvas { context, _ in
                 drawCells(in: &context)
                 drawCursor(in: &context)
@@ -21,6 +39,16 @@ struct TerminalGridView: View {
                 height: CGFloat(snapshot.rows) * cellHeight
             )
             .background(Color(snapshot.background))
+
+            TerminalInteractionOverlay(
+                cellWidth: cellWidth,
+                cellHeight: cellHeight,
+                columns: snapshot.columns,
+                rows: snapshot.rows,
+                onTap: onTap,
+                onScrollRows: onScrollRows,
+                onSelectWord: onSelectWord
+            )
         }
         .background(Color(snapshot.background))
         .accessibilityLabel("Terminal contents")
@@ -36,7 +64,8 @@ struct TerminalGridView: View {
                 width: cellWidth,
                 height: cellHeight
             )
-            context.fill(Path(rect), with: .color(Color(cell.background)))
+            let background = cell.selected ? Color(red: 0.12, green: 0.48, blue: 0.32) : Color(cell.background)
+            context.fill(Path(rect), with: .color(background))
             guard !cell.text.isEmpty else { continue }
 
             var text = Text(cell.text)
@@ -76,6 +105,68 @@ struct TerminalGridView: View {
             context.fill(Path(CGRect(x: rect.minX, y: rect.maxY - 2, width: rect.width, height: 2)), with: .color(color))
         case .hollowBlock:
             context.stroke(Path(rect.insetBy(dx: 0.5, dy: 0.5)), with: .color(color), lineWidth: 1)
+        }
+    }
+}
+
+private struct TerminalInteractionOverlay: UIViewRepresentable {
+    let cellWidth: CGFloat
+    let cellHeight: CGFloat
+    let columns: Int
+    let rows: Int
+    let onTap: () -> Void
+    let onScrollRows: (Int) -> Void
+    let onSelectWord: (Int, Int) -> Void
+
+    func makeCoordinator() -> Coordinator { Coordinator(parent: self) }
+
+    func makeUIView(context: Context) -> UIView {
+        let view = UIView()
+        view.backgroundColor = .clear
+        let tap = UITapGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.tap))
+        let pan = UIPanGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.pan(_:)))
+        let longPress = UILongPressGestureRecognizer(
+            target: context.coordinator,
+            action: #selector(Coordinator.longPress(_:))
+        )
+        longPress.minimumPressDuration = 0.5
+        tap.require(toFail: longPress)
+        view.addGestureRecognizer(tap)
+        view.addGestureRecognizer(pan)
+        view.addGestureRecognizer(longPress)
+        return view
+    }
+
+    func updateUIView(_ view: UIView, context: Context) {
+        context.coordinator.parent = self
+    }
+
+    final class Coordinator: NSObject {
+        var parent: TerminalInteractionOverlay
+
+        init(parent: TerminalInteractionOverlay) {
+            self.parent = parent
+        }
+
+        @objc func tap() {
+            parent.onTap()
+        }
+
+        @objc func pan(_ recognizer: UIPanGestureRecognizer) {
+            guard recognizer.state == .changed else { return }
+            let translation = recognizer.translation(in: recognizer.view)
+            let rowDelta = Int(-translation.y / parent.cellHeight)
+            guard rowDelta != 0 else { return }
+            parent.onScrollRows(rowDelta)
+            recognizer.setTranslation(.zero, in: recognizer.view)
+        }
+
+        @objc func longPress(_ recognizer: UILongPressGestureRecognizer) {
+            guard recognizer.state == .began, let view = recognizer.view else { return }
+            let location = recognizer.location(in: view)
+            let column = min(parent.columns - 1, max(0, Int(location.x / parent.cellWidth)))
+            let row = min(parent.rows - 1, max(0, Int(location.y / parent.cellHeight)))
+            parent.onSelectWord(column, row)
         }
     }
 }

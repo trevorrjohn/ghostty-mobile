@@ -183,8 +183,22 @@ protocol TerminalEngine: AnyObject {
     func feed(_ data: Data)
     func resize(columns: Int, rows: Int)
     func encode(event: TerminalInputEvent) throws -> Data
+    func isPasteSafe(_ text: String) -> Bool
+    func encodePaste(_ text: String) throws -> Data
+    func scrollViewport(byRows rows: Int)
+    func scrollToBottom()
+    func selectWord(column: Int, row: Int) -> Bool
+    func clearSelection()
+    func selectedText() -> String
     func visibleText() -> String
     func snapshot() throws -> TerminalSnapshot
+}
+
+struct TerminalViewport: Equatable {
+    let totalRows: UInt64
+    let offset: UInt64
+    let visibleRows: UInt64
+    let isAtBottom: Bool
 }
 
 struct TerminalSnapshot: Equatable {
@@ -195,6 +209,8 @@ struct TerminalSnapshot: Equatable {
     let cursorColor: TerminalColor
     let cells: [TerminalCell]
     let cursor: TerminalCursor?
+    let viewport: TerminalViewport
+    let hasSelection: Bool
 
     func cell(column: Int, row: Int) -> TerminalCell? {
         guard column >= 0, column < columns, row >= 0, row < rows else { return nil }
@@ -214,6 +230,7 @@ struct TerminalCell: Equatable {
     let overline: Bool
     let blinking: Bool
     let invisible: Bool
+    let selected: Bool
 }
 
 struct TerminalColor: Equatable {
@@ -271,6 +288,7 @@ enum TerminalEngineError: LocalizedError {
     case renderStateInitializationFailed
     case keyEncoderInitializationFailed
     case keyEncodingFailed
+    case pasteEncodingFailed
     case snapshotFailed
 
     var errorDescription: String? {
@@ -287,6 +305,8 @@ enum TerminalEngineError: LocalizedError {
             "Ghostty could not create the keyboard encoder."
         case .keyEncodingFailed:
             "Ghostty could not encode the keyboard input."
+        case .pasteEncodingFailed:
+            "Ghostty could not encode the pasted text."
         case .snapshotFailed:
             "Ghostty could not create a terminal snapshot."
         }

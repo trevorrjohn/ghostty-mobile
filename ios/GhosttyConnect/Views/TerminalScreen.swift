@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 struct TerminalScreen: View {
     let host: Host
@@ -11,6 +12,7 @@ struct TerminalScreen: View {
     @State private var pendingReconnect = false
     @State private var hasRequestedConnection = false
     @State private var keyboardBarState = KeyboardBarRuntimeState()
+    @State private var pastePrompt: PastePrompt?
 
     var body: some View {
         let theme = TerminalTheme.theme(id: model.settings.themeID)
@@ -18,11 +20,36 @@ struct TerminalScreen: View {
             statusBar
             if let snapshot = session.snapshot {
                 GeometryReader { proxy in
-                    TerminalGridView(snapshot: snapshot, fontSize: model.settings.fontSize)
-                        .contentShape(Rectangle())
-                        .onTapGesture { keyboardFocused = true }
-                        .onAppear { resize(to: proxy.size) }
-                        .onChange(of: proxy.size) { _, size in resize(to: size) }
+                    ZStack(alignment: .bottomTrailing) {
+                        TerminalGridView(
+                            snapshot: snapshot,
+                            fontSize: model.settings.fontSize,
+                            onTap: { keyboardFocused = true },
+                            onScrollRows: session.scrollViewport(byRows:),
+                            onSelectWord: session.selectWord(column:row:)
+                        )
+                        .accessibilityAction(named: "Scroll backward") {
+                            session.scrollViewport(byRows: -max(1, snapshot.rows - 1))
+                        }
+                        .accessibilityAction(named: "Scroll forward") {
+                            session.scrollViewport(byRows: max(1, snapshot.rows - 1))
+                        }
+
+                        if !snapshot.viewport.isAtBottom {
+                            Button {
+                                session.scrollToBottom()
+                            } label: {
+                                Label("Live", systemImage: "arrow.down")
+                                    .font(.caption.bold())
+                                    .padding(.horizontal, 10)
+                                    .padding(.vertical, 7)
+                                    .background(.ultraThinMaterial, in: Capsule())
+                            }
+                            .padding(12)
+                        }
+                    }
+                    .onAppear { resize(to: proxy.size) }
+                    .onChange(of: proxy.size) { _, size in resize(to: size) }
                 }
             } else {
                 Spacer()
@@ -77,6 +104,8 @@ struct TerminalScreen: View {
                 }
                 .frame(height: 44)
                 .background(Color.ghosttyRaised)
+                .opacity(session.snapshot?.viewport.isAtBottom == false ? 0 : 1)
+                .allowsHitTesting(session.snapshot?.viewport.isAtBottom != false)
             }
             HStack(spacing: 8) {
                 Image(systemName: keyboardFocused ? "keyboard.fill" : "keyboard")
@@ -88,7 +117,13 @@ struct TerminalScreen: View {
             .padding(10)
             .foregroundStyle(Color.ghosttySecondary)
             .background(Color.ghosttyRaised)
-            TerminalKeyboardCapture(isFocused: $keyboardFocused, onInput: handleInput)
+            TerminalKeyboardCapture(
+                isFocused: $keyboardFocused,
+                onInput: handleInput,
+                canCopy: session.snapshot?.hasSelection == true,
+                onCopy: copySelection,
+                onPaste: requestPaste
+            )
                 .frame(width: 1, height: 1)
                 .opacity(0.01)
         }
@@ -97,6 +132,12 @@ struct TerminalScreen: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             Menu {
+                Button("Paste", systemImage: "doc.on.clipboard") { requestPaste() }
+                if session.snapshot?.hasSelection == true {
+                    Button("Copy Selection", systemImage: "doc.on.doc") { copySelection() }
+                    Button("Clear Selection", systemImage: "xmark") { session.clearSelection() }
+                }
+                Divider()
                 Button("Disconnect") { Task { await session.disconnect() } }
                 Button("Forget Host Key", role: .destructive) { model.forgetHostKey(for: host) }
                     .disabled(!canForgetHostKey)
@@ -138,6 +179,23 @@ struct TerminalScreen: View {
             Button("Cancel", role: .cancel) { secret = "" }
         } message: {
             Text("Enter the credential for \(host.destination). It remains in memory only for this connection.")
+        }
+        .alert(item: $pastePrompt) { prompt in
+            switch prompt {
+            case .empty:
+                Alert(
+                    title: Text("Clipboard Empty"),
+                    message: Text("The clipboard does not contain text."),
+                    dismissButton: .default(Text("OK"))
+                )
+            case .unsafe(_, let text):
+                Alert(
+                    title: Text("Paste multiple lines?"),
+                    message: Text("This paste contains a newline or terminal control sequence."),
+                    primaryButton: .cancel(),
+                    secondaryButton: .default(Text("Paste")) { session.paste(text) }
+                )
+            }
         }
         .sheet(item: hostTrustBinding) { request in
             HostTrustView(
@@ -299,6 +357,24 @@ struct TerminalScreen: View {
         }
     }
 
+    private func requestPaste() {
+        guard let text = UIPasteboard.general.string, !text.isEmpty else {
+            pastePrompt = .empty(UUID())
+            return
+        }
+        if session.isPasteSafe(text) {
+            session.paste(text)
+        } else {
+            pastePrompt = .unsafe(UUID(), text)
+        }
+    }
+
+    private func copySelection() {
+        let text = session.copySelection()
+        guard !text.isEmpty else { return }
+        UIPasteboard.general.string = text
+    }
+
     private func isActive(_ item: KeyboardBarItem) -> Bool {
         resolvedModifier(item).map(keyboardBarState.activeModifiers.contains) == true
     }
@@ -358,6 +434,17 @@ struct TerminalScreen: View {
         if isLocked(item) { return "Locked" }
         if isActive(item) { return "One use" }
         return ""
+    }
+}
+
+private enum PastePrompt: Identifiable {
+    case empty(UUID)
+    case unsafe(UUID, String)
+
+    var id: UUID {
+        switch self {
+        case .empty(let id), .unsafe(let id, _): id
+        }
     }
 }
 

@@ -119,6 +119,8 @@ final class TerminalSessionModel: ObservableObject {
     func send(_ event: TerminalInputEvent) {
         guard let engine, let transport, let attemptID = connectionAttemptID, state == .connected else { return }
         let destination = activeDestination ?? "the remote host"
+        engine.scrollToBottom()
+        snapshot = try? engine.snapshot()
         let data: Data
         do { data = try engine.encode(event: event) }
         catch {
@@ -131,6 +133,70 @@ final class TerminalSessionModel: ObservableObject {
             }
             return
         }
+        enqueueWrite(data, transport: transport, attemptID: attemptID, destination: destination)
+    }
+
+    func isPasteSafe(_ text: String) -> Bool {
+        engine?.isPasteSafe(text) ?? false
+    }
+
+    func paste(_ text: String) {
+        guard let engine, let transport, let attemptID = connectionAttemptID, state == .connected else { return }
+        let destination = activeDestination ?? "the remote host"
+        engine.scrollToBottom()
+        snapshot = try? engine.snapshot()
+        let data: Data
+        do { data = try engine.encodePaste(text) }
+        catch {
+            Task {
+                await finishAttempt(
+                    attemptID: attemptID,
+                    transport: transport,
+                    failure: SessionFailure(kind: .protocolFailure, message: error.localizedDescription)
+                )
+            }
+            return
+        }
+        enqueueWrite(data, transport: transport, attemptID: attemptID, destination: destination)
+    }
+
+    func scrollViewport(byRows rows: Int) {
+        guard let engine else { return }
+        engine.scrollViewport(byRows: rows)
+        snapshot = try? engine.snapshot()
+    }
+
+    func scrollToBottom() {
+        guard let engine else { return }
+        engine.scrollToBottom()
+        snapshot = try? engine.snapshot()
+    }
+
+    func selectWord(column: Int, row: Int) {
+        guard let engine, engine.selectWord(column: column, row: row) else { return }
+        snapshot = try? engine.snapshot()
+    }
+
+    func copySelection() -> String {
+        guard let engine else { return "" }
+        let text = engine.selectedText()
+        engine.clearSelection()
+        snapshot = try? engine.snapshot()
+        return text
+    }
+
+    func clearSelection() {
+        guard let engine else { return }
+        engine.clearSelection()
+        snapshot = try? engine.snapshot()
+    }
+
+    private func enqueueWrite(
+        _ data: Data,
+        transport: any SSHTransport,
+        attemptID: UUID,
+        destination: String
+    ) {
         guard !data.isEmpty else { return }
         let previousWrite = writeTask
         writeTask = Task { [weak self] in

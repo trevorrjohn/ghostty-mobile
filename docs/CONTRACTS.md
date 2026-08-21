@@ -84,7 +84,8 @@ A render snapshot contains generation, dimensions, viewport position, default co
 Input is normalized into text, named key, modifiers, action, and optional pointer coordinates before terminal encoding.
 
 - Text is sent only after IME commit.
-- Paste uses bracketed-paste and safety policy where applicable.
+- Paste is distinct from committed typing, uses the terminal's current bracketed-paste mode, and replaces unsafe terminal control bytes through Ghostty's encoder.
+- Paste containing a line break or bracketed-paste terminator requires explicit confirmation for each invocation.
 - Key encoding is terminal-mode-aware.
 - Keyboard-bar ordering and enablement are app-global persisted preferences; active modifiers are ephemeral and session-scoped.
 - One-shot keyboard-bar modifiers are consumed by the next named key or eligible single-character committed input event; unsupported IME commits pass through without silently consuming them.
@@ -93,6 +94,14 @@ Input is normalized into text, named key, modifiers, action, and optional pointe
 - Encoded input writes preserve invocation order and cannot cross connection attempts.
 - The client never locally echoes committed input.
 - Password-input detection suppresses accessibility or preview exposure where supported.
+
+## Terminal Viewport and Selection
+
+- Scrollback retention is bounded, terminal-owned, and exposed through immutable total, offset, visible-row, and live-position values.
+- Browsing history does not pause terminal output and does not imply remote process control; sending input returns the viewport to live output.
+- Selection references never escape the terminal adapter as mutable native pointers.
+- Copy emits plain text, unwraps soft-wrapped rows, trims trailing whitespace, and clears the copied selection.
+- Clipboard text and selected terminal content are user data and are never logged or added to diagnostics.
 
 ## Terminal Effect
 

@@ -136,4 +136,64 @@ final class GhosttyTerminalEngineTests: XCTestCase {
         XCTAssertEqual(snapshot.rows, 5)
         XCTAssertEqual(snapshot.cells.count, 35)
     }
+
+    func testScrollsRetainedHistoryAndReturnsToLiveOutput() throws {
+        guard TerminalEngineFactory.isAvailable else {
+            throw XCTSkip("GhosttyVt XCFramework is not installed")
+        }
+
+        let engine = try TerminalEngineFactory.make(columns: 12, rows: 3)
+        engine.feed(Data("one\r\ntwo\r\nthree\r\nfour\r\nfive".utf8))
+        let live = try engine.snapshot()
+        XCTAssertTrue(live.viewport.isAtBottom)
+        XCTAssertGreaterThan(live.viewport.totalRows, live.viewport.visibleRows)
+
+        engine.scrollViewport(byRows: -2)
+        let history = try engine.snapshot()
+        XCTAssertFalse(history.viewport.isAtBottom)
+        XCTAssertLessThan(history.viewport.offset, live.viewport.offset)
+
+        engine.scrollToBottom()
+        XCTAssertTrue(try engine.snapshot().viewport.isAtBottom)
+    }
+
+    func testSelectsAndFormatsWord() throws {
+        guard TerminalEngineFactory.isAvailable else {
+            throw XCTSkip("GhosttyVt XCFramework is not installed")
+        }
+
+        let engine = try TerminalEngineFactory.make(columns: 20, rows: 3)
+        engine.feed(Data("hello world".utf8))
+        XCTAssertTrue(engine.selectWord(column: 1, row: 0))
+        XCTAssertEqual(engine.selectedText(), "hello")
+        XCTAssertEqual(try engine.snapshot().cells.filter(\.selected).count, 5)
+
+        engine.feed(Data("\r\none\r\ntwo\r\nthree\r\nfour".utf8))
+        let offscreen = try engine.snapshot()
+        XCTAssertTrue(offscreen.hasSelection)
+        XCTAssertFalse(offscreen.cells.contains(where: \.selected))
+        XCTAssertEqual(engine.selectedText(), "hello")
+
+        engine.clearSelection()
+        XCTAssertFalse(try engine.snapshot().hasSelection)
+    }
+
+    func testEncodesSafeAndConfirmedPasteForTerminalMode() throws {
+        guard TerminalEngineFactory.isAvailable else {
+            throw XCTSkip("GhosttyVt XCFramework is not installed")
+        }
+
+        let engine = try TerminalEngineFactory.make()
+        XCTAssertTrue(engine.isPasteSafe("printf test"))
+        XCTAssertFalse(engine.isPasteSafe("first\nsecond"))
+        XCTAssertFalse(engine.isPasteSafe("command\r"))
+        XCTAssertFalse(engine.isPasteSafe("value\u{1b}[201~command"))
+        XCTAssertEqual(try engine.encodePaste("first\nsecond"), Data("first\rsecond".utf8))
+
+        engine.feed(Data("\u{1b}[?2004h".utf8))
+        XCTAssertEqual(
+            try engine.encodePaste("first\nsecond"),
+            Data("\u{1b}[200~first\nsecond\u{1b}[201~".utf8)
+        )
+    }
 }

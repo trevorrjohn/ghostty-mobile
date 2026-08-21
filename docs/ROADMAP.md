@@ -84,9 +84,9 @@ The matrix reflects the current working tree, not only the last commit.
 | Unicode, colors, cursor state, and PTY resize | `Implemented` | `Implemented` | Continue device, rotation, and split-view validation. |
 | Software and hardware keyboard input | `Partial` | `Partial` | Android needs IME and shortcut hardening; iOS normalizes external Ctrl/Alt/Shift with navigation and F-keys but still needs punctuation and Meta/lock modifier coverage. |
 | Configurable modifier and extra-key controls | `Implemented` | `Partial` | iOS has persisted ordering, bounded custom actions, one-shot and locked Ctrl/Alt/Shift, last-used controls, navigation/editing keys, and F1-F12; Meta and lock modifiers remain. |
-| Scrollback navigation | `Implemented` | `Planned` | Ghostty retains iOS scrollback, but the app does not expose it yet. |
-| Selection and copy | `Implemented` | `Planned` | iOS needs a touch, pointer, and hardware-keyboard selection model. |
-| Paste and paste-safety confirmation | `Implemented` | `Planned` | iOS has not reached clipboard and bracketed-paste integration. |
+| Scrollback navigation | `Implemented` | `Partial` | iOS retains 10,000 lines, supports row-based touch and accessibility scrolling, exposes viewport state, and provides a Live return; inertia and pointer-wheel handling remain. |
+| Selection and copy | `Implemented` | `Partial` | iOS supports long-press word selection, selected-cell rendering, plain-text copy, and clear; draggable endpoints, edge autoscroll, and broader pointer selection remain. |
+| Paste and paste-safety confirmation | `Implemented` | `Implemented` | Both route explicit paste through Ghostty's mode-aware encoder and confirm LF or bracketed-paste termination; iOS also confirms CR-only command submission. |
 | Search within terminal history | `Implemented` | `Planned` | Planned with iOS scrollback exposure. Android still needs full Unicode case handling. |
 | Prompt navigation and semantic output copy | `Partial` | `Planned` | Depends on reliable OSC 133 shell markers. Android has the terminal support; iOS has not started it. |
 | Guided Bash and zsh shell integration | `Partial` | `Planned` | Android detects OSC 133 markers and provides guided setup; it still needs broader validation and durable UX. iOS has not reached this slice. |
@@ -232,7 +232,7 @@ These are deferred rather than rejected and should be reconsidered only after or
 4. Exercise Android multi-session ownership through backgrounding, rotation, network changes, VPN changes, and process death.
 5. Add disposable SSH-server, lifecycle, accessibility, and UI automation for the validated Android behavior.
 6. Update shared contracts and fixtures with product decisions discovered through Android dogfooding.
-7. Implement iOS first-use host approval, connection reliability, terminal workflow parity, and platform-appropriate session ownership.
+7. Continue iOS connection reliability, complete scrollback selection/search interactions, and add platform-appropriate session ownership.
 8. Connect iOS remote-effect policy only after its core daily workflow reaches parity.
 
 This order uses Android to validate trust, daily terminal usability, and interruption recovery before duplicating behavior or adding protocol breadth.
