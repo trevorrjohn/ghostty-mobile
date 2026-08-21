@@ -5,16 +5,19 @@ import Foundation
 final class AppModel: ObservableObject {
     @Published private(set) var hosts: [Host] = []
     @Published private(set) var keys: [StoredKey] = []
+    @Published private(set) var trustedHosts: [TrustedHost] = []
     @Published var settings = AppSettings() { didSet { persistSettings() } }
     @Published var alertMessage: String?
 
     private let store = SecureStore()
+    private let trustedHostStore = KeychainKnownHostStore()
 
     init() {
         do {
             hosts = try store.read([Host].self, account: "hosts", default: [])
             keys = try store.read([StoredKey].self, account: "keys", default: [])
             settings = try store.read(AppSettings.self, account: "settings", default: AppSettings())
+            trustedHosts = try trustedHostStore.records()
         } catch {
             alertMessage = error.localizedDescription
         }
@@ -40,8 +43,23 @@ final class AppModel: ObservableObject {
 
     func forgetHostKey(for host: Host) {
         do {
-            try store.delete(account: KeychainHostKeyValidator.account(host: host.hostname, port: host.port))
+            try trustedHostStore.remove(account: KeychainHostKeyValidator.account(host: host.hostname, port: host.port))
+            trustedHosts = try trustedHostStore.records()
             alertMessage = "The trusted host key for \(host.hostname):\(host.port) was removed."
+        } catch {
+            alertMessage = error.localizedDescription
+        }
+    }
+
+    func reloadTrustedHosts() {
+        do { trustedHosts = try trustedHostStore.records() }
+        catch { alertMessage = error.localizedDescription }
+    }
+
+    func forget(trustedHost: TrustedHost) {
+        do {
+            try trustedHostStore.remove(account: trustedHost.id)
+            trustedHosts = try trustedHostStore.records()
         } catch {
             alertMessage = error.localizedDescription
         }

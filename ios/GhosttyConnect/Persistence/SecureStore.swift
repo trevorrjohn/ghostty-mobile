@@ -15,18 +15,26 @@ struct SecureStore {
     private let service = "dev.ghostty.connect"
 
     func read<T: Decodable>(_ type: T.Type, account: String, default defaultValue: T) throws -> T {
+        guard let data = try readData(account: account) else { return defaultValue }
+        return try JSONDecoder().decode(T.self, from: data)
+    }
+
+    func readData(account: String) throws -> Data? {
         var query = baseQuery(account: account)
         query[kSecReturnData as String] = true
         query[kSecMatchLimit as String] = kSecMatchLimitOne
         var result: CFTypeRef?
         let status = SecItemCopyMatching(query as CFDictionary, &result)
-        if status == errSecItemNotFound { return defaultValue }
+        if status == errSecItemNotFound { return nil }
         guard status == errSecSuccess, let data = result as? Data else { throw SecureStoreError.keychain(status) }
-        return try JSONDecoder().decode(T.self, from: data)
+        return data
     }
 
     func write<T: Encodable>(_ value: T, account: String) throws {
-        let data = try JSONEncoder().encode(value)
+        try writeData(JSONEncoder().encode(value), account: account)
+    }
+
+    func writeData(_ data: Data, account: String) throws {
         let query = baseQuery(account: account)
         let attributes = [kSecValueData as String: data]
         let status = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
@@ -46,6 +54,23 @@ struct SecureStore {
         guard status == errSecSuccess || status == errSecItemNotFound else {
             throw SecureStoreError.keychain(status)
         }
+    }
+
+    func accounts(prefix: String) throws -> [String] {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecReturnAttributes as String: true,
+            kSecMatchLimit as String: kSecMatchLimitAll,
+        ]
+        var result: CFTypeRef?
+        let status = SecItemCopyMatching(query as CFDictionary, &result)
+        if status == errSecItemNotFound { return [] }
+        guard status == errSecSuccess else { throw SecureStoreError.keychain(status) }
+        let items = result as? [[String: Any]] ?? (result as? [String: Any]).map { [$0] } ?? []
+        return items.compactMap { $0[kSecAttrAccount as String] as? String }
+            .filter { $0.hasPrefix(prefix) }
+            .sorted()
     }
 
     private func baseQuery(account: String) -> [String: Any] {

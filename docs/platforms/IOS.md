@@ -73,4 +73,4 @@ Choose a simulator available in the installed Xcode version when that destinatio
 
 ## Current Platform Gaps
 
-Current status is maintained in the [roadmap](../ROADMAP.md). Important iOS-specific gaps include trusted-host management, connection retry and cancellation, terminal-mode-aware input, scrollback and selection, live effect policy, multiple sessions, lifecycle ownership, and accessibility.
+Current status is maintained in the [roadmap](../ROADMAP.md). Important iOS-specific gaps include connection retry and cancellation, terminal-mode-aware input, scrollback and selection, live effect policy, multiple sessions, lifecycle ownership, and accessibility.

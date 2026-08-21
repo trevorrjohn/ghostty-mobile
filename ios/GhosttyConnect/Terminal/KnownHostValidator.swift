@@ -58,22 +58,6 @@ protocol KnownHostStore: Sendable {
     func write(_ key: String, account: String) throws
 }
 
-struct KeychainKnownHostStore: KnownHostStore {
-    private let store: SecureStore
-
-    init(store: SecureStore = SecureStore()) {
-        self.store = store
-    }
-
-    func read(account: String) throws -> String? {
-        try store.read(String.self, account: account, default: "").nilIfEmpty
-    }
-
-    func write(_ key: String, account: String) throws {
-        try store.write(key, account: account)
-    }
-}
-
 final class KeychainHostKeyValidator: NIOSSHClientServerAuthenticationDelegate, @unchecked Sendable {
     private let account: String
     private let destination: String
@@ -212,8 +196,4 @@ final class KeychainHostKeyValidator: NIOSSHClientServerAuthenticationDelegate, 
             completion(.failure(error))
         }
     }
-}
-
-private extension String {
-    var nilIfEmpty: String? { isEmpty ? nil : self }
 }
