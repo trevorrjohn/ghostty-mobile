@@ -6,6 +6,7 @@ This directory is the canonical source for Ghostty Mobile product and engineerin
 
 - [Product scope](PRODUCT_SCOPE.md)
 - [Product roadmap and platform parity](ROADMAP.md)
+- [SFTP product](SFTP_PRODUCT.md)
 
 ## Engineering
 
