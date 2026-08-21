@@ -23,6 +23,9 @@ class SshKeyStoreTest {
 
         assertTrue(details.suggestedName.startsWith("Ed25519 key "))
         assertTrue(details.requiresPassphrase)
+        assertEquals("ssh-ed25519", details.algorithm)
+        assertTrue(details.fingerprint?.startsWith("SHA256:") == true)
+        assertTrue(details.publicKey?.startsWith("ssh-ed25519 ") == true)
     }
 
     @Test
@@ -33,6 +36,22 @@ class SshKeyStoreTest {
 
         assertEquals("Encrypted key 2", details.suggestedName)
         assertTrue(details.requiresPassphrase)
+    }
+
+    @Test
+    fun `suggested names avoid case insensitive duplicates`() {
+        val details = inspectSshPrivateKey(
+            openSshKey(cipher = "none", comment = "Work"),
+            listOf("work", "Work 2"),
+        )
+
+        assertEquals("Work 3", details.suggestedName)
+    }
+
+    @Test
+    fun `legacy hash collision remains detectable during migration`() {
+        assertEquals("Aa".hashCode(), "BB".hashCode())
+        assertEquals(legacyIdentityFileName("Aa"), legacyIdentityFileName("BB"))
     }
 
     private fun openSshKey(cipher: String, comment: String?): ByteArray {

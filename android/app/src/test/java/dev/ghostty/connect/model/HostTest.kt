@@ -13,7 +13,7 @@ class HostTest {
             port = 2222,
             username = "ghost",
             authenticationType = AuthenticationType.SSH_KEY,
-            keyName = "work",
+            identityId = "identity-id",
             allowRemoteClipboard = true,
             allowRemoteNotifications = false,
         )

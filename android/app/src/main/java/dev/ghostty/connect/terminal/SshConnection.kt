@@ -76,9 +76,9 @@ class SshConnection(
             if (host.authenticationType == AuthenticationType.SSH_KEY) {
                 challengeProvider = InteractiveChallengeProvider(callbacks, challengeResponses, null)
                 val keyboardInteractive = AuthKeyboardInteractive(challengeProvider)
-                val keyName = requireNotNull(host.keyName) { "No SSH key is selected for this host" }
+                val identityId = requireNotNull(host.identityId) { "No SSH identity is selected for this host" }
                 temporaryKey = File.createTempFile("identity-", ".key", context.cacheDir).apply {
-                    writeBytes(keyStore.read(keyName))
+                    writeBytes(keyStore.read(identityId))
                     setReadable(false, false)
                     setReadable(true, true)
                 }

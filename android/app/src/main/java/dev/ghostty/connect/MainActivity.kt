@@ -69,6 +69,7 @@ import dev.ghostty.connect.model.KeyboardModifier
 import dev.ghostty.connect.model.MAX_FEEDBACK_ENTRIES
 import dev.ghostty.connect.model.TerminalThemes
 import dev.ghostty.connect.model.TrustedHost
+import dev.ghostty.connect.model.SshIdentity
 import dev.ghostty.connect.terminal.SshSessionService
 import dev.ghostty.connect.terminal.AuthenticationChallenge
 import dev.ghostty.connect.terminal.bridge.GhosttyTerminal
@@ -76,6 +77,7 @@ import dev.ghostty.connect.terminal.bridge.TerminalEffects
 import dev.ghostty.connect.terminal.view.GhosttyTerminalView
 import net.schmizz.sshj.connection.channel.direct.Signal
 import java.time.Instant
+import java.io.ByteArrayOutputStream
 import java.util.UUID
 
 class MainActivity : Activity() {
@@ -113,6 +115,8 @@ class MainActivity : Activity() {
     private var editingHostId: String? = null
     private var editorKeySelection: Spinner? = null
     private var editorAuthentication: Spinner? = null
+    private var editorIdentities: List<SshIdentity> = emptyList()
+    private var editorIdentityIds: List<String?> = emptyList()
     private var modifierBar: View? = null
     private var modifierBarRow: LinearLayout? = null
     private var imeVisible = false
@@ -273,8 +277,8 @@ class MainActivity : Activity() {
                 updateModifierBarVisibility()
             }
         }
-        hostStore = HostStore(this)
         keyStore = SshKeyStore(this)
+        hostStore = HostStore(this, keyStore)
         keyboardBarStore = KeyboardBarStore(this)
         terminalThemeStore = TerminalThemeStore(this)
         terminalStateStore = TerminalStateStore(this)
@@ -351,6 +355,8 @@ class MainActivity : Activity() {
         cancelShellIntegrationNotice()
         editorKeySelection = null
         editorAuthentication = null
+        editorIdentities = emptyList()
+        editorIdentityIds = emptyList()
         modifierBar = null
         modifierBarRow = null
         previewTerminal?.close()
@@ -382,12 +388,25 @@ class MainActivity : Activity() {
             }
             root.addView(label("Hosts", 20f, primary, Typeface.BOLD).margins(top = 12, bottom = 10))
         }
-        val hosts = hostStore.loadAll()
+        val identityAndHosts = runCatching { keyStore.identities() to hostStore.loadAll() }.getOrElse { error ->
+            root.addView(label("Hosts and SSH identities could not be read: ${error.message ?: "unknown error"}", 14f, Color.RED))
+            root.addView(button("Retry", secondary) { showHosts(disconnect = false) }.margins(top = 12))
+            root.addView(button("Settings", secondary) { showKeyboardSettings() }.margins(top = 8))
+            setContentView(scroll(root))
+            return
+        }
+        val identities = identityAndHosts.first
+        val identitiesById = identities.associateBy(SshIdentity::id)
+        val hosts = identityAndHosts.second
         hosts.forEach { host ->
+            val identity = host.identityId?.let(identitiesById::get)
             val card = vertical(18).apply { setBackgroundColor(raised) }
             card.addView(label(host.name, 20f, primary, Typeface.BOLD))
             card.addView(label(host.destination, 14f, secondary))
-            card.addView(label(host.keyName?.let { "SSH key · $it" } ?: "Password", 14f, accent).margins(top = 8))
+            card.addView(label(when (host.authenticationType) {
+                AuthenticationType.PASSWORD -> "Password"
+                AuthenticationType.SSH_KEY -> identity?.let { "SSH key · ${it.name}" } ?: "SSH key unavailable"
+            }, 14f, if (host.authenticationType == AuthenticationType.SSH_KEY && identity == null) Color.RED else accent).margins(top = 8))
             card.addView(button("Edit", secondary) { showHostEditor(host.id) }.margins(top = 10))
             card.addView(button("Duplicate host", secondary) {
                 val duplicate = host.duplicate(UUID.randomUUID().toString(), hosts.map(Host::name))
@@ -398,7 +417,13 @@ class MainActivity : Activity() {
             if (terminalStateStore.has(host.id)) {
                 card.addView(button("Last session", secondary) { showArchivedTerminal(host) }.margins(top = 8))
             }
-            card.setOnClickListener { requestCredentialAndConnect(host) }
+            card.setOnClickListener {
+                if (host.authenticationType == AuthenticationType.SSH_KEY && identity == null) {
+                    toast("Edit this host and select an available SSH identity.")
+                } else {
+                    requestCredentialAndConnect(host)
+                }
+            }
             root.addView(card.margins(bottom = 16))
         }
         root.addView(button(if (hosts.isEmpty()) "Add your first host" else "Add host") { showHostEditor() })
@@ -407,8 +432,8 @@ class MainActivity : Activity() {
         root.addView(button("Record feedback", secondary) { showFeedbackDialog("Hosts") }.margins(top = 10))
         root.addView(button("Settings", secondary) { showKeyboardSettings() }.margins(top = 10))
         root.addView(button("Ghostty renderer preview", secondary) { showGhosttyPreview() }.margins(top = 10))
-        if (keyStore.names().isNotEmpty()) {
-            root.addView(label("Imported keys: ${keyStore.names().joinToString()}", 13f, secondary).margins(top = 14))
+        if (identities.isNotEmpty()) {
+            root.addView(label("Imported keys: ${identities.joinToString { it.name }}", 13f, secondary).margins(top = 14))
         }
         setContentView(scroll(root))
     }
@@ -433,15 +458,24 @@ class MainActivity : Activity() {
         }.also { editorAuthentication = it }
         root.addView(authentication.margins(bottom = 10))
 
-        val keyNames = keyStore.names()
+        val identities = keyStore.identities().also { editorIdentities = it }
+        val missingIdentity = existing?.identityId?.takeIf { identityId ->
+            existing.authenticationType == AuthenticationType.SSH_KEY && identities.none { it.id == identityId }
+        }
+        val identityNames = identities.map(SshIdentity::name).toMutableList()
+        editorIdentityIds = identities.map { it.id }
+        if (missingIdentity != null) {
+            identityNames.add(0, "Unavailable identity - select a replacement")
+            editorIdentityIds = listOf(null) + editorIdentityIds
+        }
         val keySelection = Spinner(this).apply {
             adapter = ArrayAdapter(
                 this@MainActivity,
                 android.R.layout.simple_spinner_dropdown_item,
-                keyNames.ifEmpty { listOf("No SSH keys saved") },
+                identityNames.ifEmpty { listOf("No SSH keys saved") },
             )
             setBackgroundColor(raised)
-            setSelection(keyNames.indexOf(existing?.keyName).coerceAtLeast(0))
+            setSelection(editorIdentityIds.indexOf(existing?.identityId).coerceAtLeast(0))
         }.also { editorKeySelection = it }
         val addKey = button("Add SSH key", secondary) { openKeyPicker() }
         fun updateKeyControls() {
@@ -486,8 +520,13 @@ class MainActivity : Activity() {
             } else {
                 AuthenticationType.PASSWORD
             }
-            if (authenticationType == AuthenticationType.SSH_KEY && keyStore.names().isEmpty()) {
-                toast("Add an SSH key before saving this host.")
+            val identityId = editorIdentityIds.getOrNull(keySelection.selectedItemPosition)
+            if (authenticationType == AuthenticationType.SSH_KEY && identityId == null) {
+                toast(if (editorIdentities.isEmpty()) {
+                    "Add an SSH key before saving this host."
+                } else {
+                    "Select an available SSH identity."
+                })
                 return@button
             }
             hostStore.save(Host(
@@ -497,7 +536,7 @@ class MainActivity : Activity() {
                 port = parsedPort!!,
                 username = username.text.toString().trim(),
                 authenticationType = authenticationType,
-                keyName = keySelection.selectedItem.toString().takeIf { authenticationType == AuthenticationType.SSH_KEY },
+                identityId = identityId.takeIf { authenticationType == AuthenticationType.SSH_KEY },
                 allowRemoteClipboard = selectedPolicy(clipboardPolicy),
                 allowRemoteNotifications = selectedPolicy(notificationPolicy),
             ))
@@ -576,11 +615,11 @@ class MainActivity : Activity() {
                     require(value.contains("PRIVATE KEY")) { "Paste a PEM or OpenSSH private key" }
                     val bytes = (value + "\n").toByteArray()
                     val savedName = name.text.toString().trim().ifBlank { keyStore.inspect(bytes).suggestedName }
-                    keyStore.import(savedName, bytes)
+                    val identity = keyStore.import(savedName, bytes)
                     privateKey.text.clear()
                     dialog.dismiss()
                     toast("Private key saved")
-                    refreshEditorKeys(savedName)
+                    refreshEditorKeys(identity.id)
                 } catch (error: Exception) {
                     toast(error.message ?: "Could not save key")
                 }
@@ -595,13 +634,25 @@ class MainActivity : Activity() {
         if (requestCode != IMPORT_KEY || resultCode != RESULT_OK) return
         val uri = data?.data ?: return
         try {
-            val bytes = contentResolver.openInputStream(uri)?.use { it.readBytes() } ?: error("Could not read key")
+            val bytes = contentResolver.openInputStream(uri)?.use { input ->
+                val output = ByteArrayOutputStream()
+                val buffer = ByteArray(8192)
+                var total = 0
+                while (true) {
+                    val count = input.read(buffer)
+                    if (count < 0) break
+                    total += count
+                    require(total <= MAX_PRIVATE_KEY_BYTES) { "Private key is too large" }
+                    output.write(buffer, 0, count)
+                }
+                output.toByteArray()
+            } ?: error("Could not read key")
             val text = bytes.toString(Charsets.UTF_8)
             require(text.contains("PRIVATE KEY")) { "Select a private SSH key file" }
             val displayName = uri.lastPathSegment?.substringAfterLast('/')?.takeLast(80) ?: "SSH key"
-            keyStore.import(displayName, bytes)
-            toast("Imported $displayName")
-            refreshEditorKeys(displayName)
+            val identity = keyStore.import(displayName, bytes)
+            toast("Imported ${identity.name}")
+            refreshEditorKeys(identity.id)
         } catch (error: Exception) {
             toast(error.message ?: "Could not import key")
         }
@@ -617,8 +668,9 @@ class MainActivity : Activity() {
             requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), NOTIFICATION_PERMISSION)
         }
         if (host.authenticationType == AuthenticationType.SSH_KEY) {
-            val keyName = requireNotNull(host.keyName)
-            if (!keyStore.requiresPassphrase(keyName)) {
+            val identityId = requireNotNull(host.identityId)
+            val identity = keyStore.identity(identityId) ?: error("SSH identity is unavailable")
+            if (!identity.requiresPassphrase) {
                 connect(CharArray(0))
                 return
             }
@@ -628,7 +680,7 @@ class MainActivity : Activity() {
                 InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD,
             )
             val dialog = AlertDialog.Builder(this)
-                .setTitle("Unlock $keyName")
+                .setTitle("Unlock ${identity.name}")
                 .setView(passphrase)
                 .setNegativeButton("Cancel", null)
                 .setPositiveButton("Connect", null)
@@ -670,16 +722,17 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun refreshEditorKeys(selectedName: String) {
+    private fun refreshEditorKeys(selectedIdentityId: String) {
         val spinner = editorKeySelection
         if (spinner == null) {
             showHostEditor(editingHostId)
-            refreshEditorKeys(selectedName)
+            refreshEditorKeys(selectedIdentityId)
             return
         }
-        val names = keyStore.names()
-        spinner.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, names)
-        spinner.setSelection(names.indexOf(selectedName).coerceAtLeast(0))
+        val identities = keyStore.identities().also { editorIdentities = it }
+        editorIdentityIds = identities.map { it.id }
+        spinner.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, identities.map(SshIdentity::name))
+        spinner.setSelection(identities.indexOfFirst { it.id == selectedIdentityId }.coerceAtLeast(0))
         editorAuthentication?.setSelection(1)
     }
 
@@ -1974,6 +2027,7 @@ class MainActivity : Activity() {
         const val GHOSTTY_MOD_NUM_LOCK = 1 shl 5
         const val REMOTE_NOTIFICATION_CHANNEL = "remote_terminal"
         private const val SHELL_INTEGRATION_NOTICE_DELAY_MS = 15_000L
+        private const val MAX_PRIVATE_KEY_BYTES = 1024 * 1024
         private const val STATE_SCREEN = "screen"
         private const val SCREEN_OTHER = "other"
         private const val SCREEN_SETTINGS = "settings"

@@ -68,7 +68,7 @@ The matrix reflects the current working tree, not only the last commit.
 | Password authentication | `Implemented` | `Implemented` | Passwords remain memory-only and are never saved. |
 | Imported Ed25519 and RSA keys, including encrypted keys | `Implemented` | `Implemented` | Shared baseline; additional key formats require transport support, not only import recognition. |
 | Keyboard-interactive, OTP, and MFA challenges | `Implemented` | `Planned` | iOS has not reached transport-level challenge handling yet. |
-| Key inspection, rename, deletion, and public-key export | `Partial` | `Partial` | Import exists; complete lifecycle management and affected-host warnings are Phase 1. |
+| Key inspection, rename, deletion, and public-key export | `Partial` | `Partial` | Android imports into collision-safe UUID identities with encrypted metadata and host references; rename, deletion, export UI, and affected-host warnings remain. |
 | Unknown and changed host-key verification | `Implemented` | `Partial` | iOS pins first use but still needs fingerprint display and explicit first-use approval. |
 | Trusted-host inspection and removal | `Partial` | `Partial` | Android lists full saved fingerprints, serializes trust updates, and guards removal while sessions are active. Destination normalization and host-key algorithm display remain; iOS still needs a complete management surface. |
 | Cancellation, retry, keepalive, and typed failures | `Partial` | `Planned` | Android has retry, reauthentication, keepalive, and failure classification but still needs complete cancellation and user-configurable policy. iOS has not reached this phase. |

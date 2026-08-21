@@ -12,7 +12,7 @@ data class Host(
     val port: Int = 22,
     val username: String,
     val authenticationType: AuthenticationType = AuthenticationType.PASSWORD,
-    val keyName: String? = null,
+    val identityId: String? = null,
     val allowRemoteClipboard: Boolean? = null,
     val allowRemoteNotifications: Boolean? = null,
 ) {

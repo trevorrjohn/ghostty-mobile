@@ -288,7 +288,7 @@ class SshSessionService : Service() {
         )
         val keyStore = SshKeyStore(applicationContext)
         val autoReconnectEligible = host.authenticationType == AuthenticationType.SSH_KEY &&
-            host.keyName?.let { runCatching { !keyStore.requiresPassphrase(it) }.getOrDefault(false) } == true
+            host.identityId?.let { runCatching { !keyStore.requiresPassphrase(it) }.getOrDefault(false) } == true
         val record = SessionRecord(sessionId, host, terminal, autoReconnectEligible)
         resetParsers(record)
         sessions[sessionId] = record
@@ -597,7 +597,8 @@ class SshSessionService : Service() {
     }
 
     private fun handleBackgroundEffects(record: SessionRecord, effects: TerminalEffects) {
-        val storedHost = HostStore(applicationContext).loadAll().firstOrNull { it.id == record.host.id }
+        val storedHost = HostStore(applicationContext, SshKeyStore(applicationContext))
+            .loadAll().firstOrNull { it.id == record.host.id }
         if (effects.progressState >= 0 && effects.progress >= 0 && notificationSessionId == record.sessionId) {
             updateNotification(record, "${effects.progress}%")
         }
