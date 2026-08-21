@@ -31,7 +31,13 @@ struct TerminalScreen: View {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 8) {
                         ForEach(model.keyboardBarConfig.items) { item in
-                            Button(keyboardBarLabel(item)) { activateKeyboardBarItem(item) }
+                            HStack(spacing: 4) {
+                                Text(keyboardBarLabel(item))
+                                if isLocked(item) {
+                                    Image(systemName: "lock.fill")
+                                        .font(.system(size: 9, weight: .bold))
+                                }
+                            }
                                 .font(.system(.caption2, design: .monospaced).weight(.semibold))
                                 .padding(.horizontal, 9)
                                 .frame(minWidth: 44, minHeight: 44)
@@ -40,9 +46,31 @@ struct TerminalScreen: View {
                                     isActive(item) ? Color.ghosttyAccent : Color.clear,
                                     in: RoundedRectangle(cornerRadius: 7)
                                 )
+                                .contentShape(Rectangle())
+                                .gesture(
+                                    LongPressGesture(minimumDuration: 0.5)
+                                        .exclusively(before: TapGesture())
+                                        .onEnded { result in
+                                            switch result {
+                                            case .first(true):
+                                                if resolvedModifier(item) != nil { lockKeyboardBarItem(item) }
+                                                else { activateKeyboardBarItem(item) }
+                                            case .second: activateKeyboardBarItem(item)
+                                            default: break
+                                            }
+                                        }
+                                )
+                                .accessibilityAddTraits(.isButton)
+                                .accessibilityAction { activateKeyboardBarItem(item) }
                                 .accessibilityLabel(keyboardBarAccessibilityLabel(item))
                                 .accessibilityHint(keyboardBarAccessibilityHint(item))
+                                .accessibilityValue(keyboardBarAccessibilityValue(item))
                                 .accessibilityAddTraits(isActive(item) ? .isSelected : [])
+                                .accessibilityActions {
+                                    if resolvedModifier(item) != nil {
+                                        Button("Lock modifier") { lockKeyboardBarItem(item) }
+                                    }
+                                }
                         }
                     }
                     .padding(.horizontal, 10)
@@ -82,15 +110,15 @@ struct TerminalScreen: View {
         .onDisappear {
             secret = ""
             keyboardFocused = false
-            keyboardBarState.consume()
+            keyboardBarState.reset()
             Task { await session.disconnect() }
         }
         .onChange(of: session.state) { _, state in
             if state == .connected { keyboardFocused = true }
-            else { keyboardBarState.consume() }
+            else { keyboardBarState.reset() }
         }
         .onChange(of: keyboardFocused) { _, focused in
-            if !focused { keyboardBarState.consume() }
+            if !focused { keyboardBarState.consumeOneShot() }
         }
         .alert(host.authenticationType == .password ? "Password" : "Key passphrase", isPresented: $showingCredential) {
             SecureField("Not saved", text: $secret)
@@ -218,20 +246,35 @@ struct TerminalScreen: View {
     }
 
     private func activateKeyboardBarItem(_ item: KeyboardBarItem) {
+        if let modifier = resolvedModifier(item) {
+            keyboardBarState.toggle(modifier)
+            return
+        }
         switch item {
-        case .builtIn(let item):
-            if let modifier = item.modifier {
-                keyboardBarState.toggle(modifier)
+        case .builtIn(let builtIn):
+            if builtIn == .lastAction {
+                guard let action = resolvedAction(item) else { return }
+                send(action)
                 return
             }
-            guard let key = item.key else { return }
+            guard let key = builtIn.key else { return }
             session.send(.key(key, modifiers: TerminalKeyModifiers(keyboardBarState.activeModifiers)))
-            keyboardBarState.consume()
+            keyboardBarState.consumeOneShot()
         case .action(let id):
             guard let action = model.keyboardBarConfig.action(id: id) else { return }
-            session.send(action.event.adding(TerminalKeyModifiers(keyboardBarState.activeModifiers)))
-            keyboardBarState.consume()
+            send(action)
         }
+    }
+
+    private func send(_ action: KeyboardAction) {
+        keyboardBarState.recordAction(id: action.id)
+        session.send(action.event.adding(TerminalKeyModifiers(keyboardBarState.activeModifiers)))
+        keyboardBarState.consumeOneShot()
+    }
+
+    private func lockKeyboardBarItem(_ item: KeyboardBarItem) {
+        guard let modifier = resolvedModifier(item) else { return }
+        keyboardBarState.lock(modifier)
     }
 
     private func handleInput(_ event: TerminalInputEvent) {
@@ -243,25 +286,45 @@ struct TerminalScreen: View {
         switch event {
         case .key:
             session.send(event.adding(modifiers))
-            keyboardBarState.consume()
+            keyboardBarState.consumeOneShot()
         case .text(let text, let eventModifiers):
             guard TerminalKey.fromCommittedText(text) != nil else {
                 session.send(event)
                 return
             }
-            let output = modifiers.contains(.shift) ? text.uppercased() : text
+            let output = TerminalKey.fromCommittedText(text)?
+                .generatedText(shifted: modifiers.contains(.shift)) ?? text
             session.send(.text(output, modifiers: eventModifiers.union(modifiers)))
-            keyboardBarState.consume()
+            keyboardBarState.consumeOneShot()
         }
     }
 
     private func isActive(_ item: KeyboardBarItem) -> Bool {
-        guard case .builtIn(let item) = item else { return false }
-        return item.modifier.map(keyboardBarState.activeModifiers.contains) == true
+        resolvedModifier(item).map(keyboardBarState.activeModifiers.contains) == true
+    }
+
+    private func isLocked(_ item: KeyboardBarItem) -> Bool {
+        resolvedModifier(item).map(keyboardBarState.lockedModifiers.contains) == true
+    }
+
+    private func resolvedModifier(_ item: KeyboardBarItem) -> KeyboardModifier? {
+        guard case .builtIn(let builtIn) = item else { return nil }
+        return builtIn == .lastModifier ? keyboardBarState.lastUsedModifier : builtIn.modifier
+    }
+
+    private func resolvedAction(_ item: KeyboardBarItem) -> KeyboardAction? {
+        switch item {
+        case .action(let id): return model.keyboardBarConfig.action(id: id)
+        case .builtIn(.lastAction):
+            return keyboardBarState.lastUsedActionID.flatMap(model.keyboardBarConfig.action(id:))
+        case .builtIn: return nil
+        }
     }
 
     private func keyboardBarLabel(_ item: KeyboardBarItem) -> String {
         switch item {
+        case .builtIn(.lastModifier): keyboardBarState.lastUsedModifier?.label.uppercased() ?? "LAST MOD"
+        case .builtIn(.lastAction): resolvedAction(item)?.label ?? "LAST ACTION"
         case .builtIn(let item): item.label
         case .action(let id): model.keyboardBarConfig.action(id: id)?.label ?? "ACTION"
         }
@@ -269,18 +332,32 @@ struct TerminalScreen: View {
 
     private func keyboardBarAccessibilityLabel(_ item: KeyboardBarItem) -> String {
         switch item {
+        case .builtIn(.lastModifier):
+            keyboardBarState.lastUsedModifier.map { "Last used modifier, \($0.label)" } ?? "Last used modifier"
+        case .builtIn(.lastAction):
+            resolvedAction(item).map { "Last used custom action, \($0.label)" } ?? "Last used custom action"
         case .builtIn(let item): item.accessibilityLabel
         case .action(let id): model.keyboardBarConfig.action(id: id)?.label ?? "Custom action"
         }
     }
 
     private func keyboardBarAccessibilityHint(_ item: KeyboardBarItem) -> String {
-        guard case .action(let id) = item,
-              let action = model.keyboardBarConfig.action(id: id) else { return "" }
+        if let modifier = resolvedModifier(item) {
+            return keyboardBarState.lockedModifiers.contains(modifier)
+                ? "Locked. Tap to turn off."
+                : "Tap for one use or hold to lock."
+        }
+        guard let action = resolvedAction(item) else { return "" }
         let modifiers = KeyboardModifier.allCases
             .filter(action.modifiers.contains)
             .map(\.label)
         return "Sends \((modifiers + [action.key.label]).joined(separator: " plus "))"
+    }
+
+    private func keyboardBarAccessibilityValue(_ item: KeyboardBarItem) -> String {
+        if isLocked(item) { return "Locked" }
+        if isActive(item) { return "One use" }
+        return ""
     }
 }
 

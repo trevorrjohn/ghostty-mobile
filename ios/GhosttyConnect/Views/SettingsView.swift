@@ -64,7 +64,7 @@ private struct KeyboardBarSettingsView: View {
             Section {
                 Toggle("Show keyboard bar", isOn: $model.keyboardBarConfig.enabled)
             } footer: {
-                Text("The bar appears while terminal keyboard input is active. Modifiers apply once to the next named key or eligible single ASCII letter, number, or space.")
+                Text("Tap a modifier for one use or hold it to lock. Locked modifiers remain active until tapped again.")
             }
 
             Section("Controls") {

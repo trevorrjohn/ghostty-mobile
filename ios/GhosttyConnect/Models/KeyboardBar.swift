@@ -20,10 +20,21 @@ enum KeyboardBarItemID: String, Codable, CaseIterable, Identifiable {
     case alt
     case tab
     case shift
+    case enter
+    case backspace
+    case delete
+    case insert
+    case home
+    case end
+    case pageUp
+    case pageDown
     case up
     case down
     case left
     case right
+    case f1, f2, f3, f4, f5, f6, f7, f8, f9, f10, f11, f12
+    case lastModifier
+    case lastAction
 
     var id: Self { self }
 
@@ -34,10 +45,21 @@ enum KeyboardBarItemID: String, Codable, CaseIterable, Identifiable {
         case .alt: "ALT"
         case .tab: "TAB"
         case .shift: "SHIFT"
+        case .enter: "ENTER"
+        case .backspace: "BKSP"
+        case .delete: "DEL"
+        case .insert: "INS"
+        case .home: "HOME"
+        case .end: "END"
+        case .pageUp: "PGUP"
+        case .pageDown: "PGDN"
         case .up: "↑"
         case .down: "↓"
         case .left: "←"
         case .right: "→"
+        case .lastModifier: "LAST MOD"
+        case .lastAction: "LAST ACTION"
+        default: rawValue.uppercased()
         }
     }
 
@@ -48,10 +70,21 @@ enum KeyboardBarItemID: String, Codable, CaseIterable, Identifiable {
         case .alt: "Alt"
         case .tab: "Tab"
         case .shift: "Shift"
+        case .enter: "Enter"
+        case .backspace: "Backspace"
+        case .delete: "Delete"
+        case .insert: "Insert"
+        case .home: "Home"
+        case .end: "End"
+        case .pageUp: "Page up"
+        case .pageDown: "Page down"
         case .up: "Up arrow"
         case .down: "Down arrow"
         case .left: "Left arrow"
         case .right: "Right arrow"
+        case .lastModifier: "Last used modifier"
+        case .lastAction: "Last used custom action"
+        default: rawValue.uppercased()
         }
     }
 
@@ -68,17 +101,39 @@ enum KeyboardBarItemID: String, Codable, CaseIterable, Identifiable {
         switch self {
         case .escape: .escape
         case .tab: .tab
+        case .enter: .enter
+        case .backspace: .backspace
+        case .delete: .delete
+        case .insert: .insert
+        case .home: .home
+        case .end: .end
+        case .pageUp: .pageUp
+        case .pageDown: .pageDown
         case .up: .up
         case .down: .down
         case .left: .left
         case .right: .right
-        case .control, .alt, .shift: nil
+        case .f1: .function(1)
+        case .f2: .function(2)
+        case .f3: .function(3)
+        case .f4: .function(4)
+        case .f5: .function(5)
+        case .f6: .function(6)
+        case .f7: .function(7)
+        case .f8: .function(8)
+        case .f9: .function(9)
+        case .f10: .function(10)
+        case .f11: .function(11)
+        case .f12: .function(12)
+        case .control, .alt, .shift, .lastModifier, .lastAction: nil
         }
     }
 }
 
 enum KeyboardActionKey: String, Codable, CaseIterable, Identifiable {
-    case escape, tab, backspace, up, down, left, right
+    case escape, tab, enter, backspace, delete, insert, home, end, pageUp, pageDown
+    case up, down, left, right
+    case f1, f2, f3, f4, f5, f6, f7, f8, f9, f10, f11, f12
     case a, b, c, d, e, f, g, h, i, j, k, l, m
     case n, o, p, q, r, s, t, u, v, w, x, y, z
     case zero, one, two, three, four, five, six, seven, eight, nine
@@ -90,7 +145,14 @@ enum KeyboardActionKey: String, Codable, CaseIterable, Identifiable {
         switch self {
         case .escape: "Escape"
         case .tab: "Tab"
+        case .enter: "Enter"
         case .backspace: "Backspace"
+        case .delete: "Delete"
+        case .insert: "Insert"
+        case .home: "Home"
+        case .end: "End"
+        case .pageUp: "Page up"
+        case .pageDown: "Page down"
         case .up: "Up arrow"
         case .down: "Down arrow"
         case .left: "Left arrow"
@@ -106,6 +168,8 @@ enum KeyboardActionKey: String, Codable, CaseIterable, Identifiable {
         case .seven: "7"
         case .eight: "8"
         case .nine: "9"
+        case .f1, .f2, .f3, .f4, .f5, .f6, .f7, .f8, .f9, .f10, .f11, .f12:
+            rawValue.uppercased()
         default: rawValue.uppercased()
         }
     }
@@ -114,11 +178,30 @@ enum KeyboardActionKey: String, Codable, CaseIterable, Identifiable {
         switch self {
         case .escape: .escape
         case .tab: .tab
+        case .enter: .enter
         case .backspace: .backspace
+        case .delete: .delete
+        case .insert: .insert
+        case .home: .home
+        case .end: .end
+        case .pageUp: .pageUp
+        case .pageDown: .pageDown
         case .up: .up
         case .down: .down
         case .left: .left
         case .right: .right
+        case .f1: .function(1)
+        case .f2: .function(2)
+        case .f3: .function(3)
+        case .f4: .function(4)
+        case .f5: .function(5)
+        case .f6: .function(6)
+        case .f7: .function(7)
+        case .f8: .function(8)
+        case .f9: .function(9)
+        case .f10: .function(10)
+        case .f11: .function(11)
+        case .f12: .function(12)
         case .space: .character(" ")
         case .zero: .character("0")
         case .one: .character("1")
@@ -135,21 +218,7 @@ enum KeyboardActionKey: String, Codable, CaseIterable, Identifiable {
     }
 
     func text(shifted: Bool) -> String {
-        guard case .character(let value) = terminalKey else { return "" }
-        guard shifted else { return value.lowercased() }
-        switch self {
-        case .zero: return ")"
-        case .one: return "!"
-        case .two: return "@"
-        case .three: return "#"
-        case .four: return "$"
-        case .five: return "%"
-        case .six: return "^"
-        case .seven: return "&"
-        case .eight: return "*"
-        case .nine: return "("
-        default: return value.uppercased()
-        }
+        terminalKey.generatedText(shifted: shifted) ?? ""
     }
 }
 
@@ -270,13 +339,16 @@ extension KeyboardBarItem: Codable {
 }
 
 struct KeyboardBarConfig: Codable, Equatable {
-    static let currentVersion = 2
+    static let currentVersion = 3
     static let maximumEncodedBytes = 16_384
     static let maximumActions = 16
     static let maximumItems = KeyboardBarItemID.allCases.count + maximumActions
+    static let defaultItemIDs: [KeyboardBarItemID] = [
+        .escape, .control, .alt, .tab, .shift, .up, .down, .left, .right, .lastModifier,
+    ]
     static let defaults = KeyboardBarConfig(
         enabled: true,
-        items: KeyboardBarItemID.allCases.map(KeyboardBarItem.builtIn)
+        items: defaultItemIDs.map(KeyboardBarItem.builtIn)
     )
 
     var enabled: Bool
@@ -285,7 +357,7 @@ struct KeyboardBarConfig: Codable, Equatable {
 
     init(
         enabled: Bool = true,
-        items: [KeyboardBarItem] = KeyboardBarItemID.allCases.map(KeyboardBarItem.builtIn),
+        items: [KeyboardBarItem] = Self.defaultItemIDs.map(KeyboardBarItem.builtIn),
         actions: [KeyboardAction] = []
     ) {
         self.enabled = enabled
@@ -355,7 +427,7 @@ struct KeyboardBarConfig: Codable, Equatable {
             var ids: [String] = []
             var idContainer = try container.nestedUnkeyedContainer(forKey: .itemIDs)
             while !idContainer.isAtEnd {
-                guard ids.count < KeyboardBarItemID.allCases.count else {
+                guard ids.count < 9 else {
                     throw DecodingError.dataCorruptedError(
                         forKey: .itemIDs,
                         in: container,
@@ -369,7 +441,7 @@ struct KeyboardBarConfig: Codable, Equatable {
                 ids.compactMap(KeyboardBarItemID.init(rawValue:)).map(KeyboardBarItem.builtIn),
                 actionIDs: []
             )
-        case Self.currentVersion:
+        case 2, Self.currentVersion:
             var decodedActions: [KeyboardAction] = []
             var actionContainer = try container.nestedUnkeyedContainer(forKey: .actions)
             while !actionContainer.isAtEnd {
@@ -441,13 +513,42 @@ struct KeyboardBarConfig: Codable, Equatable {
 
 struct KeyboardBarRuntimeState: Equatable {
     private(set) var activeModifiers: Set<KeyboardModifier> = []
+    private(set) var lockedModifiers: Set<KeyboardModifier> = []
+    private(set) var lastUsedModifier: KeyboardModifier?
+    private(set) var lastUsedActionID: UUID?
 
     mutating func toggle(_ modifier: KeyboardModifier) {
-        if activeModifiers.contains(modifier) { activeModifiers.remove(modifier) }
-        else { activeModifiers.insert(modifier) }
+        lastUsedModifier = modifier
+        if activeModifiers.contains(modifier) {
+            activeModifiers.remove(modifier)
+            lockedModifiers.remove(modifier)
+        } else {
+            activeModifiers.insert(modifier)
+        }
     }
 
-    mutating func consume() {
+    mutating func lock(_ modifier: KeyboardModifier) {
+        lastUsedModifier = modifier
+        activeModifiers.insert(modifier)
+        lockedModifiers.insert(modifier)
+    }
+
+    mutating func recordAction(id: UUID) {
+        lastUsedActionID = id
+    }
+
+    mutating func consumeOneShot() {
+        activeModifiers = lockedModifiers
+    }
+
+    mutating func deactivateModifiers() {
         activeModifiers.removeAll()
+        lockedModifiers.removeAll()
+    }
+
+    mutating func reset() {
+        deactivateModifiers()
+        lastUsedModifier = nil
+        lastUsedActionID = nil
     }
 }

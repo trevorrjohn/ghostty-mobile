@@ -6,6 +6,7 @@ final class KeyboardBarTests: XCTestCase {
         XCTAssertEqual(KeyboardBarConfig.defaults.items, [
             .builtIn(.escape), .builtIn(.control), .builtIn(.alt), .builtIn(.tab),
             .builtIn(.shift), .builtIn(.up), .builtIn(.down), .builtIn(.left), .builtIn(.right),
+            .builtIn(.lastModifier),
         ])
     }
 
@@ -30,7 +31,7 @@ final class KeyboardBarTests: XCTestCase {
     }
 
     func testRejectsUnsupportedConfigurationVersion() {
-        let data = Data(#"{"version":3,"enabled":true,"items":[],"actions":[]}"#.utf8)
+        let data = Data(#"{"version":4,"enabled":true,"items":[],"actions":[]}"#.utf8)
 
         XCTAssertThrowsError(try JSONDecoder().decode(KeyboardBarConfig.self, from: data))
     }
@@ -44,8 +45,43 @@ final class KeyboardBarTests: XCTestCase {
         state.toggle(.alt)
         XCTAssertEqual(state.activeModifiers, [.control])
 
-        state.consume()
+        state.consumeOneShot()
         XCTAssertTrue(state.activeModifiers.isEmpty)
+    }
+
+    func testLockedModifiersSurviveConsumptionAndTrackLastUse() {
+        var state = KeyboardBarRuntimeState()
+        state.lock(.control)
+        state.toggle(.alt)
+        state.recordAction(id: UUID())
+
+        XCTAssertEqual(state.activeModifiers, [.control, .alt])
+        XCTAssertEqual(state.lockedModifiers, [.control])
+        XCTAssertEqual(state.lastUsedModifier, .alt)
+        XCTAssertNotNil(state.lastUsedActionID)
+
+        state.consumeOneShot()
+        XCTAssertEqual(state.activeModifiers, [.control])
+        state.toggle(.control)
+        XCTAssertTrue(state.activeModifiers.isEmpty)
+        XCTAssertTrue(state.lockedModifiers.isEmpty)
+    }
+
+    func testVersionTwoConfigurationMigratesBroaderCatalog() throws {
+        let data = Data(#"{"version":2,"enabled":true,"items":["built-in:escape","built-in:right"],"actions":[]}"#.utf8)
+
+        let config = try JSONDecoder().decode(KeyboardBarConfig.self, from: data)
+
+        XCTAssertEqual(config.items, [.builtIn(.escape), .builtIn(.right)])
+    }
+
+    func testBroaderCatalogMapsNamedAndFunctionKeys() {
+        XCTAssertEqual(KeyboardBarItemID.enter.key, .enter)
+        XCTAssertEqual(KeyboardBarItemID.delete.key, .delete)
+        XCTAssertEqual(KeyboardBarItemID.pageDown.key, .pageDown)
+        XCTAssertEqual(KeyboardBarItemID.f12.key, .function(12))
+        XCTAssertNil(KeyboardBarItemID.lastModifier.key)
+        XCTAssertNil(KeyboardBarItemID.lastAction.key)
     }
 
     func testSavesAddsAndDeletesCustomAction() {
@@ -101,5 +137,14 @@ final class KeyboardBarTests: XCTestCase {
 
         XCTAssertEqual(letter.event, .key(.character("A"), text: "A", modifiers: .shift))
         XCTAssertEqual(digit.event, .key(.character("1"), text: "!", modifiers: .shift))
+    }
+
+    func testKeyboardBarShiftRegeneratesCustomActionText() {
+        let action = KeyboardAction(label: "Interrupt", key: .one, modifiers: [.control])
+
+        XCTAssertEqual(
+            action.event.adding(.shift),
+            .key(.character("1"), text: "!", modifiers: [.control, .shift])
+        )
     }
 }

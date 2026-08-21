@@ -182,12 +182,38 @@ final class GhosttyTerminalEngine: TerminalEngine {
         switch key {
         case .escape: GHOSTTY_KEY_ESCAPE
         case .tab: GHOSTTY_KEY_TAB
+        case .enter: GHOSTTY_KEY_ENTER
         case .backspace: GHOSTTY_KEY_BACKSPACE
+        case .delete: GHOSTTY_KEY_DELETE
+        case .insert: GHOSTTY_KEY_INSERT
+        case .home: GHOSTTY_KEY_HOME
+        case .end: GHOSTTY_KEY_END
+        case .pageUp: GHOSTTY_KEY_PAGE_UP
+        case .pageDown: GHOSTTY_KEY_PAGE_DOWN
         case .up: GHOSTTY_KEY_ARROW_UP
         case .down: GHOSTTY_KEY_ARROW_DOWN
         case .left: GHOSTTY_KEY_ARROW_LEFT
         case .right: GHOSTTY_KEY_ARROW_RIGHT
+        case .function(let number): nativeFunctionKey(number)
         case .character(let value): nativeCharacterKey(value.uppercased())
+        }
+    }
+
+    private static func nativeFunctionKey(_ number: Int) -> GhosttyKey {
+        switch number {
+        case 1: GHOSTTY_KEY_F1
+        case 2: GHOSTTY_KEY_F2
+        case 3: GHOSTTY_KEY_F3
+        case 4: GHOSTTY_KEY_F4
+        case 5: GHOSTTY_KEY_F5
+        case 6: GHOSTTY_KEY_F6
+        case 7: GHOSTTY_KEY_F7
+        case 8: GHOSTTY_KEY_F8
+        case 9: GHOSTTY_KEY_F9
+        case 10: GHOSTTY_KEY_F10
+        case 11: GHOSTTY_KEY_F11
+        case 12: GHOSTTY_KEY_F12
+        default: GHOSTTY_KEY_UNIDENTIFIED
         }
     }
 

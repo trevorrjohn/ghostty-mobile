@@ -82,8 +82,8 @@ The matrix reflects the current working tree, not only the last commit.
 | --- | --- | --- | --- |
 | Ghostty VT parsing and styled native rendering | `Implemented` | `Implemented` | Shared foundation with platform-native renderers. |
 | Unicode, colors, cursor state, and PTY resize | `Implemented` | `Implemented` | Continue device, rotation, and split-view validation. |
-| Software and hardware keyboard input | `Partial` | `Partial` | Android needs IME and shortcut hardening; iOS needs broader mode-aware key and modifier handling. |
-| Configurable modifier and extra-key controls | `Implemented` | `Partial` | iOS has persisted ordering, a bounded custom-action editor, and one-shot Ctrl/Alt/Shift; locking, last-used controls, and broader keys remain. |
+| Software and hardware keyboard input | `Partial` | `Partial` | Android needs IME and shortcut hardening; iOS normalizes external Ctrl/Alt/Shift with navigation and F-keys but still needs punctuation and Meta/lock modifier coverage. |
+| Configurable modifier and extra-key controls | `Implemented` | `Partial` | iOS has persisted ordering, bounded custom actions, one-shot and locked Ctrl/Alt/Shift, last-used controls, navigation/editing keys, and F1-F12; Meta and lock modifiers remain. |
 | Scrollback navigation | `Implemented` | `Planned` | Ghostty retains iOS scrollback, but the app does not expose it yet. |
 | Selection and copy | `Implemented` | `Planned` | iOS needs a touch, pointer, and hardware-keyboard selection model. |
 | Paste and paste-safety confirmation | `Implemented` | `Planned` | iOS has not reached clipboard and bracketed-paste integration. |

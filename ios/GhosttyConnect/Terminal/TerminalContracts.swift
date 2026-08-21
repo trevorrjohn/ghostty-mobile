@@ -34,11 +34,19 @@ struct SessionFailure: Equatable {
 enum TerminalKey: Equatable {
     case escape
     case tab
+    case enter
     case backspace
+    case delete
+    case insert
+    case home
+    case end
+    case pageUp
+    case pageDown
     case up
     case down
     case left
     case right
+    case function(Int)
     case character(String)
 
     static func fromCommittedText(_ text: String) -> TerminalKey? {
@@ -48,6 +56,24 @@ enum TerminalKey: Equatable {
         let value = text.uppercased()
         guard value.range(of: #"^[A-Z0-9 ]$"#, options: .regularExpression) != nil else { return nil }
         return .character(value)
+    }
+
+    func generatedText(shifted: Bool) -> String? {
+        guard case .character(let value) = self else { return nil }
+        guard shifted else { return value.lowercased() }
+        switch value {
+        case "0": return ")"
+        case "1": return "!"
+        case "2": return "@"
+        case "3": return "#"
+        case "4": return "$"
+        case "5": return "%"
+        case "6": return "^"
+        case "7": return "&"
+        case "8": return "*"
+        case "9": return "("
+        default: return value.uppercased()
+        }
     }
 }
 
@@ -78,7 +104,9 @@ enum TerminalInputEvent: Equatable {
         case .text(let text, let modifiers):
             return .text(text, modifiers: modifiers.union(additionalModifiers))
         case .key(let key, let text, let modifiers):
-            return .key(key, text: text, modifiers: modifiers.union(additionalModifiers))
+            let combined = modifiers.union(additionalModifiers)
+            let output = text.isEmpty ? text : (key.generatedText(shifted: combined.contains(.shift)) ?? text)
+            return .key(key, text: output, modifiers: combined)
         }
     }
 }

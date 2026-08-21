@@ -65,25 +65,85 @@ final class TerminalKeyboardInputView: UIView, UIKeyInput {
         return result
     }
 
-    override var keyCommands: [UIKeyCommand]? {
-        [
-            UIKeyCommand(input: UIKeyCommand.inputEscape, modifierFlags: [], action: #selector(sendEscape)),
-            UIKeyCommand(input: UIKeyCommand.inputUpArrow, modifierFlags: [], action: #selector(sendUp)),
-            UIKeyCommand(input: UIKeyCommand.inputDownArrow, modifierFlags: [], action: #selector(sendDown)),
-            UIKeyCommand(input: UIKeyCommand.inputLeftArrow, modifierFlags: [], action: #selector(sendLeft)),
-            UIKeyCommand(input: UIKeyCommand.inputRightArrow, modifierFlags: [], action: #selector(sendRight)),
-            UIKeyCommand(input: "c", modifierFlags: .control, action: #selector(sendControlC)),
-            UIKeyCommand(input: "d", modifierFlags: .control, action: #selector(sendControlD)),
-            UIKeyCommand(input: "z", modifierFlags: .control, action: #selector(sendControlZ)),
-        ]
+    override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        var unhandled: Set<UIPress> = []
+        for press in presses {
+            guard let key = press.key,
+                  let inputEvent = Self.event(
+                    input: key.charactersIgnoringModifiers,
+                    flags: key.modifierFlags
+                  ) else {
+                unhandled.insert(press)
+                continue
+            }
+            onInput?(inputEvent)
+        }
+        if !unhandled.isEmpty { super.pressesBegan(unhandled, with: event) }
     }
 
-    @objc private func sendEscape() { onInput?(.key(.escape)) }
-    @objc private func sendUp() { onInput?(.key(.up)) }
-    @objc private func sendDown() { onInput?(.key(.down)) }
-    @objc private func sendLeft() { onInput?(.key(.left)) }
-    @objc private func sendRight() { onInput?(.key(.right)) }
-    @objc private func sendControlC() { onInput?(.key(.character("C"), text: "c", modifiers: .control)) }
-    @objc private func sendControlD() { onInput?(.key(.character("D"), text: "d", modifiers: .control)) }
-    @objc private func sendControlZ() { onInput?(.key(.character("Z"), text: "z", modifiers: .control)) }
+    static func event(input: String, flags: UIKeyModifierFlags) -> TerminalInputEvent? {
+        guard !flags.contains(.command) else { return nil }
+        let modifiers = TerminalKeyModifiers(flags)
+        if let key = namedKey(input) { return .key(key, modifiers: modifiers) }
+        guard let actionKey = characterKey(input) else { return nil }
+        return .key(
+            actionKey.terminalKey,
+            text: actionKey.text(shifted: modifiers.contains(.shift)),
+            modifiers: modifiers
+        )
+    }
+
+    private static func namedKey(_ input: String) -> TerminalKey? {
+        switch input {
+        case UIKeyCommand.inputEscape: .escape
+        case "\t": .tab
+        case "\r": .enter
+        case "\u{8}": .backspace
+        case UIKeyCommand.inputDelete: .delete
+        case UIKeyCommand.inputHome: .home
+        case UIKeyCommand.inputEnd: .end
+        case UIKeyCommand.inputPageUp: .pageUp
+        case UIKeyCommand.inputPageDown: .pageDown
+        case UIKeyCommand.inputUpArrow: .up
+        case UIKeyCommand.inputDownArrow: .down
+        case UIKeyCommand.inputLeftArrow: .left
+        case UIKeyCommand.inputRightArrow: .right
+        case UIKeyCommand.f1: .function(1)
+        case UIKeyCommand.f2: .function(2)
+        case UIKeyCommand.f3: .function(3)
+        case UIKeyCommand.f4: .function(4)
+        case UIKeyCommand.f5: .function(5)
+        case UIKeyCommand.f6: .function(6)
+        case UIKeyCommand.f7: .function(7)
+        case UIKeyCommand.f8: .function(8)
+        case UIKeyCommand.f9: .function(9)
+        case UIKeyCommand.f10: .function(10)
+        case UIKeyCommand.f11: .function(11)
+        case UIKeyCommand.f12: .function(12)
+        default: nil
+        }
+    }
+
+    private static func characterKey(_ input: String) -> KeyboardActionKey? {
+        if input.count == 1,
+           input.lowercased().first?.isLetter == true,
+           let letter = KeyboardActionKey(rawValue: input.lowercased()) {
+            return letter
+        }
+        let digits: [String: KeyboardActionKey] = [
+            "0": .zero, "1": .one, "2": .two, "3": .three, "4": .four,
+            "5": .five, "6": .six, "7": .seven, "8": .eight, "9": .nine,
+        ]
+        return input == " " ? .space : digits[input]
+    }
+}
+
+private extension TerminalKeyModifiers {
+    init(_ flags: UIKeyModifierFlags) {
+        var modifiers: TerminalKeyModifiers = []
+        if flags.contains(.shift) { modifiers.insert(.shift) }
+        if flags.contains(.control) { modifiers.insert(.control) }
+        if flags.contains(.alternate) { modifiers.insert(.alt) }
+        self = modifiers
+    }
 }

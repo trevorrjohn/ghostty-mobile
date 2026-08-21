@@ -36,6 +36,19 @@ final class GhosttyTerminalEngineTests: XCTestCase {
         XCTAssertEqual(try engine.encode(event: .key(.up)), Data("\u{1b}OA".utf8))
     }
 
+    func testEncodesBroaderNamedAndFunctionKeys() throws {
+        guard TerminalEngineFactory.isAvailable else {
+            throw XCTSkip("GhosttyVt XCFramework is not installed")
+        }
+
+        let engine = try TerminalEngineFactory.make()
+        XCTAssertEqual(try engine.encode(event: .key(.enter)), Data("\r".utf8))
+        XCTAssertEqual(try engine.encode(event: .key(.delete)), Data("\u{1b}[3~".utf8))
+        XCTAssertEqual(try engine.encode(event: .key(.pageDown)), Data("\u{1b}[6~".utf8))
+        XCTAssertEqual(try engine.encode(event: .key(.function(1))), Data("\u{1b}OP".utf8))
+        XCTAssertEqual(try engine.encode(event: .key(.function(12))), Data("\u{1b}[24~".utf8))
+    }
+
     func testEncodesControlCharacterThroughKeyEncoder() throws {
         guard TerminalEngineFactory.isAvailable else {
             throw XCTSkip("GhosttyVt XCFramework is not installed")
