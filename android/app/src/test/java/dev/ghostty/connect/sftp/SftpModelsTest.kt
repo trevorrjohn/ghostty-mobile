@@ -60,4 +60,42 @@ class SftpModelsTest {
         assertTrue(runCatching { remoteFolderPath("/home/ghost", "../private") }.isFailure)
         assertTrue(runCatching { remoteFolderPath("relative", "projects") }.isFailure)
     }
+
+    @Test
+    fun fuzzySearchRanksPrefixBeforeSubstringAndSubsequence() {
+        val entries = listOf(
+            SftpEntry("thread-read.log", SftpEntryType.FILE),
+            SftpEntry("README.md", SftpEntryType.FILE),
+            SftpEntry("remote-app-data", SftpEntryType.DIRECTORY),
+            SftpEntry("unrelated.txt", SftpEntryType.FILE),
+        )
+
+        val matches = filterAndSortSftpEntries(entries, "read", SftpSortMode.NAME, false)
+
+        assertEquals(
+            listOf("remote-app-data", "README.md", "thread-read.log", "unrelated.txt"),
+            matches.map(SftpEntry::name),
+        )
+        assertTrue(fuzzyScore("configuration", "cfg") != null)
+        assertNull(fuzzyScore("README.md", "cfg"))
+    }
+
+    @Test
+    fun sortingKeepsDirectoriesFirstAndUnknownMetadataLast() {
+        val entries = listOf(
+            SftpEntry("small", SftpEntryType.FILE, size = 10, modifiedAtSeconds = 30),
+            SftpEntry("folder", SftpEntryType.DIRECTORY),
+            SftpEntry("unknown", SftpEntryType.FILE),
+            SftpEntry("large", SftpEntryType.FILE, size = 100, modifiedAtSeconds = 20),
+        )
+
+        assertEquals(
+            listOf("folder", "large", "small", "unknown"),
+            filterAndSortSftpEntries(entries, "", SftpSortMode.SIZE, true).map(SftpEntry::name),
+        )
+        assertEquals(
+            listOf("folder", "large", "small", "unknown"),
+            filterAndSortSftpEntries(entries, "", SftpSortMode.MODIFIED, false).map(SftpEntry::name),
+        )
+    }
 }

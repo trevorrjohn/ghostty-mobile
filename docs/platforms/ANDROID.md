@@ -30,7 +30,7 @@ The foreground service, not the activity, owns live transports and Ghostty termi
 
 The service is `START_NOT_STICKY`. Process death ends live SSH transports. Automatic reconnect is bounded and creates a new shell; tmux or screen is required for remote process continuity.
 
-The file browser uses a separate started and bound service with an independent SSH connection. It reuses host trust and authentication semantics but never creates a PTY or shares terminal credentials. Direct path entry is server-canonicalized, and per-host favorite folder paths use the encrypted local store independently of live connections. Uploads and downloads use document URIs and fixed-size buffers; an active transfer temporarily uses a generic `dataSync` foreground notification with cancellation and no host or path details. Process death and interruption do not resume transfers.
+The file browser uses a separate started and bound service with an independent SSH connection. It reuses host trust and authentication semantics but never creates a PTY or shares terminal credentials. Direct path entry is server-canonicalized, current-folder search and sorting operate on immutable listings, and per-host favorite folder paths use the encrypted local store independently of live connections. Open uses a bounded app-private temporary content URI; uploads and durable downloads use document URIs and fixed-size buffers. An active transfer temporarily uses a generic `dataSync` foreground notification with cancellation and no host or path details. Process death and interruption do not resume transfers.
 
 ## Ghostty Integration
 

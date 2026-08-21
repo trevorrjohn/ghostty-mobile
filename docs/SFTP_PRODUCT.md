@@ -36,6 +36,8 @@ A user can:
 9. See byte progress, completion, cancellation, interruption, and an actionable failure message for a transfer.
 10. Open a separate terminal for the same saved host without ending the file browser.
 11. Save favorite remote folders for a saved host and reopen them from later file-browser connections.
+12. Fuzzy-filter the current directory and sort folders/files by name, modification time, or size.
+13. Open a bounded regular file with an installed Android viewer without first choosing a durable download destination.
 
 ## Entry Points
 
@@ -72,6 +74,8 @@ Credentials are scoped to one connection attempt. Reconnect and **Open terminal*
 The browser header shows the host display name and current remote path. The primary actions are **Upload**, **New folder**, **Refresh**, **Open terminal**, and **Close**. Parent navigation is available whenever the current location is not the filesystem root, including from the account's home directory.
 
 The path can be entered directly as an absolute or current-directory-relative path. The server canonicalizes it before use, and an explicitly entered path may open any directory the authenticated account can access. File operations remain constrained to validated children of the resulting current directory. Favorite folders are stored encrypted against the saved host ID, remain available across browser connections, and never retain credentials or connection state.
+
+Search filters only the already loaded current directory using fuzzy subsequence matching; it does not recursively enumerate the server. Direct Open streams at most 25 MiB into app-private temporary cache, grants a read-only content URI to the selected Android viewer, and removes the temporary file when the app regains focus. Unsupported or larger files remain available through explicit Download.
 
 Directories sort before other entries, and each group sorts by display name without changing the remote name. `.` and `..` are never displayed as ordinary entries.
 

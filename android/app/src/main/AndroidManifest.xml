@@ -33,5 +33,10 @@
             android:exported="false"
             android:foregroundServiceType="dataSync"
             android:stopWithTask="false" />
+        <provider
+            android:name=".sftp.SftpPreviewProvider"
+            android:authorities="${applicationId}.sftp-previews"
+            android:exported="false"
+            android:grantUriPermissions="true" />
     </application>
 </manifest>

@@ -252,17 +252,26 @@ class SftpBrowserService : Service() {
         refreshState(record, connection)
     }
 
-    fun download(browserId: String, expectedPath: String, entry: SftpEntry, destination: Uri) = transfer(
+    fun download(
+        browserId: String,
+        expectedPath: String,
+        entry: SftpEntry,
+        destination: Uri,
+        maxBytes: Long? = null,
+        openWhenComplete: Boolean = false,
+    ) = transfer(
         browserId,
         expectedPath,
         SftpTransferDirection.DOWNLOAD,
         entry.name,
         entry.size,
+        destination.toString(),
+        openWhenComplete,
     ) { record, connection, canceled, progress ->
         require(entry.type == SftpEntryType.FILE && entry.supported) { "Only regular files can be downloaded." }
         try {
             contentResolver.openOutputStream(destination, "w")?.use { output ->
-                connection.download(record.pathStack.last(), entry.name, output, canceled, progress)
+                connection.download(record.pathStack.last(), entry.name, output, canceled, maxBytes, progress)
             } ?: error("The selected document could not be opened for writing.")
         } catch (error: Exception) {
             runCatching { contentResolver.delete(destination, null, null) }
@@ -303,12 +312,14 @@ class SftpBrowserService : Service() {
     fun acknowledgeTransfer(browserId: String) = onServiceMain {
         val record = browsers[browserId] ?: return@onServiceMain
         if (record.state.transfer?.status != SftpTransferStatus.RUNNING) {
+            record.state.transfer?.openUri?.let(::deletePreviewUri)
             update(record, record.state.copy(transfer = null, error = null))
         }
     }
 
     fun close(browserId: String) = onServiceMain {
         val record = browsers.remove(browserId) ?: return@onServiceMain
+        record.state.transfer?.openUri?.let(::deletePreviewUri)
         if (activeTransferBrowserId == browserId) {
             activeTransferBrowserId = null
             stopForeground(STOP_FOREGROUND_REMOVE)
@@ -324,6 +335,7 @@ class SftpBrowserService : Service() {
 
     override fun onDestroy() {
         browsers.values.forEach { record ->
+            record.state.transfer?.openUri?.let(::deletePreviewUri)
             cancelAttempt(record)
             record.executor.shutdownNow()
         }
@@ -419,6 +431,8 @@ class SftpBrowserService : Service() {
         direction: SftpTransferDirection,
         displayName: String,
         total: Long?,
+        openUri: String? = null,
+        openWhenComplete: Boolean = false,
         action: (BrowserRecord, SftpConnection, AtomicBoolean, (Long, Long?) -> Unit) -> Unit,
     ) = onServiceMain {
         val record = browsers[browserId] ?: return@onServiceMain
@@ -441,7 +455,15 @@ class SftpBrowserService : Service() {
         record.busy = true
         activeTransferBrowserId = browserId
         update(record, record.state.copy(
-            transfer = SftpTransferState(direction, displayName, 0, total, SftpTransferStatus.RUNNING),
+            transfer = SftpTransferState(
+                direction,
+                displayName,
+                0,
+                total,
+                SftpTransferStatus.RUNNING,
+                openUri = openUri,
+                openWhenComplete = openWhenComplete,
+            ),
             error = null,
         ))
         startTransferForeground(record)
@@ -571,6 +593,13 @@ class SftpBrowserService : Service() {
             if (cursor.moveToFirst() && !cursor.isNull(0)) cursor.getLong(0) else null
         }
     }.getOrNull()
+
+    private fun deletePreviewUri(uriString: String) {
+        val uri = Uri.parse(uriString)
+        if (uri.authority == "$packageName.sftp-previews") {
+            runCatching { contentResolver.delete(uri, null, null) }
+        }
+    }
 
     private fun startTransferForeground(record: BrowserRecord) {
         startForeground(NOTIFICATION_ID, transferNotification(record), ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)

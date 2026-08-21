@@ -109,11 +109,15 @@ internal class SftpConnection(
         name: String,
         output: OutputStream,
         canceled: AtomicBoolean,
+        maxBytes: Long? = null,
         progress: (Long, Long?) -> Unit,
     ) {
         val path = childPath(currentPath, name)
         val attrs = requireType(path, FileMode.Type.REGULAR)
         val total = attrs.size.takeIf { attrs.has(FileAttributes.Flag.SIZE) }
+        if (maxBytes != null && total != null) require(total <= maxBytes) {
+            "This file is too large to open directly. Download it instead."
+        }
         client().open(path, EnumSet.of(OpenMode.READ)).use { remote ->
             val buffer = ByteArray(TRANSFER_BUFFER_BYTES)
             var offset = 0L
@@ -121,6 +125,9 @@ internal class SftpConnection(
                 val count = remote.read(offset, buffer, 0, buffer.size)
                 if (count < 0) break
                 if (count == 0) continue
+                if (maxBytes != null && offset + count > maxBytes) {
+                    error("This file is too large to open directly. Download it instead.")
+                }
                 output.write(buffer, 0, count)
                 offset += count
                 progress(offset, total)

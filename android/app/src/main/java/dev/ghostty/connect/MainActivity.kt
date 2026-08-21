@@ -79,6 +79,9 @@ import dev.ghostty.connect.sftp.SftpBrowserState
 import dev.ghostty.connect.sftp.SftpEntry
 import dev.ghostty.connect.sftp.SftpEntryType
 import dev.ghostty.connect.sftp.SftpTransferStatus
+import dev.ghostty.connect.sftp.SftpPreviewProvider
+import dev.ghostty.connect.sftp.SftpSortMode
+import dev.ghostty.connect.sftp.filterAndSortSftpEntries
 import dev.ghostty.connect.sftp.remoteChildNameError
 import dev.ghostty.connect.sftp.remoteFolderPath
 import dev.ghostty.connect.terminal.SshSessionService
@@ -135,6 +138,12 @@ class MainActivity : Activity() {
     private var pendingUploadRequest: PendingUploadRequest? = null
     private var pendingDownloadUri: Uri? = null
     private var pendingUploadUri: Uri? = null
+    private val sftpSearchQueries = mutableMapOf<String, String>()
+    private val sftpSortModes = mutableMapOf<String, SftpSortMode>()
+    private val sftpSortDescending = mutableMapOf<String, Boolean>()
+    private var lastOpenedSftpUri: String? = null
+    private var activeSftpPreviewUri: Uri? = null
+    private var activeSftpPreviewBrowserId: String? = null
     private var selectedSessionId: String? = null
     private var terminalStatus: TextView? = null
     private var terminalTitle: TextView? = null
@@ -376,6 +385,7 @@ class MainActivity : Activity() {
         feedbackStore = DogfoodFeedbackStore(this)
         knownHostStore = KnownHostStore(this)
         sftpFavoriteStore = SftpFavoriteStore(this)
+        if (savedInstanceState == null) SftpPreviewProvider.clearCache(this)
         keyboardBarConfig = keyboardBarStore.load()
         selectedSessionId = intent?.getStringExtra(SshSessionService.EXTRA_SESSION_ID)
         shouldBindSession = intent?.action == SshSessionService.ACTION_OPEN_SESSION || SshSessionService.active
@@ -402,6 +412,8 @@ class MainActivity : Activity() {
         }
         pendingDownloadUri = savedInstanceState?.getString(STATE_DOWNLOAD_URI)?.let(Uri::parse)
         pendingUploadUri = savedInstanceState?.getString(STATE_UPLOAD_URI)?.let(Uri::parse)
+        activeSftpPreviewUri = savedInstanceState?.getString(STATE_ACTIVE_PREVIEW_URI)?.let(Uri::parse)
+        activeSftpPreviewBrowserId = savedInstanceState?.getString(STATE_ACTIVE_PREVIEW_BROWSER)
         shouldBindSftp = intent?.action == SftpBrowserService.ACTION_OPEN_BROWSER || SftpBrowserService.active
             || pendingBrowserConnection != null
         when (savedInstanceState?.getString(STATE_SCREEN)) {
@@ -432,6 +444,17 @@ class MainActivity : Activity() {
         super.onStart()
         if (shouldBindSession && !sessionBound) bindSessionService()
         if (shouldBindSftp && !sftpBound) bindSftpService()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        activeSftpPreviewUri?.let { uri ->
+            lastOpenedSftpUri = uri.toString()
+            runCatching { contentResolver.delete(uri, null, null) }
+        }
+        activeSftpPreviewBrowserId?.let { sftpService?.acknowledgeTransfer(it) }
+        activeSftpPreviewUri = null
+        activeSftpPreviewBrowserId = null
     }
 
     override fun onNewIntent(intent: Intent?) {
@@ -1610,6 +1633,28 @@ class MainActivity : Activity() {
         val browserPanel = Color.rgb(42, 45, 66)
         val browserControl = Color.rgb(48, 51, 73)
         val browserMuted = Color.rgb(157, 163, 186)
+        val list = vertical(4).apply { background = roundedBackground(browserPanel, 22) }
+        fun updateDirectoryList() {
+            renderBrowserEntries(
+                list,
+                state,
+                sftpSearchQueries[state.browserId].orEmpty(),
+                sftpSortModes[state.browserId] ?: SftpSortMode.NAME,
+                sftpSortDescending[state.browserId] == true,
+                browserMuted,
+            )
+        }
+        state.transfer?.takeIf {
+            it.status == SftpTransferStatus.COMPLETED && it.openWhenComplete && it.openUri != null &&
+                it.openUri != lastOpenedSftpUri
+        }?.let { transfer ->
+            mainHandler.post {
+                if (lastOpenedSftpUri == transfer.openUri) return@post
+                if (openSftpUri(state.browserId, transfer.openUri!!)) {
+                    lastOpenedSftpUri = transfer.openUri
+                }
+            }
+        }
         val root = vertical(0).apply { setBackgroundColor(browserBackground) }
         val toolbar = vertical(16).apply { setBackgroundColor(browserBackground) }
         val locationRow = LinearLayout(this).apply {
@@ -1662,6 +1707,31 @@ class MainActivity : Activity() {
         actionRow.addView(label(state.path?.substringAfterLast('/')?.ifBlank { "/" } ?: "Files", 16f, primary, Typeface.BOLD),
             LinearLayout.LayoutParams(0, -2, 1f).apply { marginStart = dp(10) })
         actionRow.addView(compactButton("Upload", state.connected) { openUploadPicker() })
+        val sortMode = sftpSortModes[state.browserId] ?: SftpSortMode.NAME
+        val descending = sftpSortDescending[state.browserId] == true
+        val sort = compactButton("${sortMode.name.lowercase().replaceFirstChar(Char::uppercase)} ${if (descending) "v" else "^"}") {}
+        sort.contentDescription = "Sort files"
+        sort.setOnClickListener { anchor ->
+            PopupMenu(this, anchor).apply {
+                menu.add("Sort by name")
+                menu.add("Sort by modified time")
+                menu.add("Sort by size")
+                menu.add(if (descending) "Ascending" else "Descending")
+                setOnMenuItemClickListener { item ->
+                    when (item.title) {
+                        "Sort by name" -> sftpSortModes[state.browserId] = SftpSortMode.NAME
+                        "Sort by modified time" -> sftpSortModes[state.browserId] = SftpSortMode.MODIFIED
+                        "Sort by size" -> sftpSortModes[state.browserId] = SftpSortMode.SIZE
+                        "Ascending" -> sftpSortDescending[state.browserId] = false
+                        "Descending" -> sftpSortDescending[state.browserId] = true
+                    }
+                    renderFileBrowser(state)
+                    true
+                }
+                show()
+            }
+        }
+        actionRow.addView(sort)
         val more = compactButton("...", true) {}
         more.contentDescription = "More file browser actions"
         more.setOnClickListener { anchor ->
@@ -1692,6 +1762,20 @@ class MainActivity : Activity() {
         }
         actionRow.addView(more)
         toolbar.addView(actionRow)
+        val search = field("Fuzzy search this folder", sftpSearchQueries[state.browserId].orEmpty()).apply {
+            background = roundedBackground(browserControl, 14)
+            setPadding(dp(14), 0, dp(14), 0)
+            imeOptions = android.view.inputmethod.EditorInfo.IME_ACTION_DONE
+            addTextChangedListener(object : TextWatcher {
+                override fun beforeTextChanged(value: CharSequence?, start: Int, count: Int, after: Int) = Unit
+                override fun onTextChanged(value: CharSequence?, start: Int, before: Int, count: Int) = Unit
+                override fun afterTextChanged(value: Editable?) {
+                    sftpSearchQueries[state.browserId] = value?.toString().orEmpty()
+                    updateDirectoryList()
+                }
+            })
+        }
+        toolbar.addView(search, LinearLayout.LayoutParams(-1, dp(44)).apply { topMargin = dp(10) })
         toolbar.addView(label(state.status, 13f, if (state.connected) accent else browserMuted).margins(top = 8))
         state.error?.let { toolbar.addView(label(it, 13f, Color.rgb(255, 145, 145)).margins(top = 5)) }
 
@@ -1738,49 +1822,18 @@ class MainActivity : Activity() {
                     sftpService?.cancelTransfer(state.browserId)
                 }.margins(top = 10))
             } else {
+                transfer.openUri?.takeIf { transfer.status == SftpTransferStatus.COMPLETED }?.let { uri ->
+                    transferCard.addView(button("Open", secondary) {
+                        openSftpUri(state.browserId, uri)
+                    }.margins(top = 10))
+                }
                 transferCard.addView(button("Dismiss", secondary) {
                     sftpService?.acknowledgeTransfer(state.browserId)
                 }.margins(top = 10))
             }
             content.addView(transferCard.margins(bottom = 12))
         }
-        val list = vertical(4).apply { background = roundedBackground(browserPanel, 22) }
-        if (state.canNavigateBack) list.addView(browserParentRow(browserMuted) {
-            sftpService?.navigateBack(state.browserId)
-        })
-        if (state.entries.isEmpty() && state.connected) list.addView(
-            label("This directory is empty.", 15f, browserMuted).apply { setPadding(dp(16), dp(24), dp(16), dp(24)) },
-        )
-        state.entries.forEach { entry ->
-            val type = when (entry.type) {
-                SftpEntryType.FILE -> "File"
-                SftpEntryType.DIRECTORY -> "Directory"
-                SftpEntryType.SYMLINK -> "Symbolic link"
-                SftpEntryType.UNSUPPORTED -> "Unsupported entry"
-            }
-            val metadata = entry.permissions ?: type
-            val trailing = buildList {
-                entry.size?.let { add(formatBytes(it)) }
-                entry.modifiedAtSeconds?.let { add(formatRemoteTime(it)) }
-            }.joinToString("\n")
-            val card = browserEntryRow(entry, metadata, trailing, browserMuted)
-            if (entry.supported) {
-                if (entry.type == SftpEntryType.DIRECTORY) {
-                    card.setOnClickListener { sftpService?.enter(state.browserId, entry) }
-                }
-                card.isLongClickable = true
-                card.setOnLongClickListener {
-                    showEntryActions(state.browserId, entry)
-                    true
-                }
-                card.contentDescription = "$metadata. ${entry.name}. " + if (entry.type == SftpEntryType.DIRECTORY) {
-                    "Tap to open. Long press for actions."
-                } else {
-                    "Long press for actions."
-                }
-            }
-            list.addView(card)
-        }
+        updateDirectoryList()
         content.addView(list)
         if (!state.connected) {
             content.addView(button("Reconnect") {
@@ -1808,7 +1861,10 @@ class MainActivity : Activity() {
         val actions = buildList {
             if (entry.type == SftpEntryType.DIRECTORY) add("Open")
             if (folderPath != null) add(if (folderFavorite) "Remove favorite" else "Favorite folder")
-            if (entry.type == SftpEntryType.FILE) add("Download")
+            if (entry.type == SftpEntryType.FILE) {
+                add("Open")
+                add("Download")
+            }
             add("Rename")
             if (host?.allowSftpDelete == true) {
                 add(if (entry.type == SftpEntryType.SYMLINK) "Delete link" else "Delete")
@@ -1818,7 +1874,11 @@ class MainActivity : Activity() {
             .setTitle(entry.name)
             .setItems(actions.toTypedArray()) { _, index ->
                 when (actions[index]) {
-                    "Open" -> sftpService?.enter(browserId, entry)
+                    "Open" -> if (entry.type == SftpEntryType.DIRECTORY) {
+                        sftpService?.enter(browserId, entry)
+                    } else {
+                        openRemoteFile(browserId, entry)
+                    }
                     "Favorite folder" -> if (hostId != null && folderPath != null && state != null) {
                         updateFavorite(state, hostId, folderPath, add = true)
                     } else Unit
@@ -1832,6 +1892,44 @@ class MainActivity : Activity() {
             }
             .setNegativeButton("Cancel", null)
             .show()
+    }
+
+    private fun openRemoteFile(browserId: String, entry: SftpEntry) {
+        if (entry.size != null && entry.size > MAX_OPEN_FILE_BYTES) {
+            toast("This file is too large to open directly. Download it instead.")
+            return
+        }
+        val state = sftpService?.state(browserId) ?: return
+        val path = state.path ?: return
+        val uri = runCatching { SftpPreviewProvider.createUri(this, entry.name) }.getOrElse {
+            toast(it.message ?: "Could not prepare the file preview.")
+            return
+        }
+        sftpService?.download(
+            browserId,
+            path,
+            entry,
+            uri,
+            maxBytes = MAX_OPEN_FILE_BYTES,
+            openWhenComplete = true,
+        )
+    }
+
+    private fun openSftpUri(browserId: String, uriString: String): Boolean {
+        val uri = Uri.parse(uriString)
+        val intent = Intent(Intent.ACTION_VIEW).apply {
+            setDataAndType(uri, contentResolver.getType(uri) ?: "application/octet-stream")
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        return runCatching { startActivity(intent) }
+            .onSuccess {
+                if (uri.authority == "${BuildConfig.APPLICATION_ID}.sftp-previews") {
+                    activeSftpPreviewUri = uri
+                    activeSftpPreviewBrowserId = browserId
+                }
+            }
+            .onFailure { toast("No installed app can open this file type.") }
+            .isSuccess
     }
 
     private fun updateFavorite(state: SftpBrowserState, hostId: String, path: String, add: Boolean) {
@@ -1991,6 +2089,7 @@ class MainActivity : Activity() {
                 .setPositiveButton("Cancel and close") { _, _ ->
                     sftpService?.cancelTransfer(state.browserId)
                     sftpService?.close(state.browserId)
+                    clearBrowserViewOptions(state.browserId)
                     selectedBrowserId = null
                     showHosts(disconnect = false)
                 }
@@ -1998,6 +2097,7 @@ class MainActivity : Activity() {
             return
         }
         sftpService?.close(state.browserId)
+        clearBrowserViewOptions(state.browserId)
         selectedBrowserId = null
         showHosts(disconnect = false)
     }
@@ -2042,6 +2142,12 @@ class MainActivity : Activity() {
     private fun formatRemoteTime(seconds: Long): String = REMOTE_TIME_FORMAT.format(
         Instant.ofEpochSecond(seconds).atZone(ZoneId.systemDefault()),
     )
+
+    private fun clearBrowserViewOptions(browserId: String) {
+        sftpSearchQueries.remove(browserId)
+        sftpSortModes.remove(browserId)
+        sftpSortDescending.remove(browserId)
+    }
 
     private fun bindSessionService() {
         bindService(Intent(this, SshSessionService::class.java), serviceConnection, Context.BIND_AUTO_CREATE)
@@ -2695,6 +2801,8 @@ class MainActivity : Activity() {
         }
         pendingDownloadUri?.let { outState.putString(STATE_DOWNLOAD_URI, it.toString()) }
         pendingUploadUri?.let { outState.putString(STATE_UPLOAD_URI, it.toString()) }
+        activeSftpPreviewUri?.let { outState.putString(STATE_ACTIVE_PREVIEW_URI, it.toString()) }
+        activeSftpPreviewBrowserId?.let { outState.putString(STATE_ACTIVE_PREVIEW_BROWSER, it) }
         feedbackDraftViews?.let { draft ->
             runCatching {
                 feedbackStore.saveDraft(DogfoodFeedbackDraft(
@@ -2724,6 +2832,58 @@ class MainActivity : Activity() {
 
     @Deprecated("Retains only a transient credential handoff across configuration changes")
     override fun onRetainNonConfigurationInstance(): Any? = pendingBrowserConnection
+
+    private fun renderBrowserEntries(
+        list: LinearLayout,
+        state: SftpBrowserState,
+        query: String,
+        sortMode: SftpSortMode,
+        descending: Boolean,
+        mutedColor: Int,
+    ) {
+        list.removeAllViews()
+        if (query.isBlank() && state.canNavigateBack) list.addView(browserParentRow(mutedColor) {
+            sftpService?.navigateBack(state.browserId)
+        })
+        val entries = filterAndSortSftpEntries(state.entries, query, sortMode, descending)
+        if (entries.isEmpty() && state.connected) {
+            list.addView(label(
+                if (state.entries.isEmpty()) "This directory is empty." else "No matching files.",
+                15f,
+                mutedColor,
+            ).apply { setPadding(dp(16), dp(24), dp(16), dp(24)) })
+        }
+        entries.forEach { entry ->
+            val type = when (entry.type) {
+                SftpEntryType.FILE -> "File"
+                SftpEntryType.DIRECTORY -> "Directory"
+                SftpEntryType.SYMLINK -> "Symbolic link"
+                SftpEntryType.UNSUPPORTED -> "Unsupported entry"
+            }
+            val metadata = entry.permissions ?: type
+            val trailing = buildList {
+                entry.size?.let { add(formatBytes(it)) }
+                entry.modifiedAtSeconds?.let { add(formatRemoteTime(it)) }
+            }.joinToString("\n")
+            val row = browserEntryRow(entry, metadata, trailing, mutedColor)
+            if (entry.supported) {
+                if (entry.type == SftpEntryType.DIRECTORY) {
+                    row.setOnClickListener { sftpService?.enter(state.browserId, entry) }
+                }
+                row.isLongClickable = true
+                row.setOnLongClickListener {
+                    showEntryActions(state.browserId, entry)
+                    true
+                }
+                row.contentDescription = "$metadata. ${entry.name}. " + if (entry.type == SftpEntryType.DIRECTORY) {
+                    "Tap to open. Long press for actions."
+                } else {
+                    "Long press for actions."
+                }
+            }
+            list.addView(row)
+        }
+    }
 
     private fun browserParentRow(mutedColor: Int, action: () -> Unit): View = LinearLayout(this).apply {
         orientation = LinearLayout.HORIZONTAL
@@ -2838,6 +2998,7 @@ class MainActivity : Activity() {
         const val REMOTE_NOTIFICATION_CHANNEL = "remote_terminal"
         private const val SHELL_INTEGRATION_NOTICE_DELAY_MS = 15_000L
         private const val MAX_PRIVATE_KEY_BYTES = 1024 * 1024
+        private const val MAX_OPEN_FILE_BYTES = 25L * 1024 * 1024
         private const val STATE_SCREEN = "screen"
         private const val STATE_BROWSER_ID = "browser_id"
         private const val STATE_DOWNLOAD_BROWSER = "download_browser"
@@ -2850,6 +3011,8 @@ class MainActivity : Activity() {
         private const val STATE_UPLOAD_PATH = "upload_path"
         private const val STATE_DOWNLOAD_URI = "download_uri"
         private const val STATE_UPLOAD_URI = "upload_uri"
+        private const val STATE_ACTIVE_PREVIEW_URI = "active_preview_uri"
+        private const val STATE_ACTIVE_PREVIEW_BROWSER = "active_preview_browser"
         private const val SCREEN_OTHER = "other"
         private const val SCREEN_SETTINGS = "settings"
         private const val SCREEN_FEEDBACK = "feedback"
