@@ -89,6 +89,8 @@ class SshSessionService : Service() {
         var manualRetryAvailable = false
         var connected = false
         var shellEstablished = false
+        var shellIntegrationDetected = false
+        var shellIntegrationNoticeDismissed = false
         @Volatile var attemptGeneration = 0L
         var status = "Connecting…"
     }
@@ -308,6 +310,22 @@ class SshSessionService : Service() {
     fun terminal(sessionId: String): GhosttyTerminal? = onServiceMainResult { sessions[sessionId]?.terminal }
 
     fun status(sessionId: String): String? = onServiceMainResult { sessions[sessionId]?.status }
+
+    fun shellIntegrationDetected(sessionId: String): Boolean = onServiceMainResult {
+        sessions[sessionId]?.shellIntegrationDetected == true
+    }
+
+    fun markShellIntegrationDetected(sessionId: String) = onServiceMain {
+        sessions[sessionId]?.shellIntegrationDetected = true
+    }
+
+    fun shellIntegrationNoticeDismissed(sessionId: String): Boolean = onServiceMainResult {
+        sessions[sessionId]?.shellIntegrationNoticeDismissed == true
+    }
+
+    fun dismissShellIntegrationNotice(sessionId: String) = onServiceMain {
+        sessions[sessionId]?.shellIntegrationNoticeDismissed = true
+    }
 
     fun send(sessionId: String, text: String) = onServiceMain {
         sessions[sessionId]?.takeIf { it.connected }?.connection?.send(text)

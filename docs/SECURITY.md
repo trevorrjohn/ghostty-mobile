@@ -1,0 +1,57 @@
+# Security and Trust
+
+## Security Boundary
+
+The remote host, terminal byte stream, remote file paths, links, graphics, clipboard requests, and notifications are untrusted. The mobile operating system and platform secure storage provide local protection, but unlocked-device compromise is outside the application's complete control.
+
+## Secrets
+
+- Passwords, passphrases, OTPs, and keyboard-interactive answers are memory-only.
+- Private keys are persisted only through platform-backed secure storage.
+- Secrets and terminal contents are excluded from logs, analytics, crash reports, notifications, and ordinary preferences.
+- Diagnostics require automatic redaction and must omit terminal content by default.
+- Clipboard use is explicit; secret clipboard expiry remains planned.
+
+## Host Trust
+
+- Trust identity is scoped to normalized hostname and port.
+- Unknown host keys require fingerprint display and explicit approval before public release.
+- Changed keys block by default and require an explicit replacement decision.
+- Trust removal causes the next connection to prompt again.
+- ProxyJump hops must be verified independently.
+
+iOS currently uses trust on first use without confirmation; this is a roadmap gap, not an accepted exception.
+
+## Local Persistence
+
+Android uses AES-GCM files protected by a non-exportable Android Keystore key and disables application backup. iOS uses Keychain records restricted to the unlocked device and excluded from migration to another device.
+
+Both implementations must add explicit atomic update and migration behavior before concurrent management or synchronization ships.
+
+## Remote Effects
+
+- Clipboard and notification requests use host-scoped ask/allow/block policy.
+- Remote effects cannot display permission UI from an unsafe background context.
+- Hyperlinks are restricted to reviewed schemes.
+- Image and passthrough parsers enforce fixed header, encoded, decoded, and buffering limits.
+- Unsupported protocols fail safely and do not justify an unbounded compatibility parser.
+
+## Session and Lifecycle Privacy
+
+- Sessions do not share prompts, credentials, output, effects, or retry state.
+- Password input suppresses screen previews and accessibility text where the platform can detect it.
+- Reconnect starts a new shell and never claims remote process continuity.
+- Android terminal archives are encrypted, bounded, read-only local aids; they are not recordings or live restoration.
+
+## Review Requirements
+
+The following work requires an explicit threat-model or security ADR update before implementation:
+
+- Configuration synchronization.
+- Shared or team credentials.
+- Crash reporting and exported diagnostics.
+- New remote file-transfer protocols.
+- Agent forwarding or any feature that delegates credentials.
+- Broader URL schemes or executable integrations.
+
+Security decisions are indexed in [decisions](decisions/README.md), and incomplete controls are tracked in the [roadmap](ROADMAP.md).

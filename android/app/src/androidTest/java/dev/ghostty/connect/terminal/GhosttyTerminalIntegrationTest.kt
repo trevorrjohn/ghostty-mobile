@@ -27,6 +27,17 @@ class GhosttyTerminalIntegrationTest {
     }
 
     @Test
+    fun semanticPromptMarkerEnablesShellIntegrationDetection() {
+        GhosttyTerminal().use { terminal ->
+            assertTrue(!terminal.snapshot().cursorAtPrompt)
+
+            terminal.write("\u001b]133;A\u0007")
+
+            assertTrue(terminal.snapshot().cursorAtPrompt)
+        }
+    }
+
+    @Test
     fun searchSelectsAcrossSoftWrap() {
         GhosttyTerminal(columns = 5, rows = 3).use { terminal ->
             terminal.resize(5, 3, 10, 20)

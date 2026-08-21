@@ -18,8 +18,10 @@ import android.graphics.Rect
 import android.graphics.Typeface
 import android.net.Uri
 import android.os.Bundle
+import android.os.Handler
 import android.os.IBinder
 import android.os.Build
+import android.os.Looper
 import android.content.pm.PackageManager
 import android.text.InputType
 import android.text.Editable
@@ -51,6 +53,7 @@ import dev.ghostty.connect.data.TerminalThemeStore
 import dev.ghostty.connect.data.TerminalStateStore
 import dev.ghostty.connect.model.AuthenticationType
 import dev.ghostty.connect.model.Host
+import dev.ghostty.connect.model.duplicate
 import dev.ghostty.connect.model.KeyboardBarCatalog
 import dev.ghostty.connect.model.KeyboardBarConfig
 import dev.ghostty.connect.model.KeyboardBarItem
@@ -83,6 +86,9 @@ class MainActivity : Activity() {
     private var terminalTitle: TextView? = null
     private var terminalRetryButton: Button? = null
     private var terminalView: GhosttyTerminalView? = null
+    private var shellIntegrationNotice: View? = null
+    private var shellIntegrationNoticeRunnable: Runnable? = null
+    private val mainHandler = Handler(Looper.getMainLooper())
     private var previewTerminal: GhosttyTerminal? = null
     private var editingHostId: String? = null
     private var editorKeySelection: Spinner? = null
@@ -111,6 +117,8 @@ class MainActivity : Activity() {
             terminalRetryButton?.visibility = if (
                 service.summaries().firstOrNull { it.sessionId == sessionId }?.canRetry == true
             ) View.VISIBLE else View.GONE
+            if (status == "Connected") scheduleShellIntegrationNotice(sessionId)
+            else cancelShellIntegrationNotice()
         }
 
         override fun onTerminalChanged(sessionId: String) {
@@ -295,6 +303,8 @@ class MainActivity : Activity() {
         terminalTitle = null
         terminalRetryButton = null
         terminalView = null
+        shellIntegrationNotice = null
+        cancelShellIntegrationNotice()
         editorKeySelection = null
         editorAuthentication = null
         modifierBar = null
@@ -314,7 +324,7 @@ class MainActivity : Activity() {
                 val actions = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
                 actions.addView(compactButton("Open") { openSession(session.sessionId) })
                 sessionService?.host(session.sessionId)?.let { host ->
-                    actions.addView(compactButton("Duplicate") { requestCredentialAndConnect(host) })
+                    actions.addView(compactButton("Duplicate session") { requestCredentialAndConnect(host) })
                 }
                 if (session.canRetry) {
                     actions.addView(compactButton("Retry / Reauthenticate") { reauthenticate(session.sessionId) })
@@ -335,6 +345,12 @@ class MainActivity : Activity() {
             card.addView(label(host.destination, 14f, secondary))
             card.addView(label(host.keyName?.let { "SSH key · $it" } ?: "Password", 14f, accent).margins(top = 8))
             card.addView(button("Edit", secondary) { showHostEditor(host.id) }.margins(top = 10))
+            card.addView(button("Duplicate host", secondary) {
+                val duplicate = host.duplicate(UUID.randomUUID().toString(), hosts.map(Host::name))
+                hostStore.save(duplicate)
+                toast("Created ${duplicate.name}")
+                showHosts()
+            }.margins(top = 8))
             if (terminalStateStore.has(host.id)) {
                 card.addView(button("Last session", secondary) { showArchivedTerminal(host) }.margins(top = 8))
             }
@@ -952,6 +968,7 @@ class MainActivity : Activity() {
                     menu.add("Previous prompt")
                     menu.add("Next prompt")
                     menu.add("Search scrollback")
+                    menu.add("Shell integration setup")
                     menu.add("Send interrupt signal")
                     menu.add("Send terminate signal")
                     setOnMenuItemClickListener { item ->
@@ -995,6 +1012,10 @@ class MainActivity : Activity() {
                                 showScrollbackSearch(terminal)
                                 true
                             }
+                            "Shell integration setup" -> {
+                                showShellIntegrationSetup()
+                                true
+                            }
                             "Send interrupt signal" -> {
                                 service.signal(sessionId, Signal.INT)
                                 true
@@ -1013,6 +1034,20 @@ class MainActivity : Activity() {
         titleRow.addView(overflow, LinearLayout.LayoutParams(dp(48), -2))
         toolbar.addView(titleRow)
         toolbar.addView(status)
+        toolbar.addView(vertical(10).apply {
+            setBackgroundColor(surface)
+            addView(label("Command tracking needs shell integration.", 13f, primary))
+            addView(label("Set it up to identify commands without recording passwords or TUI input.", 12f, secondary))
+            addView(LinearLayout(this@MainActivity).apply {
+                orientation = LinearLayout.HORIZONTAL
+                addView(compactButton("Set up") { showShellIntegrationSetup() })
+                addView(compactButton("Not now") {
+                    service.dismissShellIntegrationNotice(sessionId)
+                    shellIntegrationNotice?.visibility = View.GONE
+                })
+            }.margins(top = 6))
+            visibility = View.GONE
+        }.also { shellIntegrationNotice = it }.margins(top = 8))
         toolbar.addView(button("Retry / Reauthenticate", secondary) { reauthenticate(sessionId) }.apply {
             visibility = if (service.summaries().firstOrNull { it.sessionId == sessionId }?.canRetry == true) {
                 View.VISIBLE
@@ -1063,9 +1098,14 @@ class MainActivity : Activity() {
                     toast("Selection copied")
                 }
             }
-            onMetadataChanged = { title, pwd, _, passwordInput ->
+            onMetadataChanged = { title, pwd, atPrompt, passwordInput ->
                 terminalTitle?.text = title.ifBlank { host.name }
                 if (pwd.isNotBlank()) terminalStatus?.text = displayRemotePwd(pwd)
+                if (atPrompt) {
+                    service.markShellIntegrationDetected(sessionId)
+                    shellIntegrationNotice?.visibility = View.GONE
+                    cancelShellIntegrationNotice()
+                }
                 setPasswordInput(passwordInput)
                 if (passwordInput) window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
                 else window.clearFlags(WindowManager.LayoutParams.FLAG_SECURE)
@@ -1091,8 +1131,73 @@ class MainActivity : Activity() {
         root.addView(view, LinearLayout.LayoutParams(-1, 0, 1f))
         root.addView(createModifierBar().also { modifierBar = it })
         setContentView(root)
+        view.refresh()
         updateModifierBarVisibility()
         service.status(sessionId)?.let { sessionListener.onSessionStatus(sessionId, it) }
+    }
+
+    private fun scheduleShellIntegrationNotice(sessionId: String) {
+        cancelShellIntegrationNotice()
+        val service = sessionService ?: return
+        if (service.shellIntegrationDetected(sessionId) || service.shellIntegrationNoticeDismissed(sessionId)) return
+        shellIntegrationNoticeRunnable = Runnable {
+            if (selectedSessionId == sessionId && service.status(sessionId) == "Connected" &&
+                !service.shellIntegrationDetected(sessionId) && !service.shellIntegrationNoticeDismissed(sessionId)
+            ) {
+                shellIntegrationNotice?.visibility = View.VISIBLE
+            }
+        }.also { mainHandler.postDelayed(it, SHELL_INTEGRATION_NOTICE_DELAY_MS) }
+    }
+
+    private fun cancelShellIntegrationNotice() {
+        shellIntegrationNoticeRunnable?.let(mainHandler::removeCallbacks)
+        shellIntegrationNoticeRunnable = null
+    }
+
+    private fun showShellIntegrationSetup() {
+        AlertDialog.Builder(this)
+            .setTitle("Set up shell integration")
+            .setItems(arrayOf("Bash", "zsh")) { _, index ->
+                if (index == 0) {
+                    showShellIntegrationInstallCommand(
+                        "Bash", R.raw.ghostty_connect_bash, "ghostty-connect.bash", ".bashrc",
+                    )
+                } else {
+                    showShellIntegrationInstallCommand(
+                        "zsh", R.raw.ghostty_connect_zsh, "ghostty-connect.zsh", ".zshrc",
+                    )
+                }
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun showShellIntegrationInstallCommand(
+        shell: String,
+        scriptResource: Int,
+        scriptName: String,
+        rcFile: String,
+    ) {
+        val script = resources.openRawResource(scriptResource).bufferedReader().use { it.readText() }.trimEnd()
+        val sourceLine = "source \"\$HOME/.config/ghostty-connect/$scriptName\""
+        val installCommand = buildString {
+            appendLine("mkdir -p \"\$HOME/.config/ghostty-connect\"")
+            appendLine("cat > \"\$HOME/.config/ghostty-connect/$scriptName\" <<'GHOSTTY_CONNECT_EOF'")
+            appendLine(script)
+            appendLine("GHOSTTY_CONNECT_EOF")
+            appendLine("touch \"\$HOME/$rcFile\"")
+            appendLine("grep -Fqx '$sourceLine' \"\$HOME/$rcFile\" || printf '%s\\n' '$sourceLine' >> \"\$HOME/$rcFile\"")
+            appendLine(sourceLine)
+        }.trimEnd()
+        AlertDialog.Builder(this)
+            .setTitle("$shell setup")
+            .setMessage("Copy and paste the installation command into the remote shell. The setup notice will disappear when the next prompt is detected.")
+            .setNegativeButton("Back") { _, _ -> showShellIntegrationSetup() }
+            .setPositiveButton("Copy command") { _, _ ->
+                writeClipboard(installCommand)
+                toast("Installation command copied")
+            }
+            .show()
     }
 
     private fun createModifierBar(): View {
@@ -1427,6 +1532,7 @@ class MainActivity : Activity() {
     override fun onBackPressed() = handleBackNavigation()
 
     override fun onDestroy() {
+        cancelShellIntegrationNotice()
         pendingConnection?.credential?.fill('\u0000')
         pendingConnection = null
         previewTerminal?.close()
@@ -1474,5 +1580,6 @@ class MainActivity : Activity() {
         const val GHOSTTY_MOD_CAPS_LOCK = 1 shl 4
         const val GHOSTTY_MOD_NUM_LOCK = 1 shl 5
         const val REMOTE_NOTIFICATION_CHANNEL = "remote_terminal"
+        private const val SHELL_INTEGRATION_NOTICE_DELAY_MS = 15_000L
     }
 }

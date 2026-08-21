@@ -649,10 +649,12 @@ class GhosttyTerminalView(
                     return true
                 }
                 if (remoteMouseGesture) {
-                    if (!remotePressSent) sendRemoteMouse(MOUSE_PRESS, MOUSE_LEFT, event.x, event.y, true)
+                    val tapped = !remotePressSent
+                    if (tapped) sendRemoteMouse(MOUSE_PRESS, MOUSE_LEFT, event.x, event.y, true)
                     sendRemoteMouse(MOUSE_RELEASE, MOUSE_LEFT, event.x, event.y, false)
                     remoteMouseGesture = false
                     remotePressSent = false
+                    if (tapped) performClick()
                     endTouch()
                     return true
                 }

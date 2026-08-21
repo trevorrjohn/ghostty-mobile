@@ -19,3 +19,11 @@ data class Host(
     val name: String get() = alias ?: hostname
     val destination: String get() = "$username@$hostname:$port"
 }
+
+fun Host.duplicate(newId: String, existingNames: Collection<String>): Host {
+    val baseName = "$name copy"
+    var duplicateName = baseName
+    var suffix = 2
+    while (duplicateName in existingNames) duplicateName = "$baseName ${suffix++}"
+    return copy(id = newId, alias = duplicateName)
+}

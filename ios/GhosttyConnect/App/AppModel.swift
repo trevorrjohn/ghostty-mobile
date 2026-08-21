@@ -34,6 +34,10 @@ final class AppModel: ObservableObject {
         catch { alertMessage = error.localizedDescription }
     }
 
+    func duplicate(host: Host) {
+        save(host: host.duplicated(existingNames: hosts.map(\.name)))
+    }
+
     func forgetHostKey(for host: Host) {
         do {
             try store.delete(account: KeychainHostKeyValidator.account(host: host.hostname, port: host.port))

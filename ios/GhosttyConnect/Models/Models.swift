@@ -31,6 +31,22 @@ struct Host: Codable, Identifiable, Hashable {
 
     var name: String { alias.trimmingCharacters(in: .whitespaces).isEmpty ? hostname : alias }
     var destination: String { "\(username)@\(hostname):\(port)" }
+
+    func duplicated(existingNames: [String]) -> Host {
+        var duplicate = self
+        duplicate.id = UUID()
+
+        let existing = Set(existingNames.map { $0.lowercased() })
+        let base = "\(name) Copy"
+        var candidate = base
+        var suffix = 2
+        while existing.contains(candidate.lowercased()) {
+            candidate = "\(base) \(suffix)"
+            suffix += 1
+        }
+        duplicate.alias = candidate
+        return duplicate
+    }
 }
 
 struct StoredKey: Codable, Identifiable, Hashable {
