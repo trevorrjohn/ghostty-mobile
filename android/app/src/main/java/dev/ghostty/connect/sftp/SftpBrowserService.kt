@@ -345,14 +345,14 @@ class SftpBrowserService : Service() {
                     val home = connection.connect(record.host, credential)
                     val entries = connection.list(home)
                     onMain {
-                        if (!isCurrent(record, generation)) return@onMain
+                    if (!isCurrent(record, generation)) return@onMain
                     record.pathStack.clear()
-                    record.pathStack.addLast(home)
-                        update(record, record.state.copy(
+                    record.pathStack.addAll(remoteAbsolutePathStack(home))
+                    update(record, record.state.copy(
                             status = if (entries.isEmpty()) STATUS_EMPTY else STATUS_READY,
                             path = home,
                             entries = entries,
-                            canNavigateBack = false,
+                        canNavigateBack = record.pathStack.size > 1,
                             connected = true,
                             error = null,
                         ))

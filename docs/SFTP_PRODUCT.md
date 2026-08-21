@@ -69,7 +69,7 @@ Credentials are scoped to one connection attempt. Reconnect and **Open terminal*
 
 ## Browser Experience
 
-The browser header shows the host display name and current remote path. The primary actions are **Upload**, **New folder**, **Refresh**, **Open terminal**, and **Close**. Parent navigation is available whenever the current location is not the initial remote root.
+The browser header shows the host display name and current remote path. The primary actions are **Upload**, **New folder**, **Refresh**, **Open terminal**, and **Close**. Parent navigation is available whenever the current location is not the filesystem root, including from the account's home directory.
 
 The path can be entered directly as an absolute or current-directory-relative path. The server canonicalizes it before use, and an explicitly entered path may open any directory the authenticated account can access. File operations remain constrained to validated children of the resulting current directory. Favorite folders are stored encrypted against the saved host ID, remain available across browser connections, and never retain credentials or connection state.
 
