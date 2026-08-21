@@ -1786,7 +1786,7 @@ class MainActivity : Activity() {
         }
         actionRow.addView(more)
         toolbar.addView(actionRow)
-        val search = field("Fuzzy search this folder", sftpSearchQueries[state.browserId].orEmpty()).apply {
+        val search = field("Search this folder", sftpSearchQueries[state.browserId].orEmpty()).apply {
             background = roundedBackground(browserControl, 14)
             setPadding(dp(14), 0, dp(14), 0)
             imeOptions = android.view.inputmethod.EditorInfo.IME_ACTION_DONE
