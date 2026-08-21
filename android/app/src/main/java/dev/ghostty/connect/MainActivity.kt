@@ -1612,6 +1612,17 @@ class MainActivity : Activity() {
             typeface = Typeface.MONOSPACE
             background = roundedBackground(browserControl, 14)
             setPadding(dp(14), 0, dp(14), 0)
+            imeOptions = android.view.inputmethod.EditorInfo.IME_ACTION_GO
+            setOnEditorActionListener { _, actionId, event ->
+                val submitted = actionId == android.view.inputmethod.EditorInfo.IME_ACTION_GO ||
+                    actionId == android.view.inputmethod.EditorInfo.IME_ACTION_DONE ||
+                    event?.let { it.keyCode == KeyEvent.KEYCODE_ENTER && it.action == KeyEvent.ACTION_UP } == true
+                if (submitted && state.connected) {
+                    sftpService?.openPath(state.browserId, text.toString())
+                    clearFocus()
+                    true
+                } else false
+            }
         }
         locationRow.addView(path, LinearLayout.LayoutParams(0, dp(48), 1f).apply {
             marginStart = dp(10)
@@ -2701,17 +2712,17 @@ class MainActivity : Activity() {
     private fun browserParentRow(mutedColor: Int, action: () -> Unit): View = LinearLayout(this).apply {
         orientation = LinearLayout.HORIZONTAL
         gravity = Gravity.CENTER_VERTICAL
-        setPadding(dp(14), dp(10), dp(14), dp(10))
-        minimumHeight = dp(68)
+        setPadding(dp(12), dp(5), dp(12), dp(5))
+        minimumHeight = dp(52)
         addView(ImageView(this@MainActivity).apply {
             setImageResource(R.drawable.ic_sftp_folder)
             contentDescription = null
-        }, LinearLayout.LayoutParams(dp(48), dp(48)))
+        }, LinearLayout.LayoutParams(dp(36), dp(36)))
         addView(vertical(0).apply {
             setBackgroundColor(Color.TRANSPARENT)
-            addView(label("..", 18f, primary, Typeface.BOLD))
-            addView(label("Parent directory", 13f, mutedColor).margins(top = 2))
-        }, LinearLayout.LayoutParams(0, -2, 1f).apply { marginStart = dp(10) })
+            addView(label("..", 16f, primary, Typeface.BOLD))
+            addView(label("Parent directory", 11f, mutedColor))
+        }, LinearLayout.LayoutParams(0, -2, 1f).apply { marginStart = dp(8) })
         contentDescription = "Parent directory"
         setOnClickListener { action() }
     }
@@ -2724,8 +2735,8 @@ class MainActivity : Activity() {
     ): LinearLayout = LinearLayout(this).apply {
         orientation = LinearLayout.HORIZONTAL
         gravity = Gravity.CENTER_VERTICAL
-        setPadding(dp(14), dp(10), dp(14), dp(10))
-        minimumHeight = dp(72)
+        setPadding(dp(12), dp(5), dp(12), dp(5))
+        minimumHeight = dp(52)
         addView(ImageView(this@MainActivity).apply {
             setImageResource(when (entry.type) {
                 SftpEntryType.DIRECTORY -> R.drawable.ic_sftp_folder
@@ -2734,18 +2745,18 @@ class MainActivity : Activity() {
             })
             alpha = if (entry.supported) 1f else 0.45f
             contentDescription = null
-        }, LinearLayout.LayoutParams(dp(48), dp(48)))
+        }, LinearLayout.LayoutParams(dp(36), dp(36)))
         addView(vertical(0).apply {
             setBackgroundColor(Color.TRANSPARENT)
-            addView(label(entry.name, 17f, primary, Typeface.BOLD).apply {
+            addView(label(entry.name, 15f, primary, Typeface.BOLD).apply {
                 maxLines = 1
                 ellipsize = android.text.TextUtils.TruncateAt.END
             })
-            addView(label(if (entry.supported) metadata else "Unsupported entry", 13f, mutedColor).apply {
+            addView(label(if (entry.supported) metadata else "Unsupported entry", 11f, mutedColor).apply {
                 typeface = Typeface.MONOSPACE
-            }.margins(top = 3))
-        }, LinearLayout.LayoutParams(0, -2, 1f).apply { marginStart = dp(10) })
-        if (trailing.isNotBlank()) addView(label(trailing, 12f, mutedColor).apply {
+            })
+        }, LinearLayout.LayoutParams(0, -2, 1f).apply { marginStart = dp(8) })
+        if (trailing.isNotBlank()) addView(label(trailing, 10f, mutedColor).apply {
             gravity = Gravity.END
             typeface = Typeface.MONOSPACE
             maxLines = 2
