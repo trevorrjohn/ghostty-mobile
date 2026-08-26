@@ -16,12 +16,26 @@ targets:
   GhosttyConnect:
     type: application
     platform: iOS
+    info:
+      path: GhosttyConnect/Info.plist
+      properties:
+        CFBundleDisplayName: Ghostty Connect
+        CFBundleURLTypes:
+          - CFBundleTypeRole: Editor
+            CFBundleURLName: dev.ghostty.connect
+            CFBundleURLSchemes:
+              - ghostty-connect
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: false
+        UILaunchScreen: {}
     sources:
       - GhosttyConnect
     dependencies:
       - framework: Vendor/ghostty-vt.xcframework
         embed: false
       - package: Citadel
+      - target: GhosttyConnectControl
+        embed: true
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: dev.ghostty.connect
@@ -29,14 +43,31 @@ targets:
         PRODUCT_MODULE_NAME: GhosttyConnect
         CURRENT_PROJECT_VERSION: 1
         MARKETING_VERSION: 0.1.0
-        GENERATE_INFOPLIST_FILE: YES
-        INFOPLIST_KEY_CFBundleDisplayName: Ghostty Connect
-        INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
-        INFOPLIST_KEY_UILaunchScreen_Generation: YES
         INFOPLIST_KEY_UIRequiresFullScreen: NO
         INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone: "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
         INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad: "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
         TARGETED_DEVICE_FAMILY: "1,2"
+        "EXCLUDED_ARCHS[sdk=iphonesimulator*]": x86_64
+  GhosttyConnectControl:
+    type: app-extension
+    platform: iOS
+    deploymentTarget: "18.0"
+    sources:
+      - GhosttyConnectControl
+    info:
+      path: GhosttyConnectControl/Info.plist
+      properties:
+        CFBundleDisplayName: Quick Connect
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.ghostty.connect.quick-connect
+        PRODUCT_NAME: Quick Connect
+        PRODUCT_MODULE_NAME: GhosttyConnectControl
+        CURRENT_PROJECT_VERSION: 1
+        MARKETING_VERSION: 0.1.0
+        SKIP_INSTALL: YES
         "EXCLUDED_ARCHS[sdk=iphonesimulator*]": x86_64
   GhosttyConnectTests:
     type: bundle.unit-test

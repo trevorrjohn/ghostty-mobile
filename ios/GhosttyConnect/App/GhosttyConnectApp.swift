@@ -9,6 +9,7 @@ struct GhosttyConnectApp: App {
             RootView()
                 .environmentObject(appModel)
                 .preferredColorScheme(.dark)
+                .onOpenURL(perform: appModel.handle)
         }
     }
 }

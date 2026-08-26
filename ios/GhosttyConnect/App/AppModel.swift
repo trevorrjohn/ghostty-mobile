@@ -9,6 +9,7 @@ final class AppModel: ObservableObject {
     @Published var settings = AppSettings() { didSet { persistSettings() } }
     @Published var keyboardBarConfig = KeyboardBarConfig.defaults { didSet { persistKeyboardBar() } }
     @Published var alertMessage: String?
+    @Published private(set) var quickConnectRequest: UUID?
 
     private let store = SecureStore()
     private let trustedHostStore = KeychainKnownHostStore()
@@ -50,6 +51,11 @@ final class AppModel: ObservableObject {
 
     func duplicate(host: Host) {
         save(host: host.duplicated(existingNames: hosts.map(\.name)))
+    }
+
+    func handle(url: URL) {
+        guard url.scheme == "ghostty-connect", url.host == "quick-connect" else { return }
+        quickConnectRequest = UUID()
     }
 
     func forgetHostKey(for host: Host) {

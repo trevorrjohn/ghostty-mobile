@@ -5,9 +5,11 @@ struct HostsView: View {
     @State private var editedHost: Host?
     @State private var showingKeyImport = false
     @State private var showingPreview = false
+    @State private var showingQuickConnect = false
+    @State private var path: [Host] = []
 
     var body: some View {
-        NavigationStack {
+        NavigationStack(path: $path) {
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
                     VStack(alignment: .leading, spacing: 5) {
@@ -46,6 +48,22 @@ struct HostsView: View {
             .sheet(item: $editedHost) { HostEditorView(host: $0) }
             .sheet(isPresented: $showingKeyImport) { KeyImportView() }
             .sheet(isPresented: $showingPreview) { TerminalPreview() }
+            .confirmationDialog("Quick connect", isPresented: $showingQuickConnect) {
+                ForEach(model.hosts) { host in
+                    Button("\(host.name) — \(host.destination)") { path.append(host) }
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("Choose a saved host.")
+            }
+            .onChange(of: model.quickConnectRequest) { _, request in
+                guard request != nil else { return }
+                switch model.hosts.count {
+                case 0: editedHost = Host()
+                case 1: path.append(model.hosts[0])
+                default: showingQuickConnect = true
+                }
+            }
         }
     }
 }
