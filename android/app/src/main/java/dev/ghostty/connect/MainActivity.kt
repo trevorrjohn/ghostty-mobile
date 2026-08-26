@@ -438,6 +438,9 @@ class MainActivity : Activity() {
                 handleBackNavigation()
             }
         }
+        if (savedInstanceState == null && intent?.action == ACTION_QUICK_CONNECT) {
+            mainHandler.post(::showQuickConnect)
+        }
     }
 
     override fun onStart() {
@@ -460,6 +463,10 @@ class MainActivity : Activity() {
     override fun onNewIntent(intent: Intent?) {
         super.onNewIntent(intent)
         setIntent(intent)
+        if (intent?.action == ACTION_QUICK_CONNECT) {
+            showQuickConnect()
+            return
+        }
         val sessionId = intent?.takeIf { it.action == SshSessionService.ACTION_OPEN_SESSION }
             ?.getStringExtra(SshSessionService.EXTRA_SESSION_ID)
         if (sessionId != null) {
@@ -872,6 +879,27 @@ class MainActivity : Activity() {
 
     private fun requestCredentialAndConnect(host: Host) = requestCredential(host) { credential ->
         startSession(host, credential)
+    }
+
+    private fun showQuickConnect() {
+        val hosts = runCatching { hostStore.loadAll() }.getOrElse {
+            toast("Saved hosts could not be read.")
+            return
+        }
+        when (hosts.size) {
+            0 -> {
+                toast("Add a host before using Quick connect.")
+                showHostEditor()
+            }
+            1 -> requestCredentialAndConnect(hosts.single())
+            else -> AlertDialog.Builder(this)
+                .setTitle("Quick connect")
+                .setItems(hosts.map { "${it.name}\n${it.destination}" }.toTypedArray()) { _, index ->
+                    requestCredentialAndConnect(hosts[index])
+                }
+                .setNegativeButton("Cancel", null)
+                .show()
+        }
     }
 
     private fun requestCredentialAndBrowse(host: Host) = requestCredential(host) { credential ->
@@ -3012,6 +3040,7 @@ class MainActivity : Activity() {
     private fun dp(value: Int) = (value * resources.displayMetrics.density).toInt()
 
     companion object {
+        const val ACTION_QUICK_CONNECT = "dev.ghostty.connect.action.QUICK_CONNECT"
         const val IMPORT_KEY = 1001
         const val NOTIFICATION_PERMISSION = 1002
         const val CREATE_DOWNLOAD_DOCUMENT = 1003
