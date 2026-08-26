@@ -29,6 +29,7 @@ import android.text.InputType
 import android.text.Editable
 import android.text.TextWatcher
 import android.view.Gravity
+import android.view.DragEvent
 import android.view.KeyEvent
 import android.view.HapticFeedbackConstants
 import android.view.View
@@ -1075,6 +1076,29 @@ class MainActivity : Activity() {
         root.addView(settingsBarPreview().margins(bottom = 18))
         root.addView(label("Order", 18f, primary, Typeface.BOLD).margins(bottom = 8))
 
+        val orderList = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setOnDragListener { _, event ->
+                when (event.action) {
+                    DragEvent.ACTION_DRAG_STARTED -> event.localState is String
+                    DragEvent.ACTION_DROP -> {
+                        val itemId = event.localState as? String ?: return@setOnDragListener false
+                        val from = keyboardBarConfig.items.indexOfFirst { it.id == itemId }
+                        if (from < 0) return@setOnDragListener false
+                        val insertion = (0 until childCount).firstOrNull { index ->
+                            event.y < getChildAt(index).let { it.top + it.height / 2f }
+                        } ?: childCount
+                        moveKeyboardBarItemToInsertion(from, insertion)
+                        true
+                    }
+                    DragEvent.ACTION_DRAG_ENDED -> {
+                        for (index in 0 until childCount) getChildAt(index).alpha = 1f
+                        true
+                    }
+                    else -> true
+                }
+            }
+        }
         keyboardBarConfig.items.forEachIndexed { index, item ->
             val row = LinearLayout(this).apply {
                 orientation = LinearLayout.HORIZONTAL
@@ -1082,14 +1106,28 @@ class MainActivity : Activity() {
                 setBackgroundColor(raised)
                 setPadding(dp(12), dp(6), dp(6), dp(6))
             }
+            row.addView(label("☰", 22f, secondary).apply {
+                contentDescription = "Drag to reorder ${item.label}"
+                setPadding(0, 0, dp(12), 0)
+            })
             row.addView(label(item.label, 15f, primary), LinearLayout.LayoutParams(0, -2, 1f))
-            row.addView(compactButton("Up", index > 0) { moveKeyboardBarItem(index, index - 1) })
-            row.addView(compactButton("Down", index < keyboardBarConfig.items.lastIndex) { moveKeyboardBarItem(index, index + 1) })
             row.addView(compactButton("Remove") {
                 saveKeyboardBarConfig(keyboardBarConfig.copy(items = keyboardBarConfig.items.filterIndexed { i, _ -> i != index }))
             })
-            root.addView(row.margins(bottom = 6))
+            row.setOnLongClickListener {
+                it.alpha = 0.5f
+                it.startDragAndDrop(
+                    ClipData.newPlainText("keyboard-bar-item", item.id),
+                    View.DragShadowBuilder(it),
+                    item.id,
+                    0,
+                )
+                true
+            }
+            orderList.addView(row.margins(bottom = 6))
         }
+        root.addView(orderList)
+        root.addView(label("Touch and hold a row, then drag it into place.", 13f, secondary).margins(top = 2))
 
         root.addView(button("Add item") { showAddKeyboardBarItem() }.margins(top = 10))
         root.addView(button("Create combination", secondary) { showCombinationEditor() }.margins(top = 8))
@@ -1439,11 +1477,13 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun moveKeyboardBarItem(from: Int, to: Int) {
-        if (to !in keyboardBarConfig.items.indices) return
+    private fun moveKeyboardBarItemToInsertion(from: Int, insertion: Int) {
+        if (from !in keyboardBarConfig.items.indices || insertion !in 0..keyboardBarConfig.items.size) return
         val items = keyboardBarConfig.items.toMutableList()
         val item = items.removeAt(from)
-        items.add(to, item)
+        val destination = (if (insertion > from) insertion - 1 else insertion).coerceIn(0, items.size)
+        if (destination == from) return
+        items.add(destination, item)
         saveKeyboardBarConfig(keyboardBarConfig.copy(items = items))
     }
 

@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct SettingsView: View {
     @EnvironmentObject private var model: AppModel
@@ -52,6 +53,7 @@ struct SettingsView: View {
 private struct KeyboardBarSettingsView: View {
     @EnvironmentObject private var model: AppModel
     @State private var editedAction: KeyboardAction?
+    @State private var draggedItem: KeyboardBarItem?
 
     private var availableItems: [KeyboardBarItem] {
         let builtIns = KeyboardBarItemID.allCases.map(KeyboardBarItem.builtIn)
@@ -73,10 +75,26 @@ private struct KeyboardBarSettingsView: View {
                         .foregroundStyle(Color.ghosttySecondary)
                 }
                 ForEach(model.keyboardBarConfig.items) { item in
-                    Label(label(for: item), systemImage: systemImage(for: item))
-                }
-                .onMove { source, destination in
-                    model.keyboardBarConfig.moveItems(from: source, to: destination)
+                    HStack {
+                        Label(label(for: item), systemImage: systemImage(for: item))
+                        Spacer()
+                        Image(systemName: "line.3.horizontal")
+                            .foregroundStyle(Color.ghosttySecondary)
+                            .accessibilityLabel("Drag to reorder")
+                    }
+                    .contentShape(Rectangle())
+                    .onDrag {
+                        draggedItem = item
+                        return NSItemProvider(object: item.id as NSString)
+                    }
+                    .onDrop(
+                        of: [UTType.text],
+                        delegate: KeyboardBarDropDelegate(
+                            destination: item,
+                            draggedItem: $draggedItem,
+                            config: $model.keyboardBarConfig
+                        )
+                    )
                 }
                 .onDelete { offsets in
                     model.keyboardBarConfig.removeItems(at: offsets)
@@ -127,7 +145,6 @@ private struct KeyboardBarSettingsView: View {
             }
         }
         .navigationTitle("Keyboard Bar")
-        .toolbar { EditButton() }
         .sheet(item: $editedAction) { action in
             KeyboardActionEditor(action: action) { savedAction in
                 let isNew = model.keyboardBarConfig.action(id: savedAction.id) == nil
@@ -155,6 +172,33 @@ private struct KeyboardBarSettingsView: View {
             .filter(action.modifiers.contains)
             .map(\.label)
         return (modifiers + [action.key.label]).joined(separator: "+")
+    }
+}
+
+private struct KeyboardBarDropDelegate: DropDelegate {
+    let destination: KeyboardBarItem
+    @Binding var draggedItem: KeyboardBarItem?
+    @Binding var config: KeyboardBarConfig
+
+    func dropEntered(info: DropInfo) {
+        guard let draggedItem,
+              draggedItem != destination,
+              let from = config.items.firstIndex(of: draggedItem),
+              let to = config.items.firstIndex(of: destination)
+        else { return }
+        config.moveItems(
+            from: IndexSet(integer: from),
+            to: to > from ? to + 1 : to
+        )
+    }
+
+    func dropUpdated(info: DropInfo) -> DropProposal? {
+        DropProposal(operation: .move)
+    }
+
+    func performDrop(info: DropInfo) -> Bool {
+        draggedItem = nil
+        return true
     }
 }
 
