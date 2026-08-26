@@ -28,7 +28,9 @@ struct HostsView: View {
                                     .buttonStyle(.plain)
                                     .contextMenu {
                                         Button("Edit") { editedHost = host }
-                                        Button("Duplicate", systemImage: "plus.square.on.square") { model.duplicate(host: host) }
+                                        Button("Duplicate", systemImage: "plus.square.on.square") {
+                                            editedHost = host.duplicated(existingNames: model.hosts.map(\.name))
+                                        }
                                         Button("Delete", role: .destructive) { model.delete(host: host) }
                                     }
                             }

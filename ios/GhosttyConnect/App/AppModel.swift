@@ -49,10 +49,6 @@ final class AppModel: ObservableObject {
         catch { alertMessage = error.localizedDescription }
     }
 
-    func duplicate(host: Host) {
-        save(host: host.duplicated(existingNames: hosts.map(\.name)))
-    }
-
     func handle(url: URL) {
         guard url.scheme == "ghostty-connect", url.host == "quick-connect" else { return }
         quickConnectRequest = UUID()

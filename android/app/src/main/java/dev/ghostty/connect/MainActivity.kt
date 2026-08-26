@@ -602,9 +602,7 @@ class MainActivity : Activity() {
             card.addView(button("Edit", secondary) { showHostEditor(host.id) }.margins(top = 8))
             card.addView(button("Duplicate host", secondary) {
                 val duplicate = host.duplicate(UUID.randomUUID().toString(), hosts.map(Host::name))
-                hostStore.save(duplicate)
-                toast("Created ${duplicate.name}")
-                showHosts()
+                showHostEditor(draft = duplicate)
             }.margins(top = 8))
             if (terminalStateStore.has(host.id)) {
                 card.addView(button("Last session", secondary) { showArchivedTerminal(host) }.margins(top = 8))
@@ -630,11 +628,16 @@ class MainActivity : Activity() {
         setContentView(scroll(root))
     }
 
-    private fun showHostEditor(hostId: String? = null) {
+    private fun showHostEditor(hostId: String? = null, draft: Host? = null) {
         editingHostId = hostId
-        val existing = hostStore.loadAll().firstOrNull { it.id == hostId }
+        val existing = draft ?: hostStore.loadAll().firstOrNull { it.id == hostId }
+        val isDuplicate = draft != null
         val root = vertical(24)
-        root.addView(label(if (existing == null) "New connection" else "Edit connection", 28f, primary, Typeface.BOLD))
+        root.addView(label(when {
+            isDuplicate -> "Duplicate connection"
+            existing == null -> "New connection"
+            else -> "Edit connection"
+        }, 28f, primary, Typeface.BOLD))
         val alias = field("Alias (optional)", existing?.alias.orEmpty())
         val hostname = field("Hostname or IP", existing?.hostname.orEmpty())
         val username = field("User", existing?.username.orEmpty())
@@ -749,7 +752,7 @@ class MainActivity : Activity() {
             showHosts()
         })
         root.addView(button("Paste a private key", secondary) { showPasteKeyDialog() }.margins(top = 8))
-        existing?.let { host ->
+        existing?.takeUnless { isDuplicate }?.let { host ->
             root.addView(button("Delete host", secondary) {
                 hostStore.delete(host.id)
                 editingHostId = null
