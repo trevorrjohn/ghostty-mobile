@@ -69,7 +69,7 @@ The matrix reflects the current working tree, not only the last commit.
 | SSH key naming and import during host setup, with sole-key auto-selection | `Implemented` | `Implemented` | Both host editors can add and name an identity without leaving setup and automatically select the only available key when SSH-key authentication is chosen. |
 | Imported Ed25519 and RSA keys, including encrypted keys | `Implemented` | `Implemented` | Shared baseline; additional key formats require transport support, not only import recognition. |
 | Keyboard-interactive, OTP, and MFA challenges | `Implemented` | `Planned` | iOS has not reached transport-level challenge handling yet. |
-| Key inspection, rename, deletion, and public-key export | `Partial` | `Partial` | Android imports into collision-safe UUID identities with encrypted metadata and host references; rename, deletion, export UI, and affected-host warnings remain. |
+| Key inspection, rename, deletion, and public-key export | `Implemented` | `Partial` | Android manages collision-safe UUID identities with encrypted metadata, stable host references, affected-host warnings, active-use deletion guards, and copy/share export when public metadata is derivable. |
 | Unknown and changed host-key verification | `Implemented` | `Implemented` | Both block the handshake for explicit approval and display the full SHA-256 fingerprint; iOS also displays the algorithm and previous fingerprint for changed keys. |
 | Trusted-host inspection and removal | `Partial` | `Implemented` | Both list full fingerprints and isolate malformed records for removal. Android serializes aggregate trust updates; iOS enumerates authoritative per-destination Keychain pins. Both guard active-attempt removal; destination normalization remains. |
 | Cancellation, retry, keepalive, and typed failures | `Partial` | `Partial` | Android has retry, reauthentication, keepalive, and failure classification but still needs complete cancellation and user-configurable policy. iOS has typed failures and manual retry with fresh credentials and a new transport; keepalive, comprehensive cancellation, and network-aware policy remain. |
@@ -86,7 +86,7 @@ The matrix reflects the current working tree, not only the last commit.
 | Configurable modifier and extra-key controls | `Implemented` | `Partial` | iOS has persisted ordering, bounded custom actions, one-shot and locked Ctrl/Alt/Shift, last-used controls, navigation/editing keys, and F1-F12; Meta and lock modifiers remain. |
 | User-defined multi-step key sequences | `Planned` | `Planned` | Extend custom keyboard actions from one chord to a bounded ordered sequence of terminal-encoded key events, enabling workflows such as tmux `Ctrl+B`, then `n` without pasting text or adding tmux-specific UI. |
 | Scrollback navigation | `Implemented` | `Partial` | iOS retains 10,000 lines, supports row-based touch and accessibility scrolling, exposes viewport state, and provides a Live return; inertia and pointer-wheel handling remain. |
-| Selection and copy | `Implemented` | `Partial` | iOS supports long-press word selection, selected-cell rendering, plain-text copy, and clear; draggable endpoints, edge autoscroll, and broader pointer selection remain. |
+| Selection and copy | `Implemented` | `Partial` | Both support contextual double-tap actions for bounded links, remote paths, semantic output blocks, and words. iOS also supports long-press word selection and plain-text copy; draggable endpoints, edge autoscroll, and broader pointer selection remain. |
 | Paste and paste-safety confirmation | `Implemented` | `Implemented` | Both route explicit paste through Ghostty's mode-aware encoder and confirm LF or bracketed-paste termination; iOS also confirms CR-only command submission. |
 | Search within terminal history | `Implemented` | `Planned` | Planned with iOS scrollback exposure. Android still needs full Unicode case handling. |
 | Prompt navigation and semantic output copy | `Partial` | `Planned` | Depends on reliable OSC 133 shell markers. Android has the terminal support; iOS has not started it. |
@@ -102,7 +102,7 @@ The matrix reflects the current working tree, not only the last commit.
 | --- | --- | --- | --- |
 | Per-host OSC 52 clipboard policy | `Implemented` | `Partial` | iOS stores the policy but does not yet intercept or enforce requests. |
 | Per-host remote-notification policy | `Implemented` | `Partial` | iOS stores the policy but does not yet parse or deliver notifications. |
-| Bell, progress, hyperlinks, title, and working directory | `Implemented` | `Planned` | iOS has not connected Ghostty effects to product UI yet. |
+| Bell, progress, hyperlinks, title, and working directory | `Implemented` | `Partial` | iOS supports explicit copy/open actions for bounded `http` and `https` OSC 8 hyperlinks; bell, progress, title, working directory, and broader effect policy remain. |
 | iTerm2 inline images and tmux passthrough | `Partial` | `Partial` | Android renders a bounded bitmap subset. iOS parses bounded payloads but does not render them live. Downloads and rich media are deferred. |
 | Kitty graphics | `Partial` | `Planned` | Android renders a bounded subset; complete placeholder and restoration behavior needs additional Ghostty APIs. |
 | Sixel graphics | `Blocked` | `Blocked` | Ghostty exposes neither Sixel parsing nor the required DCS callback. A separate bounded decoder is not a core-release priority. |
@@ -228,7 +228,7 @@ These are deferred rather than rejected and should be reconsidered only after or
 ## Near-Term Execution
 
 1. Use the Android feedback log during daily host, terminal, and interruption workflows and triage by severity and repetition.
-2. Finish Android SSH key and trusted-host management, then make aggregate secure-store updates concurrency-safe.
+2. Finish Android trusted-host management, then make aggregate secure-store updates concurrency-safe.
 3. Complete Android cancellation, configurable retry, input hardening, and Bash/zsh shell-integration validation.
 4. Exercise Android multi-session ownership through backgrounding, rotation, network changes, VPN changes, and process death.
 5. Add disposable SSH-server, lifecycle, accessibility, and UI automation for the validated Android behavior.

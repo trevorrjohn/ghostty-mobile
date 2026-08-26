@@ -177,6 +177,31 @@ final class TerminalSessionModel: ObservableObject {
         snapshot = try? engine.snapshot()
     }
 
+    func contextualSelection(column: Int, row: Int) -> ContextualSelection? {
+        guard let engine, let snapshot else { return nil }
+        if let link = engine.hyperlink(column: column, row: row),
+           ContextualSelection.safeWebURL(link) != nil {
+            _ = engine.selectWord(column: column, row: row)
+            self.snapshot = try? engine.snapshot()
+            return ContextualSelection(kind: .link, value: link)
+        }
+        if let match = TerminalTokenMatcher.match(snapshot: snapshot, column: column, row: row),
+           engine.selectRange(startColumn: match.startColumn, endColumn: match.endColumn, row: row) {
+            self.snapshot = try? engine.snapshot()
+            let kind: ContextualSelectionKind = match.kind == .link && ContextualSelection.safeWebURL(match.text) == nil
+                ? .word
+                : match.kind
+            return ContextualSelection(kind: kind, value: match.text)
+        }
+        if engine.selectOutput(column: column, row: row) {
+            self.snapshot = try? engine.snapshot()
+            return ContextualSelection(kind: .output)
+        }
+        guard engine.selectWord(column: column, row: row) else { return nil }
+        self.snapshot = try? engine.snapshot()
+        return ContextualSelection(kind: .word)
+    }
+
     func copySelection() -> String {
         guard let engine else { return "" }
         let text = engine.selectedText()

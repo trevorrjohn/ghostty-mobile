@@ -99,6 +99,9 @@ private final class InputTestEngine: TerminalEngine {
     func scrollViewport(byRows rows: Int) {}
     func scrollToBottom() {}
     func selectWord(column: Int, row: Int) -> Bool { false }
+    func selectRange(startColumn: Int, endColumn: Int, row: Int) -> Bool { false }
+    func selectOutput(column: Int, row: Int) -> Bool { false }
+    func hyperlink(column: Int, row: Int) -> String? { nil }
     func clearSelection() {}
     func selectedText() -> String { "" }
 

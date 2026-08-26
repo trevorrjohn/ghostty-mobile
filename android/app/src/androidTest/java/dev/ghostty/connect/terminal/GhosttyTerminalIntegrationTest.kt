@@ -38,6 +38,24 @@ class GhosttyTerminalIntegrationTest {
     }
 
     @Test
+    fun selectsRangeAndSemanticOutputAtPoint() {
+        GhosttyTerminal(columns = 30, rows = 4).use { terminal ->
+            terminal.write("/tmp/report.txt")
+            assertTrue(terminal.selectRange(0, 14, 0))
+            assertEquals("/tmp/report.txt", terminal.selectedText())
+        }
+
+        GhosttyTerminal(columns = 30, rows = 4).use { terminal ->
+            terminal.write(
+                "\u001b]133;A;cl=line\u0007$ \u001b]133;B\u0007generate\r\n" +
+                    "\u001b]133;C\u0007generated output\r\n\u001b]133;D;0\u0007",
+            )
+            assertTrue(terminal.selectOutput(2, 1))
+            assertEquals("generated output", terminal.selectedText())
+        }
+    }
+
+    @Test
     fun searchSelectsAcrossSoftWrap() {
         GhosttyTerminal(columns = 5, rows = 3).use { terminal ->
             terminal.resize(5, 3, 10, 20)

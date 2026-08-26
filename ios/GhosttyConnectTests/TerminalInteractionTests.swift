@@ -57,4 +57,33 @@ final class TerminalInteractionTests: XCTestCase {
         XCTAssertEqual(dimensions.columns, 1)
         XCTAssertEqual(dimensions.rows, 1)
     }
+
+    func testMatchesContextualWebLinkWithoutPunctuation() {
+        let match = TerminalTokenMatcher.match(
+            cells: "(https://example.com/docs).".map(String.init),
+            column: 8
+        )
+
+        XCTAssertEqual(match?.kind, .link)
+        XCTAssertEqual(match?.text, "https://example.com/docs")
+        XCTAssertEqual(match?.startColumn, 1)
+        XCTAssertEqual(match?.endColumn, 24)
+    }
+
+    func testMatchesContextualRelativePath() {
+        let match = TerminalTokenMatcher.match(cells: "src/main/App.swift:42".map(String.init), column: 5)
+
+        XCTAssertEqual(match?.kind, .path)
+        XCTAssertEqual(match?.text, "src/main/App.swift:42")
+    }
+
+    func testIgnoresOrdinaryContextualWord() {
+        XCTAssertNil(TerminalTokenMatcher.match(cells: "connected".map(String.init), column: 3))
+    }
+
+    func testAllowsOnlyWellFormedWebLinks() {
+        XCTAssertNotNil(ContextualSelection.safeWebURL("https://example.com/docs"))
+        XCTAssertNil(ContextualSelection.safeWebURL("ftp://example.com/file"))
+        XCTAssertNil(ContextualSelection.safeWebURL("https://"))
+    }
 }

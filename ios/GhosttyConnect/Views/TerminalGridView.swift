@@ -5,8 +5,10 @@ struct TerminalGridView: View {
     let snapshot: TerminalSnapshot
     let fontSize: Double
     let onTap: () -> Void
+    let onDoubleTap: (Int, Int) -> Void
     let onScrollRows: (Int) -> Void
     let onSelectWord: (Int, Int) -> Void
+    let onMagnify: (Double, Bool) -> Void
 
     private var cellWidth: CGFloat { Self.cellWidth(fontSize: fontSize) }
     private var cellHeight: CGFloat { Self.cellHeight(fontSize: fontSize) }
@@ -18,14 +20,18 @@ struct TerminalGridView: View {
         snapshot: TerminalSnapshot,
         fontSize: Double,
         onTap: @escaping () -> Void = {},
+        onDoubleTap: @escaping (Int, Int) -> Void = { _, _ in },
         onScrollRows: @escaping (Int) -> Void = { _ in },
-        onSelectWord: @escaping (Int, Int) -> Void = { _, _ in }
+        onSelectWord: @escaping (Int, Int) -> Void = { _, _ in },
+        onMagnify: @escaping (Double, Bool) -> Void = { _, _ in }
     ) {
         self.snapshot = snapshot
         self.fontSize = fontSize
         self.onTap = onTap
+        self.onDoubleTap = onDoubleTap
         self.onScrollRows = onScrollRows
         self.onSelectWord = onSelectWord
+        self.onMagnify = onMagnify
     }
 
     var body: some View {
@@ -46,8 +52,10 @@ struct TerminalGridView: View {
                 columns: snapshot.columns,
                 rows: snapshot.rows,
                 onTap: onTap,
+                onDoubleTap: onDoubleTap,
                 onScrollRows: onScrollRows,
-                onSelectWord: onSelectWord
+                onSelectWord: onSelectWord,
+                onMagnify: onMagnify
             )
         }
         .background(Color(snapshot.background))
@@ -115,8 +123,10 @@ private struct TerminalInteractionOverlay: UIViewRepresentable {
     let columns: Int
     let rows: Int
     let onTap: () -> Void
+    let onDoubleTap: (Int, Int) -> Void
     let onScrollRows: (Int) -> Void
     let onSelectWord: (Int, Int) -> Void
+    let onMagnify: (Double, Bool) -> Void
 
     func makeCoordinator() -> Coordinator { Coordinator(parent: self) }
 
@@ -124,15 +134,22 @@ private struct TerminalInteractionOverlay: UIViewRepresentable {
         let view = UIView()
         view.backgroundColor = .clear
         let tap = UITapGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.tap))
+        let doubleTap = UITapGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.doubleTap(_:)))
+        doubleTap.numberOfTapsRequired = 2
         let pan = UIPanGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.pan(_:)))
+        pan.maximumNumberOfTouches = 1
+        let pinch = UIPinchGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.pinch(_:)))
         let longPress = UILongPressGestureRecognizer(
             target: context.coordinator,
             action: #selector(Coordinator.longPress(_:))
         )
         longPress.minimumPressDuration = 0.5
         tap.require(toFail: longPress)
+        tap.require(toFail: doubleTap)
         view.addGestureRecognizer(tap)
+        view.addGestureRecognizer(doubleTap)
         view.addGestureRecognizer(pan)
+        view.addGestureRecognizer(pinch)
         view.addGestureRecognizer(longPress)
         return view
     }
@@ -143,6 +160,7 @@ private struct TerminalInteractionOverlay: UIViewRepresentable {
 
     final class Coordinator: NSObject {
         var parent: TerminalInteractionOverlay
+        private var pinchStartFontSize: Double?
 
         init(parent: TerminalInteractionOverlay) {
             self.parent = parent
@@ -152,6 +170,14 @@ private struct TerminalInteractionOverlay: UIViewRepresentable {
             parent.onTap()
         }
 
+        @objc func doubleTap(_ recognizer: UITapGestureRecognizer) {
+            guard recognizer.state == .ended, let view = recognizer.view else { return }
+            let location = recognizer.location(in: view)
+            let column = min(parent.columns - 1, max(0, Int(location.x / parent.cellWidth)))
+            let row = min(parent.rows - 1, max(0, Int(location.y / parent.cellHeight)))
+            parent.onDoubleTap(column, row)
+        }
+
         @objc func pan(_ recognizer: UIPanGestureRecognizer) {
             guard recognizer.state == .changed else { return }
             let translation = recognizer.translation(in: recognizer.view)
@@ -159,6 +185,31 @@ private struct TerminalInteractionOverlay: UIViewRepresentable {
             guard rowDelta != 0 else { return }
             parent.onScrollRows(rowDelta)
             recognizer.setTranslation(.zero, in: recognizer.view)
+        }
+
+        @objc func pinch(_ recognizer: UIPinchGestureRecognizer) {
+            switch recognizer.state {
+            case .began:
+                pinchStartFontSize = Double(parent.cellHeight / 1.35)
+            case .changed:
+                guard let pinchStartFontSize else { return }
+                parent.onMagnify(clampedFontSize(pinchStartFontSize * Double(recognizer.scale)), false)
+            case .ended:
+                guard let pinchStartFontSize else { return }
+                parent.onMagnify(clampedFontSize(pinchStartFontSize * Double(recognizer.scale)), true)
+                self.pinchStartFontSize = nil
+            case .cancelled, .failed:
+                if let pinchStartFontSize {
+                    parent.onMagnify(pinchStartFontSize, true)
+                }
+                self.pinchStartFontSize = nil
+            default:
+                break
+            }
+        }
+
+        private func clampedFontSize(_ fontSize: Double) -> Double {
+            min(30, max(9, fontSize))
         }
 
         @objc func longPress(_ recognizer: UILongPressGestureRecognizer) {

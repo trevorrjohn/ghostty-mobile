@@ -36,6 +36,28 @@ class SshKeyStore(private val context: Context) {
         identity
     }
 
+    fun rename(identityId: String, requestedName: String): SshIdentity = synchronized(STORE_LOCK) {
+        val canonicalId = canonicalIdentityId(identityId)
+        val identities = loadOrMigrateIdentities()
+        val current = identities.firstOrNull { it.id == canonicalId } ?: error("SSH identity does not exist.")
+        val baseName = requestedName.trim().take(80)
+        require(baseName.isNotBlank()) { "Identity name cannot be empty." }
+        val renamed = current.copy(
+            name = uniqueName(baseName, identities.filterNot { it.id == canonicalId }.map(SshIdentity::name)),
+        )
+        saveIdentities(identities.map { if (it.id == canonicalId) renamed else it }.sortedBy { it.name.lowercase() })
+        renamed
+    }
+
+    fun delete(identityId: String): Boolean = synchronized(STORE_LOCK) {
+        val canonicalId = canonicalIdentityId(identityId)
+        val identities = loadOrMigrateIdentities()
+        if (identities.none { it.id == canonicalId }) return@synchronized false
+        saveIdentities(identities.filterNot { it.id == canonicalId })
+        encryptedStore.delete(identityFileName(canonicalId))
+        true
+    }
+
     fun read(identityId: String): ByteArray = synchronized(STORE_LOCK) {
         require(loadOrMigrateIdentities().any { it.id == identityId }) { "SSH identity does not exist." }
         encryptedStore.read(identityFileName(canonicalIdentityId(identityId)))

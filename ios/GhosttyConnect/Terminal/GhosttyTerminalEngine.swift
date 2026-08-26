@@ -352,6 +352,62 @@ final class GhosttyTerminalEngine: TerminalEngine {
         return true
     }
 
+    func selectRange(startColumn: Int, endColumn: Int, row: Int) -> Bool {
+        guard startColumn >= 0, endColumn >= startColumn, row >= 0 else { return false }
+        lock.lock()
+        defer { lock.unlock() }
+
+        guard let start = gridReference(column: startColumn, row: row),
+              let end = gridReference(column: endColumn, row: row) else { return false }
+        var selection = GhosttySelection()
+        selection.size = MemoryLayout<GhosttySelection>.size
+        selection.start = start
+        selection.end = end
+        return ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_SELECTION, &selection) == GHOSTTY_SUCCESS
+    }
+
+    func selectOutput(column: Int, row: Int) -> Bool {
+        guard column >= 0, row >= 0 else { return false }
+        lock.lock()
+        defer { lock.unlock() }
+
+        guard let ref = gridReference(column: column, row: row) else { return false }
+        var selection = GhosttySelection()
+        selection.size = MemoryLayout<GhosttySelection>.size
+        guard ghostty_terminal_select_output(terminal, ref, &selection) == GHOSTTY_SUCCESS else { return false }
+        return ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_SELECTION, &selection) == GHOSTTY_SUCCESS
+    }
+
+    func hyperlink(column: Int, row: Int) -> String? {
+        guard column >= 0, row >= 0 else { return nil }
+        lock.lock()
+        defer { lock.unlock() }
+
+        guard var ref = gridReference(column: column, row: row) else { return nil }
+        var required = 0
+        let query = ghostty_grid_ref_hyperlink_uri(&ref, nil, 0, &required)
+        guard query == GHOSTTY_OUT_OF_SPACE, required > 0, required <= 1024 else { return nil }
+        var bytes = [UInt8](repeating: 0, count: required)
+        var written = 0
+        let result = bytes.withUnsafeMutableBufferPointer { buffer in
+            ghostty_grid_ref_hyperlink_uri(&ref, buffer.baseAddress, buffer.count, &written)
+        }
+        guard result == GHOSTTY_SUCCESS, written <= bytes.count else { return nil }
+        return String(bytes: bytes.prefix(written), encoding: .utf8)
+    }
+
+    private func gridReference(column: Int, row: Int) -> GhosttyGridRef? {
+        var point = GhosttyPoint()
+        point.tag = GHOSTTY_POINT_TAG_VIEWPORT
+        point.value.coordinate = GhosttyPointCoordinate(
+            x: UInt16(clamping: column),
+            y: UInt32(clamping: row)
+        )
+        var ref = GhosttyGridRef()
+        ref.size = MemoryLayout<GhosttyGridRef>.size
+        return ghostty_terminal_grid_ref(terminal, point, &ref) == GHOSTTY_SUCCESS ? ref : nil
+    }
+
     func clearSelection() {
         lock.lock()
         defer { lock.unlock() }

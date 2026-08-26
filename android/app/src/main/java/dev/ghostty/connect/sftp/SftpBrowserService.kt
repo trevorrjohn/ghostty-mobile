@@ -210,6 +210,9 @@ class SftpBrowserService : Service() {
     fun hasActiveDestination(hostname: String, port: Int): Boolean = onServiceMainResult {
         browsers.values.any { it.host.hostname == hostname && it.host.port == port }
     }
+    fun hasActiveIdentity(identityId: String): Boolean = onServiceMainResult {
+        browsers.values.any { it.host.identityId == identityId }
+    }
 
     fun refresh(browserId: String) = operation(browserId, STATUS_LOADING) { record, connection ->
         refreshState(record, connection)

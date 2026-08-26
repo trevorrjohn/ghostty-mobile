@@ -91,6 +91,9 @@ class GhosttyTerminal(
 
     fun selectWord(column: Int, row: Int): Boolean = nativeSelectWord(handle, column, row)
 
+    fun selectRange(startColumn: Int, endColumn: Int, row: Int): Boolean =
+        nativeSelectRange(handle, startColumn, endColumn, row)
+
     fun extendSelection(column: Int, row: Int): Boolean = nativeExtendSelection(handle, column, row)
 
     fun setSelectionEndpoint(start: Boolean, column: Int, row: Int): Boolean =
@@ -103,6 +106,8 @@ class GhosttyTerminal(
     fun clearSelection() = nativeClearSelection(handle)
 
     fun selectLatestOutput(): Boolean = nativeSelectLatestOutput(handle)
+
+    fun selectOutput(column: Int, row: Int): Boolean = nativeSelectOutput(handle, column, row)
 
     fun jumpPrompt(direction: Int): Boolean = nativeJumpPrompt(handle, direction)
 
@@ -386,12 +391,14 @@ class GhosttyTerminal(
         anyPressed: Boolean,
     ): ByteArray
     private external fun nativeSelectWord(handle: Long, column: Int, row: Int): Boolean
+    private external fun nativeSelectRange(handle: Long, startColumn: Int, endColumn: Int, row: Int): Boolean
     private external fun nativeExtendSelection(handle: Long, column: Int, row: Int): Boolean
     private external fun nativeSetSelectionEndpoint(handle: Long, start: Boolean, column: Int, row: Int): Boolean
     private external fun nativeSelectionEndpoints(handle: Long): IntArray
     private external fun nativeSelectedText(handle: Long): String
     private external fun nativeClearSelection(handle: Long)
     private external fun nativeSelectLatestOutput(handle: Long): Boolean
+    private external fun nativeSelectOutput(handle: Long, column: Int, row: Int): Boolean
     private external fun nativeJumpPrompt(handle: Long, direction: Int): Boolean
     private external fun nativeSearch(handle: Long, query: String, direction: Int): Boolean
     private external fun nativeHyperlink(handle: Long, column: Int, row: Int): String

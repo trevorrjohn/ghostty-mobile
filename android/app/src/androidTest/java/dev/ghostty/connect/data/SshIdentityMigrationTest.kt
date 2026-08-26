@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import dev.ghostty.connect.model.AuthenticationType
+import dev.ghostty.connect.model.Host
 import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.After
@@ -74,6 +75,58 @@ class SshIdentityMigrationTest {
         assertEquals("WORK 2", second.name)
         assertArrayEquals(firstKey, store.read(first.id))
         assertArrayEquals(secondKey, store.read(second.id))
+    }
+
+    @Test
+    fun renamePreservesIdentityAndKeyDataWithCollisionSafeName() {
+        val firstKey = "-----BEGIN PRIVATE KEY-----\nAAAA\n-----END PRIVATE KEY-----\n".toByteArray()
+        val secondKey = "-----BEGIN PRIVATE KEY-----\nBBBB\n-----END PRIVATE KEY-----\n".toByteArray()
+        val store = SshKeyStore(context)
+        store.import("Work", firstKey)
+        val identity = store.import("Personal", secondKey)
+
+        val renamed = store.rename(identity.id, "work")
+
+        assertEquals(identity.id, renamed.id)
+        assertEquals("work 2", renamed.name)
+        assertEquals(identity.algorithm, renamed.algorithm)
+        assertEquals(identity.fingerprint, renamed.fingerprint)
+        assertArrayEquals(secondKey, store.read(identity.id))
+    }
+
+    @Test
+    fun deleteRemovesIdentityBlobAndIsIdempotent() {
+        val key = "-----BEGIN PRIVATE KEY-----\nAAAA\n-----END PRIVATE KEY-----\n".toByteArray()
+        val store = SshKeyStore(context)
+        val identity = store.import("Work", key)
+
+        assertTrue(store.delete(identity.id))
+
+        assertTrue(store.identities().isEmpty())
+        assertFalse(context.fileList().contains("ssh-identity-${identity.id}.enc"))
+        assertFalse(store.delete(identity.id))
+    }
+
+    @Test
+    fun deleteLeavesAffectedHostReferenceAvailableForRepair() {
+        val key = "-----BEGIN PRIVATE KEY-----\nAAAA\n-----END PRIVATE KEY-----\n".toByteArray()
+        val keyStore = SshKeyStore(context)
+        val identity = keyStore.import("Work", key)
+        val hostStore = HostStore(context, keyStore)
+        hostStore.save(Host(
+            id = "host-id",
+            alias = "Production",
+            hostname = "server.example.com",
+            username = "deploy",
+            authenticationType = AuthenticationType.SSH_KEY,
+            identityId = identity.id,
+        ))
+
+        keyStore.delete(identity.id)
+        val storedHost = hostStore.loadAll().single()
+
+        assertEquals(AuthenticationType.SSH_KEY, storedHost.authenticationType)
+        assertEquals(identity.id, storedHost.identityId)
     }
 
     @Test

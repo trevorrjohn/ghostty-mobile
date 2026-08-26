@@ -44,6 +44,8 @@ import dev.ghostty.connect.terminal.bridge.KittyFrame
 import dev.ghostty.connect.terminal.bridge.KittyImage
 import dev.ghostty.connect.terminal.bridge.TerminalCell
 import dev.ghostty.connect.terminal.bridge.TerminalSnapshot
+import dev.ghostty.connect.terminal.ContextualSelection
+import dev.ghostty.connect.terminal.ContextualSelectionKind
 import kotlin.math.floor
 import kotlin.math.max
 import kotlin.math.abs
@@ -66,9 +68,11 @@ class GhosttyTerminalView(
     var onSelectionStart: (column: Int, row: Int) -> Boolean = { _, _ -> false }
     var onSelectionUpdate: (start: Boolean, column: Int, row: Int) -> Unit = { _, _, _ -> }
     var onSelectionFinished: () -> Unit = {}
+    var onContextSelection: (column: Int, row: Int) -> ContextualSelection? = { _, _ -> null }
+    var onContextCopy: (String) -> Unit = {}
+    var onOpenLink: (String) -> Unit = {}
     var onMetadataChanged: (title: String, pwd: String, atPrompt: Boolean, passwordInput: Boolean) -> Unit =
         { _, _, _, _ -> }
-    var onLinkTap: (column: Int, row: Int) -> Boolean = { _, _ -> false }
     var onResize: (columns: Int, rows: Int, pixelWidth: Int, pixelHeight: Int) -> Unit = { _, _, _, _ -> }
     var onScrollPositionChanged: (isAtBottom: Boolean) -> Unit = {}
     var onTextSizeChanged: (Float) -> Unit = {}
@@ -96,6 +100,7 @@ class GhosttyTerminalView(
     private var allCachedRowsDirty = true
     private val scroller = OverScroller(context)
     private val touchSlop = ViewConfiguration.get(context).scaledTouchSlop
+    private val doubleTapSlop = ViewConfiguration.get(context).scaledDoubleTapSlop
     private val minimumFlingVelocity = ViewConfiguration.get(context).scaledMinimumFlingVelocity
     private val maximumFlingVelocity = ViewConfiguration.get(context).scaledMaximumFlingVelocity
     private var velocityTracker: VelocityTracker? = null
@@ -137,6 +142,10 @@ class GhosttyTerminalView(
         }
     }
     private var pendingLongPress: Runnable? = null
+    private var lastTapUpTime = 0L
+    private var lastTapX = 0f
+    private var lastTapY = 0f
+    private var contextualSelection: ContextualSelection? = null
     private var passwordInput = false
     private var accessibilityText: String? = null
     private var accessibilityUpdatePending = false
@@ -558,6 +567,7 @@ class GhosttyTerminalView(
                 remoteDownY = event.y
                 draggedHandle = selectionHandleAt(event.x, event.y)
                 if (draggedHandle != HANDLE_NONE) {
+                    contextualSelection = null
                     selectionActive = true
                     selectionDragX = event.x
                     selectionDragY = event.y
@@ -567,6 +577,7 @@ class GhosttyTerminalView(
                 pendingLongPress = Runnable {
                     if (!dragging && !scaleGesture) {
                         remoteMouseGesture = false
+                        contextualSelection = null
                         selectionActive = onSelectionStart(cellColumn(remoteDownX), cellRow(remoteDownY))
                         if (selectionActive) {
                             selectionVisible = true
@@ -672,10 +683,29 @@ class GhosttyTerminalView(
                 } else if (!snapshot.isAtBottom && liveButton.contains(event.x, event.y)) {
                     terminal.scrollToBottom()
                     refresh()
-                } else if (onLinkTap(cellColumn(event.x), cellRow(event.y))) {
-                    // The link handler owns this tap.
                 } else {
-                    performClick()
+                    val elapsed = event.eventTime - lastTapUpTime
+                    val distance = Math.hypot(
+                        (event.x - lastTapX).toDouble(),
+                        (event.y - lastTapY).toDouble(),
+                    )
+                    if (elapsed in 1..ViewConfiguration.getDoubleTapTimeout().toLong() &&
+                        distance <= doubleTapSlop) {
+                        lastTapUpTime = 0L
+                        contextualSelection = onContextSelection(cellColumn(event.x), cellRow(event.y))
+                        if (contextualSelection != null) {
+                            selectionVisible = true
+                            refresh()
+                            startActionMode(selectionActions, ActionMode.TYPE_FLOATING)
+                        } else {
+                            performClick()
+                        }
+                    } else {
+                        lastTapUpTime = event.eventTime
+                        lastTapX = event.x
+                        lastTapY = event.y
+                        performClick()
+                    }
                 }
                 endTouch()
                 return true
@@ -742,27 +772,47 @@ class GhosttyTerminalView(
 
     private val selectionActions = object : ActionMode.Callback {
         override fun onCreateActionMode(mode: ActionMode, menu: Menu): Boolean {
-            menu.add("Copy").setShowAsAction(MenuItem.SHOW_AS_ACTION_ALWAYS)
-            menu.add("Clear")
+            val copyLabel = when (contextualSelection?.kind) {
+                ContextualSelectionKind.LINK -> "Copy Link"
+                ContextualSelectionKind.PATH -> "Copy Path"
+                ContextualSelectionKind.OUTPUT -> "Copy Block"
+                else -> "Copy"
+            }
+            menu.add(0, ACTION_COPY, 0, copyLabel).setShowAsAction(MenuItem.SHOW_AS_ACTION_ALWAYS)
+            if (contextualSelection?.kind == ContextualSelectionKind.LINK) {
+                menu.add(0, ACTION_OPEN_LINK, 1, "Open in Browser")
+            }
+            menu.add(0, ACTION_CLEAR, 2, "Clear")
             return true
         }
 
         override fun onPrepareActionMode(mode: ActionMode, menu: Menu) = false
 
         override fun onActionItemClicked(mode: ActionMode, item: MenuItem): Boolean {
-            when (item.title) {
-                "Copy" -> onSelectionFinished()
-                "Clear" -> Unit
+            when (item.itemId) {
+                ACTION_COPY -> {
+                    val value = contextualSelection?.value.orEmpty()
+                    if (contextualSelection?.kind == ContextualSelectionKind.LINK && value.isNotEmpty()) {
+                        onContextCopy(value)
+                    } else {
+                        onSelectionFinished()
+                    }
+                }
+                ACTION_OPEN_LINK -> onOpenLink(contextualSelection?.value.orEmpty())
+                ACTION_CLEAR -> Unit
                 else -> return false
             }
             terminal.clearSelection()
+            contextualSelection = null
             selectionVisible = false
             refresh()
             mode.finish()
             return true
         }
 
-        override fun onDestroyActionMode(mode: ActionMode) = Unit
+        override fun onDestroyActionMode(mode: ActionMode) {
+            contextualSelection = null
+        }
     }
 
     private fun updateSelectionAutoScroll(y: Float) {
@@ -1101,6 +1151,9 @@ class GhosttyTerminalView(
         private const val HANDLE_NONE = 0
         private const val HANDLE_START = 1
         private const val HANDLE_END = 2
+        private const val ACTION_COPY = 1
+        private const val ACTION_OPEN_LINK = 2
+        private const val ACTION_CLEAR = 3
         private const val ACTION_PREVIOUS_PROMPT = 0x01020001
         private const val ACTION_NEXT_PROMPT = 0x01020002
         private const val ACTION_COPY_OUTPUT = 0x01020003

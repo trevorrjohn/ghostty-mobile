@@ -26,6 +26,7 @@ class SshKeyStoreTest {
         assertEquals("ssh-ed25519", details.algorithm)
         assertTrue(details.fingerprint?.startsWith("SHA256:") == true)
         assertTrue(details.publicKey?.startsWith("ssh-ed25519 ") == true)
+        assertFalse(details.publicKey?.contains("PRIVATE KEY") == true)
     }
 
     @Test

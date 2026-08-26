@@ -56,6 +56,8 @@ internal class EncryptedFileStore(
         base.exists() || File("${base.path}.bak").exists()
     }
 
+    fun delete(fileName: String) = atomicFile(fileName).delete()
+
     private fun atomicFile(fileName: String) = AtomicFile(context.getFileStreamPath(fileName))
 
     private fun secretKey(): SecretKey {

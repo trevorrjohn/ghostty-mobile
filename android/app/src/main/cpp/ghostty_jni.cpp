@@ -598,6 +598,34 @@ Java_dev_ghostty_connect_terminal_bridge_GhosttyTerminal_nativeSelectWord(
 }
 
 extern "C" JNIEXPORT jboolean JNICALL
+Java_dev_ghostty_connect_terminal_bridge_GhosttyTerminal_nativeSelectRange(
+    JNIEnv* env, jobject, jlong handle, jint start_column, jint end_column, jint row) {
+  try {
+    if (start_column < 0 || end_column < start_column || row < 0 ||
+        end_column > UINT16_MAX) return false;
+    NativeTerminal* instance = from_handle(handle);
+    std::lock_guard lock(instance->mutex);
+    GhosttyPoint start_point{GHOSTTY_POINT_TAG_VIEWPORT,
+        {.coordinate = {static_cast<uint16_t>(start_column), static_cast<uint32_t>(row)}}};
+    GhosttyPoint end_point{GHOSTTY_POINT_TAG_VIEWPORT,
+        {.coordinate = {static_cast<uint16_t>(end_column), static_cast<uint32_t>(row)}}};
+    auto start_ref = GHOSTTY_INIT_SIZED(GhosttyGridRef);
+    auto end_ref = GHOSTTY_INIT_SIZED(GhosttyGridRef);
+    if (ghostty_terminal_grid_ref(instance->terminal, start_point, &start_ref) != GHOSTTY_SUCCESS ||
+        ghostty_terminal_grid_ref(instance->terminal, end_point, &end_ref) != GHOSTTY_SUCCESS) return false;
+    auto selection = GHOSTTY_INIT_SIZED(GhosttySelection);
+    selection.start = start_ref;
+    selection.end = end_ref;
+    require_success(ghostty_terminal_set(instance->terminal, GHOSTTY_TERMINAL_OPT_SELECTION, &selection),
+        "install range selection");
+    return true;
+  } catch (const std::exception& error) {
+    throw_java(env, error);
+    return false;
+  }
+}
+
+extern "C" JNIEXPORT jboolean JNICALL
 Java_dev_ghostty_connect_terminal_bridge_GhosttyTerminal_nativeExtendSelection(
     JNIEnv* env, jobject, jlong handle, jint column, jint row) {
   try {
@@ -758,6 +786,28 @@ Java_dev_ghostty_connect_terminal_bridge_GhosttyTerminal_nativeSelectLatestOutpu
       }
     }
     return false;
+  } catch (const std::exception& error) {
+    throw_java(env, error);
+    return false;
+  }
+}
+
+extern "C" JNIEXPORT jboolean JNICALL
+Java_dev_ghostty_connect_terminal_bridge_GhosttyTerminal_nativeSelectOutput(
+    JNIEnv* env, jobject, jlong handle, jint column, jint row) {
+  try {
+    if (column < 0 || column > UINT16_MAX || row < 0) return false;
+    NativeTerminal* instance = from_handle(handle);
+    std::lock_guard lock(instance->mutex);
+    GhosttyPoint point{GHOSTTY_POINT_TAG_VIEWPORT,
+        {.coordinate = {static_cast<uint16_t>(column), static_cast<uint32_t>(row)}}};
+    auto ref = GHOSTTY_INIT_SIZED(GhosttyGridRef);
+    if (ghostty_terminal_grid_ref(instance->terminal, point, &ref) != GHOSTTY_SUCCESS) return false;
+    auto selection = GHOSTTY_INIT_SIZED(GhosttySelection);
+    if (ghostty_terminal_select_output(instance->terminal, ref, &selection) != GHOSTTY_SUCCESS) return false;
+    require_success(ghostty_terminal_set(instance->terminal,
+        GHOSTTY_TERMINAL_OPT_SELECTION, &selection), "install output selection");
+    return true;
   } catch (const std::exception& error) {
     throw_java(env, error);
     return false;

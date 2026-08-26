@@ -33,11 +33,11 @@ This is a maturity gap rather than a different product architecture. A future ap
 
 The build script installs a checksum-verified XCFramework for the shared pinned Ghostty revision. `GhosttyTerminalEngine` confines C API ownership and converts render state into Swift values.
 
-The current adapter supports feed, resize, UTF-8 text encoding, mode-aware named-key and paste encoding, bounded scrollback, word selection and copy, plain-text formatting, and styled snapshots. Advanced selection interactions, search, effects, graphics, and archive capabilities remain parity work.
+The current adapter supports feed, resize, UTF-8 text encoding, mode-aware named-key and paste encoding, bounded scrollback, word/range/semantic-output selection, bounded OSC 8 hyperlink lookup, plain-text formatting, and styled snapshots. Advanced selection interactions, search, effects, graphics, and archive capabilities remain parity work.
 
 ## Rendering and Input
 
-`TerminalGridView` renders styled and selected cells plus cursor state through SwiftUI Canvas. Its UIKit interaction overlay maps row-based touch scrolling and long-press word selection into terminal-owned state, while `TerminalKeyboardCapture` bridges software/hardware input and explicit copy/paste actions into SwiftUI. The configurable keyboard bar persists enablement, ordered built-in controls, and bounded custom key-plus-modifier actions separately from ephemeral one-shot, locked, and last-used state.
+`TerminalGridView` renders styled and selected cells plus cursor state through SwiftUI Canvas. Its UIKit interaction overlay maps row-based touch scrolling, long-press word selection, and contextual double-tap selection into terminal-owned state, while `TerminalKeyboardCapture` bridges software/hardware input and explicit copy/paste actions into SwiftUI. The configurable keyboard bar persists enablement, ordered built-in controls, and bounded custom key-plus-modifier actions separately from ephemeral one-shot, locked, and last-used state.
 
 The renderer consumes Swift-owned snapshots and never accesses mutable Ghostty memory. Viewport dimensions resize the local terminal before the remote PTY. Input is not locally echoed.
 

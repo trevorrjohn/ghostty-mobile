@@ -1,7 +1,10 @@
 .DS_Store
 DerivedData/
 .build/
+/build*/
 Vendor/*.xcframework/
 GhosttyConnect.xcodeproj/
+GhosttyConnect/Info.plist
+GhosttyConnectControl/Info.plist
 *.xcuserstate
 xcuserdata/

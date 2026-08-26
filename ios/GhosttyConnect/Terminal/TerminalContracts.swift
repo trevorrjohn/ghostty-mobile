@@ -188,6 +188,9 @@ protocol TerminalEngine: AnyObject {
     func scrollViewport(byRows rows: Int)
     func scrollToBottom()
     func selectWord(column: Int, row: Int) -> Bool
+    func selectRange(startColumn: Int, endColumn: Int, row: Int) -> Bool
+    func selectOutput(column: Int, row: Int) -> Bool
+    func hyperlink(column: Int, row: Int) -> String?
     func clearSelection()
     func selectedText() -> String
     func visibleText() -> String

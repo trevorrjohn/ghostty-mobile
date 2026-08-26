@@ -87,6 +87,9 @@ import dev.ghostty.connect.sftp.remoteChildNameError
 import dev.ghostty.connect.sftp.remoteFolderPath
 import dev.ghostty.connect.terminal.SshSessionService
 import dev.ghostty.connect.terminal.AuthenticationChallenge
+import dev.ghostty.connect.terminal.ContextualSelection
+import dev.ghostty.connect.terminal.ContextualSelectionKind
+import dev.ghostty.connect.terminal.TerminalTokenMatcher
 import dev.ghostty.connect.terminal.bridge.GhosttyTerminal
 import dev.ghostty.connect.terminal.bridge.TerminalEffects
 import dev.ghostty.connect.terminal.view.GhosttyTerminalView
@@ -166,6 +169,7 @@ class MainActivity : Activity() {
     private var settingsVisible = false
     private var feedbackVisible = false
     private var trustedHostsVisible = false
+    private var identitiesVisible = false
     private var feedbackDraftViews: FeedbackDraftViews? = null
     private var terminalSearchQuery = ""
     private val activeModifiers = mutableSetOf<KeyboardModifier>()
@@ -183,6 +187,7 @@ class MainActivity : Activity() {
             val service = sessionService ?: return
             terminalStatus?.text = "$status · ${service.host(sessionId)?.destination.orEmpty()}"
             setTerminalEnabled(status == "Connected")
+            setTerminalNavigationHidden(status == "Connected")
             terminalRetryButton?.visibility = if (
                 service.summaries().firstOrNull { it.sessionId == sessionId }?.canRetry == true
             ) View.VISIBLE else View.GONE
@@ -315,7 +320,7 @@ class MainActivity : Activity() {
                 selectedSessionId = pending.sessionId
                 service.selectListenerSession(pending.sessionId)
             }
-            if (feedbackVisible || trustedHostsVisible || settingsVisible || feedbackDraftViews != null) return
+            if (feedbackVisible || trustedHostsVisible || identitiesVisible || settingsVisible || feedbackDraftViews != null) return
             val requested = selectedSessionId?.takeIf { service.host(it) != null }
             val sessionId = requested ?: service.summaries().singleOrNull()?.sessionId
             if (sessionId != null) openSession(sessionId) else showHosts(disconnect = false)
@@ -420,6 +425,7 @@ class MainActivity : Activity() {
         when (savedInstanceState?.getString(STATE_SCREEN)) {
             SCREEN_FEEDBACK -> showFeedbackLog()
             SCREEN_TRUSTED_HOSTS -> showTrustedHosts()
+            SCREEN_IDENTITIES -> showSshIdentities()
             SCREEN_SETTINGS -> showKeyboardSettings()
             else -> showHosts(disconnect = false)
         }
@@ -500,11 +506,13 @@ class MainActivity : Activity() {
     }
 
     private fun showHosts(disconnect: Boolean = false) {
+        setTerminalNavigationHidden(false)
         window.clearFlags(WindowManager.LayoutParams.FLAG_SECURE)
         editingHostId = null
         settingsVisible = false
         feedbackVisible = false
         trustedHostsVisible = false
+        identitiesVisible = false
         browserVisible = false
         if (disconnect) {
             selectedSessionId?.let { sessionService?.disconnect(it) }
@@ -619,6 +627,7 @@ class MainActivity : Activity() {
         root.addView(button(if (hosts.isEmpty()) "Add your first host" else "Add host") { showHostEditor() })
         root.addView(button("Import SSH key", secondary) { openKeyPicker() }.margins(top = 10))
         root.addView(button("Paste private key", secondary) { showPasteKeyDialog() }.margins(top = 10))
+        root.addView(button("Manage SSH identities", secondary) { showSshIdentities() }.margins(top = 10))
         root.addView(button("Record feedback", secondary) { showFeedbackDialog("Hosts") }.margins(top = 10))
         root.addView(button("Settings", secondary) { showKeyboardSettings() }.margins(top = 10))
         root.addView(button("Ghostty renderer preview", secondary) { showGhosttyPreview() }.margins(top = 10))
@@ -827,7 +836,7 @@ class MainActivity : Activity() {
                     privateKey.text.clear()
                     dialog.dismiss()
                     toast("Private key saved")
-                    refreshEditorKeys(identity.id)
+                    finishIdentityImport(identity)
                 } catch (error: Exception) {
                     toast(error.message ?: "Could not save key")
                 }
@@ -875,7 +884,7 @@ class MainActivity : Activity() {
             val displayName = uri.lastPathSegment?.substringAfterLast('/')?.takeLast(80) ?: "SSH key"
             val identity = keyStore.import(displayName, bytes)
             toast("Imported ${identity.name}")
-            refreshEditorKeys(identity.id)
+            finishIdentityImport(identity)
         } catch (error: Exception) {
             toast(error.message ?: "Could not import key")
         }
@@ -1015,10 +1024,15 @@ class MainActivity : Activity() {
         editorAuthentication?.setSelection(1)
     }
 
+    private fun finishIdentityImport(identity: SshIdentity) {
+        if (identitiesVisible) showSshIdentities() else refreshEditorKeys(identity.id)
+    }
+
     private fun showKeyboardSettings() {
         settingsVisible = true
         feedbackVisible = false
         trustedHostsVisible = false
+        identitiesVisible = false
         val root = vertical(24)
         root.addView(label("Settings", 28f, primary, Typeface.BOLD))
 
@@ -1057,10 +1071,11 @@ class MainActivity : Activity() {
 
         root.addView(label("Security", 18f, primary, Typeface.BOLD))
         root.addView(label(
-            "Review fingerprints previously approved for SSH destinations.",
+            "Manage imported identities and fingerprints approved for SSH destinations.",
             14f,
             secondary,
         ).margins(bottom = 10))
+        root.addView(button("SSH identities", secondary) { showSshIdentities() }.margins(bottom = 8))
         root.addView(button("Trusted hosts", secondary) { showTrustedHosts() }.margins(bottom = 20))
 
         root.addView(label("Keyboard bar", 18f, primary, Typeface.BOLD))
@@ -1169,10 +1184,178 @@ class MainActivity : Activity() {
         setContentView(scroll(root))
     }
 
+    private fun showSshIdentities() {
+        settingsVisible = false
+        feedbackVisible = false
+        trustedHostsVisible = false
+        identitiesVisible = true
+        val root = vertical(24)
+        root.addView(label("SSH identities", 28f, primary, Typeface.BOLD))
+        root.addView(label(
+            "Identity names can change without changing saved host references. Deleting an identity leaves affected hosts saved so you can select a replacement.",
+            14f,
+            secondary,
+        ).margins(top = 8, bottom = 16))
+        root.addView(button("Import private key") { openKeyPicker() })
+        root.addView(button("Paste private key", secondary) { showPasteKeyDialog() }.margins(top = 8, bottom = 18))
+
+        val identitiesAndHosts = runCatching { keyStore.identities() to hostStore.loadAll() }.getOrElse { error ->
+            root.addView(label("SSH identities could not be read: ${error.message ?: "unknown error"}", 14f, Color.RED))
+            root.addView(button("Back to settings", secondary) { showKeyboardSettings() }.margins(top = 16))
+            setContentView(scroll(root))
+            return
+        }
+        val identities = identitiesAndHosts.first
+        val hosts = identitiesAndHosts.second
+        if (identities.isEmpty()) {
+            root.addView(label("No SSH identities imported yet.", 15f, secondary))
+        } else {
+            identities.forEach { identity ->
+                val affectedHosts = hosts.filter { it.identityId == identity.id }
+                val card = vertical(14).apply {
+                    setBackgroundColor(raised)
+                    addView(label(identity.name, 18f, primary, Typeface.BOLD))
+                    addView(label(identity.algorithm ?: "Algorithm unavailable", 13f, accent).margins(top = 6))
+                    addView(label(
+                        if (identity.requiresPassphrase) "Encrypted private key" else "Private key does not require a passphrase",
+                        13f,
+                        secondary,
+                    ).margins(top = 4))
+                    identity.fingerprint?.let { fingerprint ->
+                        addView(label("Public-key fingerprint", 12f, secondary).margins(top = 10, bottom = 4))
+                        addView(label(fingerprint, 13f, primary).apply {
+                            typeface = Typeface.MONOSPACE
+                            setTextIsSelectable(true)
+                        })
+                    }
+                    addView(label(
+                        if (affectedHosts.isEmpty()) "Not used by a saved host"
+                        else "Used by ${affectedHostSummary(affectedHosts)}",
+                        13f,
+                        if (affectedHosts.isEmpty()) secondary else accent,
+                    ).margins(top = 10))
+                    addView(button("Rename", secondary) { showRenameIdentity(identity) }.margins(top = 12))
+                    if (identity.publicKey != null) {
+                        addView(button("Copy public key", secondary) { copyPublicKey(identity) }.margins(top = 8))
+                        addView(button("Share public key", secondary) { sharePublicKey(identity) }.margins(top = 8))
+                    } else {
+                        addView(label(
+                            "Public-key export is unavailable for this legacy key format until its public metadata can be derived.",
+                            12f,
+                            secondary,
+                        ).margins(top = 10))
+                    }
+                    addView(button("Delete identity", secondary) { confirmDeleteIdentity(identity) }.margins(top = 8))
+                }
+                root.addView(card.margins(bottom = 12))
+            }
+        }
+        root.addView(button("Back to settings", secondary) { showKeyboardSettings() }.margins(top = 16))
+        setContentView(scroll(root))
+    }
+
+    private fun showRenameIdentity(identity: SshIdentity) {
+        val name = field("Identity name", identity.name)
+        val dialog = AlertDialog.Builder(this)
+            .setTitle("Rename SSH identity")
+            .setView(name)
+            .setNegativeButton("Cancel", null)
+            .setPositiveButton("Rename", null)
+            .create()
+        dialog.setOnShowListener {
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                runCatching { keyStore.rename(identity.id, name.text.toString()) }
+                    .onSuccess { renamed ->
+                        dialog.dismiss()
+                        toast("Renamed to ${renamed.name}")
+                        showSshIdentities()
+                    }
+                    .onFailure { toast(it.message ?: "Could not rename identity") }
+            }
+        }
+        dialog.show()
+        name.requestFocus()
+    }
+
+    private fun copyPublicKey(identity: SshIdentity) {
+        val publicKey = identity.publicKey ?: return
+        getSystemService(ClipboardManager::class.java).setPrimaryClip(
+            ClipData.newPlainText("${identity.name} public key", publicKey),
+        )
+        toast("Public key copied")
+    }
+
+    private fun sharePublicKey(identity: SshIdentity) {
+        val publicKey = identity.publicKey ?: return
+        startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).apply {
+            type = "text/plain"
+            putExtra(Intent.EXTRA_SUBJECT, "${identity.name}.pub")
+            putExtra(Intent.EXTRA_TEXT, "$publicKey\n")
+        }, "Share public key"))
+    }
+
+    private fun confirmDeleteIdentity(identity: SshIdentity) {
+        identityDeletionBlockMessage(identity)?.let { message ->
+            AlertDialog.Builder(this)
+                .setTitle("Disconnect active work first")
+                .setMessage(message)
+                .setPositiveButton("OK", null)
+                .show()
+            return
+        }
+        val affectedHosts = runCatching { hostStore.loadAll().filter { it.identityId == identity.id } }.getOrElse {
+            toast("Saved hosts could not be checked: ${it.message}")
+            return
+        }
+        val affectedMessage = if (affectedHosts.isEmpty()) "" else {
+            "\n\nUsed by ${affectedHostSummary(affectedHosts)}. These hosts will remain saved but cannot connect until you select another identity."
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Delete ${identity.name}?")
+            .setMessage("Remove this private key from Ghostty Connect?$affectedMessage")
+            .setNegativeButton("Cancel", null)
+            .setPositiveButton("Delete") { _, _ ->
+                identityDeletionBlockMessage(identity)?.let {
+                    toast(it)
+                    return@setPositiveButton
+                }
+                runCatching { keyStore.delete(identity.id) }
+                    .onSuccess { removed ->
+                        toast(if (removed) "Identity deleted" else "Identity was already deleted")
+                        showSshIdentities()
+                    }
+                    .onFailure { toast("Could not delete identity: ${it.message}") }
+            }
+            .show()
+    }
+
+    private fun identityDeletionBlockMessage(identity: SshIdentity): String? {
+        if (SshSessionService.active && sessionService == null) {
+            return "Session state is still loading. Try again in a moment."
+        }
+        if (sessionService?.hasActiveIdentity(identity.id) == true) {
+            return "An active or retryable terminal session uses ${identity.name}. Disconnect it before deleting this identity."
+        }
+        if (SftpBrowserService.active && sftpService == null) {
+            return "File-browser state is still loading. Try again in a moment."
+        }
+        if (sftpService?.hasActiveIdentity(identity.id) == true) {
+            return "An active file browser or transfer uses ${identity.name}. Close it before deleting this identity."
+        }
+        return null
+    }
+
+    private fun affectedHostSummary(hosts: List<Host>): String {
+        val visible = hosts.take(3).joinToString { it.name }
+        val remaining = hosts.size - 3
+        return if (remaining > 0) "$visible, and $remaining more" else visible
+    }
+
     private fun showTrustedHosts() {
         settingsVisible = false
         feedbackVisible = false
         trustedHostsVisible = true
+        identitiesVisible = false
         val root = vertical(24)
         root.addView(label("Trusted hosts", 28f, primary, Typeface.BOLD))
         root.addView(label(
@@ -1265,6 +1448,7 @@ class MainActivity : Activity() {
         settingsVisible = false
         feedbackVisible = true
         trustedHostsVisible = false
+        identitiesVisible = false
         val root = vertical(24)
         root.addView(label("Feedback log", 28f, primary, Typeface.BOLD))
         root.addView(label(
@@ -1630,12 +1814,13 @@ class MainActivity : Activity() {
             onSelectionFinished = {
                 terminal.selectedText().takeIf(String::isNotEmpty)?.let { writeClipboard(it) }
             }
-            onLinkTap = { column, row ->
-                val uri = terminal.hyperlink(column, row).takeIf { it.isNotBlank() }?.let(Uri::parse)
-                if (uri?.scheme in setOf("http", "https")) {
-                    startActivity(Intent(Intent.ACTION_VIEW, uri))
-                    true
-                } else false
+            onContextSelection = { column, row -> contextualSelection(terminal, column, row) }
+            onContextCopy = { text ->
+                writeClipboard(text)
+                toast("Link copied")
+            }
+            onOpenLink = { link ->
+                safeWebUri(link)?.let { startActivity(Intent(Intent.ACTION_VIEW, it)) }
             }
         }
         root.addView(view, LinearLayout.LayoutParams(-1, 0, 1f))
@@ -1680,6 +1865,7 @@ class MainActivity : Activity() {
     }
 
     private fun showFileBrowser(browserId: String) {
+        setTerminalNavigationHidden(false)
         selectedBrowserId = browserId
         sftpService?.selectBrowser(browserId)
         browserVisible = true
@@ -2256,6 +2442,7 @@ class MainActivity : Activity() {
     }
 
     private fun renderTerminal(service: SshSessionService, sessionId: String) {
+        setTerminalNavigationHidden(false)
         val host = service.host(sessionId) ?: return
         val terminal = service.terminal(sessionId) ?: return
         activeModifiers.clear()
@@ -2436,6 +2623,11 @@ class MainActivity : Activity() {
                     toast("Selection copied")
                 }
             }
+            onContextSelection = { column, row -> contextualSelection(terminal, column, row) }
+            onContextCopy = { text ->
+                writeClipboard(text)
+                toast("Link copied")
+            }
             onMetadataChanged = { title, pwd, atPrompt, passwordInput ->
                 terminalTitle?.text = title.ifBlank { host.name }
                 if (pwd.isNotBlank()) terminalStatus?.text = displayRemotePwd(pwd)
@@ -2448,14 +2640,8 @@ class MainActivity : Activity() {
                 if (passwordInput) window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
                 else window.clearFlags(WindowManager.LayoutParams.FLAG_SECURE)
             }
-            onLinkTap = { column, row ->
-                val uri = terminal.hyperlink(column, row).takeIf { it.isNotBlank() }?.let(Uri::parse)
-                if (uri?.scheme in setOf("http", "https")) {
-                    startActivity(Intent(Intent.ACTION_VIEW, uri))
-                    true
-                } else {
-                    false
-                }
+            onOpenLink = { link ->
+                safeWebUri(link)?.let { startActivity(Intent(Intent.ACTION_VIEW, it)) }
             }
             onResize = { columns, rows, pixelWidth, pixelHeight ->
                 sessionService?.resize(sessionId, columns, rows, pixelWidth, pixelHeight)
@@ -2472,6 +2658,30 @@ class MainActivity : Activity() {
         view.refresh()
         updateModifierBarVisibility()
         service.status(sessionId)?.let { sessionListener.onSessionStatus(sessionId, it) }
+    }
+
+    private fun setTerminalNavigationHidden(hidden: Boolean) {
+        if (Build.VERSION.SDK_INT >= 30) {
+            window.insetsController?.let { controller ->
+                if (hidden) {
+                    controller.systemBarsBehavior =
+                        android.view.WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+                    controller.hide(WindowInsets.Type.navigationBars())
+                } else {
+                    controller.show(WindowInsets.Type.navigationBars())
+                }
+            }
+        } else {
+            @Suppress("DEPRECATION")
+            window.decorView.systemUiVisibility = if (hidden) {
+                View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY or
+                    View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or
+                    View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION or
+                    View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+            } else {
+                View.SYSTEM_UI_FLAG_VISIBLE
+            }
+        }
     }
 
     private fun scheduleShellIntegrationNotice(sessionId: String) {
@@ -2750,6 +2960,40 @@ class MainActivity : Activity() {
         )
     }
 
+    private fun contextualSelection(
+        terminal: GhosttyTerminal,
+        column: Int,
+        row: Int,
+    ): ContextualSelection? {
+        val hyperlink = terminal.hyperlink(column, row)
+        if (safeWebUri(hyperlink) != null) {
+            terminal.selectWord(column, row)
+            return ContextualSelection(ContextualSelectionKind.LINK, hyperlink)
+        }
+        TerminalTokenMatcher.match(terminal.snapshot(), column, row)?.let { match ->
+            if (terminal.selectRange(match.startColumn, match.endColumn, row)) {
+                val kind = if (match.kind == ContextualSelectionKind.LINK && safeWebUri(match.text) == null) {
+                    ContextualSelectionKind.WORD
+                } else match.kind
+                return ContextualSelection(kind, match.text)
+            }
+        }
+        if (terminal.selectOutput(column, row)) {
+            return ContextualSelection(ContextualSelectionKind.OUTPUT)
+        }
+        return if (terminal.selectWord(column, row)) {
+            ContextualSelection(ContextualSelectionKind.WORD)
+        } else null
+    }
+
+    private fun safeWebUri(value: String): Uri? {
+        if (value.isBlank() || value.toByteArray().size > 1024 || value.any(Char::isISOControl)) return null
+        val uri = Uri.parse(value)
+        return uri.takeIf {
+            it.scheme?.lowercase() in setOf("http", "https") && !it.host.isNullOrBlank()
+        }
+    }
+
     private fun handleRemoteNotification(title: String, body: String) {
         val host = currentStoredHost() ?: return
         when (host.allowRemoteNotifications) {
@@ -2862,6 +3106,7 @@ class MainActivity : Activity() {
     private fun handleBackNavigation() {
         if (feedbackVisible) showKeyboardSettings()
         else if (trustedHostsVisible) showKeyboardSettings()
+        else if (identitiesVisible) showKeyboardSettings()
         else if (settingsVisible) showHosts(disconnect = false)
         else if (browserVisible) currentBrowserState?.let(::closeFileBrowser) ?: showHosts(disconnect = false)
         else if (terminalView != null || previewTerminal != null) showHosts()
@@ -2876,6 +3121,7 @@ class MainActivity : Activity() {
         outState.putString(STATE_SCREEN, when {
             feedbackVisible -> SCREEN_FEEDBACK
             trustedHostsVisible -> SCREEN_TRUSTED_HOSTS
+            identitiesVisible -> SCREEN_IDENTITIES
             settingsVisible -> SCREEN_SETTINGS
             else -> SCREEN_OTHER
         })
@@ -3116,6 +3362,7 @@ class MainActivity : Activity() {
         private const val SCREEN_SETTINGS = "settings"
         private const val SCREEN_FEEDBACK = "feedback"
         private const val SCREEN_TRUSTED_HOSTS = "trusted_hosts"
+        private const val SCREEN_IDENTITIES = "identities"
         private val REMOTE_TIME_FORMAT: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm")
     }
 }

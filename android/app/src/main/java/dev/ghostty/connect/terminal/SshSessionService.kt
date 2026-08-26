@@ -307,6 +307,10 @@ class SshSessionService : Service() {
 
     fun host(sessionId: String): Host? = onServiceMainResult { sessions[sessionId]?.host }
 
+    fun hasActiveIdentity(identityId: String): Boolean = onServiceMainResult {
+        sessions.values.any { it.host.identityId == identityId }
+    }
+
     fun terminal(sessionId: String): GhosttyTerminal? = onServiceMainResult { sessions[sessionId]?.terminal }
 
     fun status(sessionId: String): String? = onServiceMainResult { sessions[sessionId]?.status }

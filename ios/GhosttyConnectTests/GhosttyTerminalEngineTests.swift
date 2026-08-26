@@ -178,6 +178,36 @@ final class GhosttyTerminalEngineTests: XCTestCase {
         XCTAssertFalse(try engine.snapshot().hasSelection)
     }
 
+    func testSelectsRangeAndSemanticOutputAtPoint() throws {
+        guard TerminalEngineFactory.isAvailable else {
+            throw XCTSkip("GhosttyVt XCFramework is not installed")
+        }
+
+        let engine = try TerminalEngineFactory.make(columns: 30, rows: 4)
+        engine.feed(Data("/tmp/report.txt".utf8))
+        XCTAssertTrue(engine.selectRange(startColumn: 0, endColumn: 14, row: 0))
+        XCTAssertEqual(engine.selectedText(), "/tmp/report.txt")
+
+        let outputEngine = try TerminalEngineFactory.make(columns: 30, rows: 4)
+        outputEngine.feed(Data((
+            "\u{1b}]133;A;cl=line\u{7}$ \u{1b}]133;B\u{7}generate\r\n" +
+                "\u{1b}]133;C\u{7}generated output\r\n\u{1b}]133;D;0\u{7}"
+        ).utf8))
+        XCTAssertTrue(outputEngine.selectOutput(column: 2, row: 1))
+        XCTAssertEqual(outputEngine.selectedText(), "generated output")
+    }
+
+    func testReadsOSC8Hyperlink() throws {
+        guard TerminalEngineFactory.isAvailable else {
+            throw XCTSkip("GhosttyVt XCFramework is not installed")
+        }
+
+        let engine = try TerminalEngineFactory.make(columns: 20, rows: 2)
+        engine.feed(Data("\u{1b}]8;;https://example.com\u{7}docs\u{1b}]8;;\u{7}".utf8))
+        XCTAssertEqual(engine.hyperlink(column: 1, row: 0), "https://example.com")
+        XCTAssertNil(engine.hyperlink(column: 6, row: 0))
+    }
+
     func testEncodesSafeAndConfirmedPasteForTerminalMode() throws {
         guard TerminalEngineFactory.isAvailable else {
             throw XCTSkip("GhosttyVt XCFramework is not installed")

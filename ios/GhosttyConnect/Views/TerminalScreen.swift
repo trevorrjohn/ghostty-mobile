@@ -5,6 +5,7 @@ struct TerminalScreen: View {
     let host: Host
     @EnvironmentObject private var model: AppModel
     @Environment(\.displayScale) private var displayScale
+    @Environment(\.openURL) private var openURL
     @StateObject private var session = TerminalSessionModel()
     @State private var secret = ""
     @State private var showingCredential = false
@@ -13,9 +14,12 @@ struct TerminalScreen: View {
     @State private var hasRequestedConnection = false
     @State private var keyboardBarState = KeyboardBarRuntimeState()
     @State private var pastePrompt: PastePrompt?
+    @State private var contextualSelection: ContextualSelection?
+    @State private var transientFontSize: Double?
 
     var body: some View {
         let theme = TerminalTheme.theme(id: model.settings.themeID)
+        let terminalFontSize = transientFontSize ?? model.settings.fontSize
         VStack(spacing: 0) {
             statusBar
             if let snapshot = session.snapshot {
@@ -23,10 +27,15 @@ struct TerminalScreen: View {
                     ZStack(alignment: .bottomTrailing) {
                         TerminalGridView(
                             snapshot: snapshot,
-                            fontSize: model.settings.fontSize,
+                            fontSize: terminalFontSize,
                             onTap: { keyboardFocused = true },
+                            onDoubleTap: { column, row in
+                                keyboardFocused = true
+                                contextualSelection = session.contextualSelection(column: column, row: row)
+                            },
                             onScrollRows: session.scrollViewport(byRows:),
-                            onSelectWord: session.selectWord(column:row:)
+                            onSelectWord: session.selectWord(column:row:),
+                            onMagnify: updateFontSize(_:commit:)
                         )
                         .accessibilityAction(named: "Scroll backward") {
                             session.scrollViewport(byRows: -max(1, snapshot.rows - 1))
@@ -50,6 +59,7 @@ struct TerminalScreen: View {
                     }
                     .onAppear { resize(to: proxy.size) }
                     .onChange(of: proxy.size) { _, size in resize(to: size) }
+                    .onChange(of: terminalFontSize) { _, _ in resize(to: proxy.size) }
                 }
             } else {
                 Spacer()
@@ -107,16 +117,6 @@ struct TerminalScreen: View {
                 .opacity(session.snapshot?.viewport.isAtBottom == false ? 0 : 1)
                 .allowsHitTesting(session.snapshot?.viewport.isAtBottom != false)
             }
-            HStack(spacing: 8) {
-                Image(systemName: keyboardFocused ? "keyboard.fill" : "keyboard")
-                Text(keyboardFocused ? "Typing directly into terminal" : "Tap terminal to type")
-                    .font(.caption)
-                Spacer()
-                Button(keyboardFocused ? "Hide" : "Show") { keyboardFocused.toggle() }
-            }
-            .padding(10)
-            .foregroundStyle(Color.ghosttySecondary)
-            .background(Color.ghosttyRaised)
             TerminalKeyboardCapture(
                 isFocused: $keyboardFocused,
                 onInput: handleInput,
@@ -128,21 +128,31 @@ struct TerminalScreen: View {
                 .opacity(0.01)
         }
         .background(theme.background)
+        .persistentSystemOverlays(session.state == .connected ? .hidden : .automatic)
         .navigationTitle(host.name)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
-            Menu {
-                Button("Paste", systemImage: "doc.on.clipboard") { requestPaste() }
-                if session.snapshot?.hasSelection == true {
-                    Button("Copy Selection", systemImage: "doc.on.doc") { copySelection() }
-                    Button("Clear Selection", systemImage: "xmark") { session.clearSelection() }
+            ToolbarItemGroup(placement: .topBarTrailing) {
+                Button {
+                    keyboardFocused.toggle()
+                } label: {
+                    Image(systemName: "keyboard")
                 }
-                Divider()
-                Button("Disconnect") { Task { await session.disconnect() } }
-                Button("Forget Host Key", role: .destructive) { model.forgetHostKey(for: host) }
-                    .disabled(!canForgetHostKey)
-            } label: {
-                Image(systemName: "ellipsis.circle")
+                .accessibilityLabel(keyboardFocused ? "Hide Keyboard" : "Show Keyboard")
+
+                Menu {
+                    Button("Paste", systemImage: "doc.on.clipboard") { requestPaste() }
+                    if session.snapshot?.hasSelection == true {
+                        Button("Copy Selection", systemImage: "doc.on.doc") { copySelection() }
+                        Button("Clear Selection", systemImage: "xmark") { session.clearSelection() }
+                    }
+                    Divider()
+                    Button("Disconnect") { Task { await session.disconnect() } }
+                    Button("Forget Host Key", role: .destructive) { model.forgetHostKey(for: host) }
+                        .disabled(!canForgetHostKey)
+                } label: {
+                    Image(systemName: "ellipsis.circle")
+                }
             }
         }
         .onAppear {
@@ -197,6 +207,14 @@ struct TerminalScreen: View {
                 )
             }
         }
+        .overlay(alignment: .bottom) {
+            if let selection = contextualSelection {
+                selectionActionStrip(selection)
+                    .padding(.horizontal, 12)
+                    .padding(.bottom, 56)
+                    .transaction { $0.animation = nil }
+            }
+        }
         .sheet(item: hostTrustBinding) { request in
             HostTrustView(
                 request: request,
@@ -226,6 +244,41 @@ struct TerminalScreen: View {
         .padding(.horizontal, 12)
         .frame(minHeight: 34)
         .background(Color.ghosttyRaised)
+    }
+
+    private func selectionActionStrip(_ selection: ContextualSelection) -> some View {
+        HStack(spacing: 6) {
+            Button {
+                copyContextualSelection(selection)
+            } label: {
+                Label(selection.copyLabel, systemImage: "doc.on.doc")
+            }
+            if selection.kind == .link {
+                Button {
+                    openContextualLink(selection)
+                } label: {
+                    Label("Open", systemImage: "safari")
+                }
+            }
+            Button {
+                session.clearSelection()
+                contextualSelection = nil
+            } label: {
+                Image(systemName: "xmark")
+                    .frame(width: 24, height: 24)
+            }
+            .accessibilityLabel("Clear Selection")
+        }
+        .font(.callout.weight(.semibold))
+        .buttonStyle(.bordered)
+        .tint(Color.ghosttyAccent)
+        .padding(6)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+        .overlay {
+            RoundedRectangle(cornerRadius: 12)
+                .stroke(Color.ghosttyAccent.opacity(0.35), lineWidth: 1)
+        }
+        .shadow(color: .black.opacity(0.28), radius: 8, y: 3)
     }
 
     private var selectedKey: StoredKey? {
@@ -292,7 +345,7 @@ struct TerminalScreen: View {
     private func resize(to size: CGSize) {
         let dimensions = TerminalDimensions.fit(
             size: size,
-            fontSize: model.settings.fontSize,
+            fontSize: transientFontSize ?? model.settings.fontSize,
             displayScale: displayScale
         )
         session.resize(
@@ -301,6 +354,13 @@ struct TerminalScreen: View {
             pixelWidth: dimensions.pixelWidth,
             pixelHeight: dimensions.pixelHeight
         )
+    }
+
+    private func updateFontSize(_ fontSize: Double, commit: Bool) {
+        transientFontSize = fontSize
+        guard commit else { return }
+        model.settings.fontSize = fontSize
+        transientFontSize = nil
     }
 
     private func activateKeyboardBarItem(_ item: KeyboardBarItem) {
@@ -373,6 +433,26 @@ struct TerminalScreen: View {
         let text = session.copySelection()
         guard !text.isEmpty else { return }
         UIPasteboard.general.string = text
+    }
+
+    private func copyContextualSelection(_ selection: ContextualSelection) {
+        let text: String
+        if selection.kind == .link {
+            text = selection.value
+            session.clearSelection()
+        } else {
+            text = session.copySelection()
+        }
+        contextualSelection = nil
+        guard !text.isEmpty else { return }
+        UIPasteboard.general.string = text
+    }
+
+    private func openContextualLink(_ selection: ContextualSelection) {
+        contextualSelection = nil
+        session.clearSelection()
+        guard let url = ContextualSelection.safeWebURL(selection.value) else { return }
+        openURL(url)
     }
 
     private func isActive(_ item: KeyboardBarItem) -> Bool {
