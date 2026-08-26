@@ -17,8 +17,10 @@ import dev.ghostty.connect.MainActivity
 import dev.ghostty.connect.data.HostStore
 import dev.ghostty.connect.data.SshKeyStore
 import dev.ghostty.connect.model.Host
+import dev.ghostty.connect.model.sameSshDestination
 import dev.ghostty.connect.terminal.AuthenticationChallenge
 import dev.ghostty.connect.terminal.ExactlyOnceAnswer
+import dev.ghostty.connect.terminal.HostKeyVerification
 import dev.ghostty.connect.terminal.SshAuthenticationCallbacks
 import java.util.UUID
 import java.util.concurrent.Executors
@@ -29,8 +31,7 @@ class SftpBrowserService : Service() {
         fun onBrowserChanged(state: SftpBrowserState)
         fun onHostKeyVerification(
             browserId: String,
-            fingerprint: String,
-            changed: Boolean,
+            request: HostKeyVerification,
             answer: (Boolean) -> Unit,
         )
         fun onAuthenticationChallenge(
@@ -46,8 +47,7 @@ class SftpBrowserService : Service() {
     }
 
     private data class PendingVerification(
-        val fingerprint: String,
-        val changed: Boolean,
+        val request: HostKeyVerification,
         val answer: (Boolean) -> Unit,
     )
 
@@ -82,7 +82,7 @@ class SftpBrowserService : Service() {
             if (isCurrent(record, generation)) update(record, record.state.copy(status = message, error = null))
         }
 
-        override fun verifyHostKey(fingerprint: String, changed: Boolean, answer: (Boolean) -> Unit) {
+        override fun verifyHostKey(request: HostKeyVerification, answer: (Boolean) -> Unit) {
             val once = ExactlyOnceAnswer<Boolean> { accepted ->
                 onMain {
                     val current = isCurrent(record, generation)
@@ -96,8 +96,8 @@ class SftpBrowserService : Service() {
                     respond(false)
                     return@onMain
                 }
-                record.pendingVerification = PendingVerification(fingerprint, changed, respond)
-                listener?.onHostKeyVerification(record.browserId, fingerprint, changed, respond)
+                record.pendingVerification = PendingVerification(request, respond)
+                listener?.onHostKeyVerification(record.browserId, request, respond)
             }
         }
 
@@ -164,7 +164,7 @@ class SftpBrowserService : Service() {
         selectedBrowserId?.let(browsers::get)?.let(::emit)
         browsers.values.forEach { record ->
             record.pendingVerification?.let {
-                listener.onHostKeyVerification(record.browserId, it.fingerprint, it.changed, it.answer)
+                listener.onHostKeyVerification(record.browserId, it.request, it.answer)
             }
             record.pendingChallenge?.let {
                 listener.onAuthenticationChallenge(record.browserId, record.host.name, it.challenge, it.answer)
@@ -208,7 +208,7 @@ class SftpBrowserService : Service() {
     }
     fun host(browserId: String): Host? = onServiceMainResult { browsers[browserId]?.host }
     fun hasActiveDestination(hostname: String, port: Int): Boolean = onServiceMainResult {
-        browsers.values.any { it.host.hostname == hostname && it.host.port == port }
+        browsers.values.any { sameSshDestination(it.host.hostname, it.host.port, hostname, port) }
     }
     fun hasActiveIdentity(identityId: String): Boolean = onServiceMainResult {
         browsers.values.any { it.host.identityId == identityId }

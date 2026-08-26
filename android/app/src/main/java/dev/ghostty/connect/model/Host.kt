@@ -18,7 +18,9 @@ data class Host(
     val allowSftpDelete: Boolean = false,
 ) {
     val name: String get() = alias ?: hostname
-    val destination: String get() = "$username@$hostname:$port"
+    val destination: String get() = "$username@" + runCatching {
+        SshDestination.create(hostname, port).display
+    }.getOrDefault("$hostname:$port")
 }
 
 fun Host.duplicate(newId: String, existingNames: Collection<String>): Host {

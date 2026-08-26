@@ -5,6 +5,7 @@ import dev.ghostty.connect.data.KnownHostStore
 import dev.ghostty.connect.data.SshKeyStore
 import dev.ghostty.connect.model.AuthenticationType
 import dev.ghostty.connect.model.Host
+import dev.ghostty.connect.model.SshDestination
 import net.schmizz.sshj.SSHClient
 import net.schmizz.sshj.common.SecurityUtils
 import net.schmizz.sshj.userauth.UserAuthException
@@ -25,8 +26,17 @@ import java.util.concurrent.TimeUnit
 
 interface SshAuthenticationCallbacks {
     fun status(message: String)
-    fun verifyHostKey(fingerprint: String, changed: Boolean, answer: (Boolean) -> Unit)
+    fun verifyHostKey(request: HostKeyVerification, answer: (Boolean) -> Unit)
     fun challenge(challenge: AuthenticationChallenge, answer: (CharArray?) -> Unit): () -> Unit
+}
+
+data class HostKeyVerification(
+    val destination: String,
+    val algorithm: String,
+    val fingerprint: String,
+    val previousFingerprints: List<String>,
+) {
+    val changed: Boolean get() = previousFingerprints.isNotEmpty()
 }
 
 internal class AuthenticatedSshClient(
@@ -44,9 +54,10 @@ internal class AuthenticatedSshClient(
         try {
             callbacks.status("Connecting…")
             installModernBouncyCastle()
+            val destination = SshDestination.create(host.hostname, host.port)
             ssh.connectTimeout = CONNECT_TIMEOUT_MS
-            ssh.addHostKeyVerifier(verifier(host))
-            ssh.connect(host.hostname, host.port)
+            ssh.addHostKeyVerifier(verifier(destination))
+            ssh.connect(destination.hostname, destination.port)
             ssh.connection.keepAlive.keepAliveInterval = 30
             callbacks.status("Authenticating…")
             if (host.authenticationType == AuthenticationType.SSH_KEY) {
@@ -86,20 +97,25 @@ internal class AuthenticatedSshClient(
         }
     }
 
-    private fun verifier(host: Host) = object : HostKeyVerifier {
+    private fun verifier(destination: SshDestination) = object : HostKeyVerifier {
         override fun verify(hostname: String, port: Int, key: PublicKey): Boolean {
             val fingerprint = SecurityUtils.getFingerprint(key)
-            val known = KnownHostStore(context).fingerprint(host.hostname, host.port)
-            if (known == fingerprint) return true
+            val store = KnownHostStore(context)
+            val lookup = store.lookup(destination.hostname, destination.port)
+            if (lookup.fingerprint == fingerprint) return true
             val latch = CountDownLatch(1)
-            var accepted = false
-            callbacks.verifyHostKey(fingerprint, known != null) {
-                accepted = it
+            var approved = false
+            callbacks.verifyHostKey(HostKeyVerification(
+                destination = destination.display,
+                algorithm = key.algorithm,
+                fingerprint = fingerprint,
+                previousFingerprints = lookup.fingerprints.sorted(),
+            )) { accepted ->
+                approved = accepted
                 latch.countDown()
             }
-            if (!latch.await(PROMPT_TIMEOUT_SECONDS, TimeUnit.SECONDS) || !accepted) return false
-            KnownHostStore(context).trust(host.hostname, host.port, fingerprint)
-            return true
+            if (!latch.await(PROMPT_TIMEOUT_SECONDS, TimeUnit.SECONDS) || !approved) return false
+            return store.trust(lookup, fingerprint)
         }
 
         override fun findExistingAlgorithms(hostname: String, port: Int): MutableList<String> = mutableListOf()

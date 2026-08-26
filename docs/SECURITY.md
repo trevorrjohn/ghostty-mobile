@@ -20,7 +20,7 @@ The remote host, terminal byte stream, remote file paths, links, graphics, clipb
 - Trust removal causes the next connection to prompt again.
 - ProxyJump hops must be verified independently.
 
-iOS and Android block the SSH handshake for explicit first-use and changed-key approval with a full SHA-256 fingerprint. Destination normalization and complete trust-management surfaces remain roadmap work.
+iOS and Android block the SSH handshake for explicit first-use and changed-key approval with a full SHA-256 fingerprint. Android canonicalizes DNS, IDN, IPv4, and IPv6 destinations across terminal and SFTP trust, preserves conflicting legacy aliases until explicit replacement, and prevents stale approvals from overwriting newer trust. Equivalent iOS normalization remains parity work.
 
 ## Local Persistence
 

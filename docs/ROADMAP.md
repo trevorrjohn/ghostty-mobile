@@ -71,7 +71,7 @@ The matrix reflects the current working tree, not only the last commit.
 | Keyboard-interactive, OTP, and MFA challenges | `Implemented` | `Planned` | iOS has not reached transport-level challenge handling yet. |
 | Key inspection, rename, deletion, and public-key export | `Implemented` | `Partial` | Android manages collision-safe UUID identities with encrypted metadata, stable host references, affected-host warnings, active-use deletion guards, and copy/share export when public metadata is derivable. |
 | Unknown and changed host-key verification | `Implemented` | `Implemented` | Both block the handshake for explicit approval and display the full SHA-256 fingerprint; iOS also displays the algorithm and previous fingerprint for changed keys. |
-| Trusted-host inspection and removal | `Partial` | `Implemented` | Both list full fingerprints and isolate malformed records for removal. Android serializes aggregate trust updates; iOS enumerates authoritative per-destination Keychain pins. Both guard active-attempt removal; destination normalization remains. |
+| Trusted-host inspection and removal | `Implemented` | `Implemented` | Android uses versioned alias-preserving migration, normalized DNS/IP destinations, conflict-safe replacement, compare-and-set approval, malformed-record removal, and normalized terminal/SFTP activity guards. iOS enumerates authoritative per-destination Keychain pins; shared normalization fixtures remain parity work. |
 | Cancellation, retry, keepalive, and typed failures | `Partial` | `Partial` | Android has retry, reauthentication, keepalive, and failure classification but still needs complete cancellation and user-configurable policy. iOS has typed failures and manual retry with fresh credentials and a new transport; keepalive, comprehensive cancellation, and network-aware policy remain. |
 | ProxyJump and bastion routing | `Planned` | `Planned` | Accepted after trust management; each hop must have independent host verification and credentials. |
 | Per-host startup command, environment, and initial directory | `Planned` | `Planned` | Deferred until connection setup has typed, auditable configuration. |
@@ -228,7 +228,7 @@ These are deferred rather than rejected and should be reconsidered only after or
 ## Near-Term Execution
 
 1. Use the Android feedback log during daily host, terminal, and interruption workflows and triage by severity and repetition.
-2. Finish Android trusted-host management, then make aggregate secure-store updates concurrency-safe.
+2. Make Android aggregate secure-store updates concurrency-safe.
 3. Complete Android cancellation, configurable retry, input hardening, and Bash/zsh shell-integration validation.
 4. Exercise Android multi-session ownership through backgrounding, rotation, network changes, VPN changes, and process death.
 5. Add disposable SSH-server, lifecycle, accessibility, and UI automation for the validated Android behavior.

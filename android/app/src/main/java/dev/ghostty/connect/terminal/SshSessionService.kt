@@ -24,6 +24,7 @@ import dev.ghostty.connect.data.TerminalStateStore
 import dev.ghostty.connect.data.TerminalThemeStore
 import dev.ghostty.connect.model.AuthenticationType
 import dev.ghostty.connect.model.Host
+import dev.ghostty.connect.model.sameSshDestination
 import dev.ghostty.connect.terminal.bridge.GhosttyTerminal
 import dev.ghostty.connect.terminal.bridge.TerminalEffects
 import java.util.UUID
@@ -37,8 +38,7 @@ class SshSessionService : Service() {
         fun onTerminalEffects(sessionId: String, effects: TerminalEffects)
         fun onHostKeyVerification(
             sessionId: String,
-            fingerprint: String,
-            changed: Boolean,
+            request: HostKeyVerification,
             answer: (Boolean) -> Unit,
         )
         fun onAuthenticationChallenge(
@@ -55,8 +55,7 @@ class SshSessionService : Service() {
     }
 
     private data class PendingVerification(
-        val fingerprint: String,
-        val changed: Boolean,
+        val request: HostKeyVerification,
         val answer: (Boolean) -> Unit,
     )
 
@@ -125,7 +124,7 @@ class SshSessionService : Service() {
             }
         }
 
-        override fun verifyHostKey(fingerprint: String, changed: Boolean, answer: (Boolean) -> Unit) {
+        override fun verifyHostKey(request: HostKeyVerification, answer: (Boolean) -> Unit) {
             val answered = AtomicBoolean(false)
             val once: (Boolean) -> Unit = { accepted ->
                 if (answered.compareAndSet(false, true)) {
@@ -140,8 +139,8 @@ class SshSessionService : Service() {
                     once(false)
                     return@onMain
                 }
-                record.pendingVerification = PendingVerification(fingerprint, changed, once)
-                listener?.onHostKeyVerification(record.sessionId, fingerprint, changed, once)
+                record.pendingVerification = PendingVerification(request, once)
+                listener?.onHostKeyVerification(record.sessionId, request, once)
             }
         }
 
@@ -248,7 +247,7 @@ class SshSessionService : Service() {
             listener.onSessionStatus(record.sessionId, record.status)
             listener.onTerminalChanged(record.sessionId)
             record.pendingVerification?.let {
-                listener.onHostKeyVerification(record.sessionId, it.fingerprint, it.changed, it.answer)
+                listener.onHostKeyVerification(record.sessionId, it.request, it.answer)
             }
             record.pendingChallenge?.let {
                 listener.onAuthenticationChallenge(record.sessionId, record.host.name, it.challenge, it.answer)
@@ -309,6 +308,10 @@ class SshSessionService : Service() {
 
     fun hasActiveIdentity(identityId: String): Boolean = onServiceMainResult {
         sessions.values.any { it.host.identityId == identityId }
+    }
+
+    fun hasActiveDestination(hostname: String, port: Int): Boolean = onServiceMainResult {
+        sessions.values.any { sameSshDestination(it.host.hostname, it.host.port, hostname, port) }
     }
 
     fun terminal(sessionId: String): GhosttyTerminal? = onServiceMainResult { sessions[sessionId]?.terminal }

@@ -75,6 +75,7 @@ import dev.ghostty.connect.model.MAX_FEEDBACK_ENTRIES
 import dev.ghostty.connect.model.TerminalThemes
 import dev.ghostty.connect.model.TrustedHost
 import dev.ghostty.connect.model.SshIdentity
+import dev.ghostty.connect.model.SshDestination
 import dev.ghostty.connect.sftp.SftpBrowserService
 import dev.ghostty.connect.sftp.SftpBrowserState
 import dev.ghostty.connect.sftp.SftpEntry
@@ -89,6 +90,7 @@ import dev.ghostty.connect.terminal.SshSessionService
 import dev.ghostty.connect.terminal.AuthenticationChallenge
 import dev.ghostty.connect.terminal.ContextualSelection
 import dev.ghostty.connect.terminal.ContextualSelectionKind
+import dev.ghostty.connect.terminal.HostKeyVerification
 import dev.ghostty.connect.terminal.TerminalTokenMatcher
 import dev.ghostty.connect.terminal.bridge.GhosttyTerminal
 import dev.ghostty.connect.terminal.bridge.TerminalEffects
@@ -215,18 +217,10 @@ class MainActivity : Activity() {
 
         override fun onHostKeyVerification(
             sessionId: String,
-            fingerprint: String,
-            changed: Boolean,
+            request: HostKeyVerification,
             answer: (Boolean) -> Unit,
         ) {
-            val hostName = sessionService?.host(sessionId)?.name
-            AlertDialog.Builder(this@MainActivity)
-                .setTitle(if (changed) "Host key changed" else "Unknown host")
-                .setMessage((hostName?.let { "$it\n\n" } ?: "") + (if (changed) "The saved host key does not match. This could indicate an attack.\n\n" else "Verify this fingerprint with the server administrator:\n\n") + fingerprint)
-                .setNegativeButton("Reject") { _, _ -> answer(false) }
-                .setPositiveButton(if (changed) "Accept new key" else "Trust host") { _, _ -> answer(true) }
-                .setOnCancelListener { answer(false) }
-                .show()
+            showHostKeyVerification(sessionService?.host(sessionId)?.name, request, answer)
         }
 
         override fun onAuthenticationChallenge(
@@ -281,22 +275,10 @@ class MainActivity : Activity() {
 
         override fun onHostKeyVerification(
             browserId: String,
-            fingerprint: String,
-            changed: Boolean,
+            request: HostKeyVerification,
             answer: (Boolean) -> Unit,
         ) {
-            val hostName = sftpService?.host(browserId)?.name
-            AlertDialog.Builder(this@MainActivity)
-                .setTitle(if (changed) "Host key changed" else "Unknown host")
-                .setMessage((hostName?.let { "$it\n\n" } ?: "") + if (changed) {
-                    "The saved host key does not match. This could indicate an attack.\n\n$fingerprint"
-                } else {
-                    "Verify this fingerprint with the server administrator:\n\n$fingerprint"
-                })
-                .setNegativeButton("Reject") { _, _ -> answer(false) }
-                .setPositiveButton(if (changed) "Accept new key" else "Trust host") { _, _ -> answer(true) }
-                .setOnCancelListener { answer(false) }
-                .show()
+            showHostKeyVerification(sftpService?.host(browserId)?.name, request, answer)
         }
 
         override fun onAuthenticationChallenge(
@@ -308,6 +290,41 @@ class MainActivity : Activity() {
             showAuthenticationChallenge("$hostName · files ${browserId.take(8)}", challenge, answer)
         }
     }
+
+    private fun showHostKeyVerification(
+        hostName: String?,
+        request: HostKeyVerification,
+        answer: (Boolean) -> Unit,
+    ) {
+        val previous = request.previousFingerprints.map { it.ifBlank { "Invalid stored fingerprint" } }
+        val warning = if (request.changed) {
+            if (previous.size > 1) {
+                "Conflicting keys are saved for equivalent spellings of this destination. Verify the current key before replacing all of them."
+            } else {
+                "The saved host key does not match. This could indicate an attack. Verify the new key before replacing trust."
+            }
+        } else {
+            "This destination is not trusted yet. Verify the fingerprint with the server administrator."
+        }
+        val message = buildString {
+            hostName?.let { append(it).append("\n\n") }
+            append(warning)
+            append("\n\nDestination\n").append(request.destination)
+            append("\n\nAlgorithm\n").append(request.algorithm)
+            append("\n\nFingerprint\n").append(request.fingerprint)
+            if (previous.isNotEmpty()) {
+                append("\n\nPreviously trusted\n").append(previous.joinToString("\n"))
+            }
+        }
+        AlertDialog.Builder(this)
+            .setTitle(if (request.changed) "Host key changed" else "Unknown host")
+            .setMessage(message)
+            .setNegativeButton("Reject") { _, _ -> answer(false) }
+            .setPositiveButton(if (request.changed) "Replace saved keys" else "Trust host") { _, _ -> answer(true) }
+            .setOnCancelListener { answer(false) }
+            .show()
+    }
+
     private val serviceConnection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
             val service = (binder as SshSessionService.LocalBinder).service
@@ -731,6 +748,12 @@ class MainActivity : Activity() {
                 toast("Enter a hostname, username, and valid port.")
                 return@button
             }
+            val destination = runCatching {
+                SshDestination.create(hostname.text.toString(), parsedPort!!)
+            }.getOrElse {
+                toast(it.message ?: "Enter a valid SSH hostname.")
+                return@button
+            }
             val authenticationType = if (authentication.selectedItemPosition == 1) {
                 AuthenticationType.SSH_KEY
             } else {
@@ -748,8 +771,8 @@ class MainActivity : Activity() {
             hostStore.save(Host(
                 id = existing?.id ?: UUID.randomUUID().toString(),
                 alias = alias.text.toString().trim().ifBlank { null },
-                hostname = hostname.text.toString().trim(),
-                port = parsedPort!!,
+                hostname = destination.hostname,
+                port = destination.port,
                 username = username.text.toString().trim(),
                 authenticationType = authenticationType,
                 identityId = identityId.takeIf { authenticationType == AuthenticationType.SSH_KEY },
@@ -1376,11 +1399,31 @@ class MainActivity : Activity() {
                 val card = vertical(14).apply {
                     setBackgroundColor(raised)
                     addView(label(trustedHost.destination, 17f, primary, Typeface.BOLD))
-                    addView(label("Saved fingerprint", 12f, secondary).margins(top = 10, bottom = 4))
-                    addView(label(trustedHost.fingerprint, 14f, primary).apply {
-                        typeface = Typeface.MONOSPACE
-                        setTextIsSelectable(true)
-                    })
+                    if (trustedHost.isConflicted) {
+                        addView(label(
+                            "Conflicting keys were saved for equivalent destination spellings. The next connection will require explicit replacement.",
+                            13f,
+                            Color.RED,
+                            Typeface.BOLD,
+                        ).margins(top = 8))
+                    } else if (trustedHost.storageIds.size > 1) {
+                        addView(label(
+                            "${trustedHost.storageIds.size} equivalent destination spellings share this key.",
+                            12f,
+                            secondary,
+                        ).margins(top = 8))
+                    }
+                    addView(label(
+                        if (trustedHost.fingerprints.size == 1) "Saved fingerprint" else "Saved fingerprints",
+                        12f,
+                        secondary,
+                    ).margins(top = 10, bottom = 4))
+                    trustedHost.fingerprints.forEach { fingerprint ->
+                        addView(label(fingerprint.ifBlank { "Invalid or empty fingerprint" }, 14f, primary).apply {
+                            typeface = Typeface.MONOSPACE
+                            setTextIsSelectable(true)
+                        }.margins(bottom = 4))
+                    }
                     addView(button("Remove trust", secondary) {
                         confirmRemoveTrust(trustedHost)
                     }.margins(top = 12))
@@ -1434,14 +1477,10 @@ class MainActivity : Activity() {
         if (sftpService?.hasActiveDestination(hostname, port) == true) {
             return "An active file browser uses ${trustedHost.destination}. Close it before removing trust."
         }
-        val activeCount = service?.summaries().orEmpty().count { summary ->
-            service?.host(summary.sessionId)?.let { host ->
-                host.hostname == hostname && host.port == port
-            } == true
+        if (service?.hasActiveDestination(hostname, port) == true) {
+            return "An active or retryable terminal session uses ${trustedHost.destination}. Disconnect it before removing trust."
         }
-        if (activeCount == 0) return null
-        return "$activeCount active or retryable session${if (activeCount == 1) " uses" else "s use"} ${trustedHost.destination}. " +
-            "Disconnect ${if (activeCount == 1) "it" else "them"} before removing trust."
+        return null
     }
 
     private fun showFeedbackLog() {

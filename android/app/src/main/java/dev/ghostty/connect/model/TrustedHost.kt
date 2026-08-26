@@ -5,26 +5,23 @@ data class TrustedHost(
     val hostname: String?,
     val port: Int?,
     val fingerprint: String,
+    val storageIds: Set<String> = setOf(storageId),
+    val conflictingFingerprints: List<String> = emptyList(),
 ) {
+    val isConflicted: Boolean get() = conflictingFingerprints.isNotEmpty()
+    val fingerprints: List<String> get() = listOf(fingerprint) + conflictingFingerprints
     val destination: String
         get() = if (hostname == null || port == null) {
             storageId
-        } else if (':' in hostname && !(hostname.startsWith('[') && hostname.endsWith(']'))) {
-            "[$hostname]:$port"
         } else {
-            "$hostname:$port"
+            SshDestination.create(hostname, port).display
         }
 }
 
 internal fun decodeTrustedHostId(id: String, fingerprint: String): TrustedHost {
-    val separator = id.lastIndexOf(':')
-    require(separator > 0 && separator < id.lastIndex) { "Invalid trusted-host destination." }
-    val hostname = id.substring(0, separator)
-    val port = id.substring(separator + 1).toInt()
-    require(hostname.isNotBlank()) { "Trusted-host name is empty." }
-    require(port in 1..65535) { "Trusted-host port is invalid." }
     require(fingerprint.isNotBlank()) { "Trusted-host fingerprint is empty." }
-    return TrustedHost(id, hostname, port, fingerprint)
+    val destination = SshDestination.parseStorageId(id)
+    return TrustedHost(id, destination.hostname, destination.port, fingerprint)
 }
 
 internal fun decodeStoredTrustedHost(id: String, fingerprint: String): TrustedHost =

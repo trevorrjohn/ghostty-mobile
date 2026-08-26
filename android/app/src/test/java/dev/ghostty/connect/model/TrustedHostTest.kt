@@ -27,6 +27,7 @@ class TrustedHostTest {
     fun preservesAlreadyBracketedIpv6Destination() {
         val trustedHost = decodeTrustedHostId("[2001:db8::1]:22", "SHA256:abc")
 
+        assertEquals("2001:db8::1", trustedHost.hostname)
         assertEquals("[2001:db8::1]:22", trustedHost.destination)
     }
 
