@@ -34,9 +34,15 @@ actor CitadelSSHTransport: SSHTransport {
     private let hostTrustContinuation: AsyncStream<HostTrustRequest>.Continuation
     private var client: SSHClient?
     private var writer: TTYStdinWriter?
+    private var connectTask: Task<SSHClient, Error>?
     private var sessionTask: Task<Void, Never>?
     private var hostKeyValidator: KeychainHostKeyValidator?
     private var connectionAttemptID: UUID?
+    private var clientSessionID: UUID?
+    private var disconnectRequested = false
+    private var outputFinished = false
+    private var sessionEndingCleanly = false
+    private var hasStarted = false
 
     init() {
         var continuation: AsyncThrowingStream<Data, Error>.Continuation!
@@ -48,13 +54,17 @@ actor CitadelSSHTransport: SSHTransport {
     }
 
     func connect(to host: Host, credential: SSHCredential) async throws {
-        guard client == nil, connectionAttemptID == nil else { throw SSHTransportError.alreadyConnected }
+        guard !hasStarted, client == nil, connectionAttemptID == nil else {
+            throw SSHTransportError.alreadyConnected
+        }
+        hasStarted = true
         let authenticationMethod = try CitadelAuthenticationFactory.make(
             username: host.username,
             credential: credential
         )
         let attemptID = UUID()
         connectionAttemptID = attemptID
+        disconnectRequested = false
 
         let validator = KeychainHostKeyValidator(host: host.hostname, port: host.port) { [hostTrustContinuation] request in
             if case .terminated = hostTrustContinuation.yield(request) {
@@ -69,13 +79,16 @@ actor CitadelSSHTransport: SSHTransport {
             hostKeyValidator: .custom(validator)
         )
         let client: SSHClient
+        let connectTask = Task { try await SSHClient.connect(to: settings) }
+        self.connectTask = connectTask
         do {
-            client = try await SSHClient.connect(to: settings)
+            client = try await connectTask.value
         } catch {
             validator.cancelPendingRequest()
             if connectionAttemptID == attemptID {
                 connectionAttemptID = nil
                 hostKeyValidator = nil
+                self.connectTask = nil
             }
             throw Self.connectionError(error, host: host)
         }
@@ -83,8 +96,18 @@ actor CitadelSSHTransport: SSHTransport {
             try? await client.close()
             throw CancellationError()
         }
+        self.connectTask = nil
         connectionAttemptID = nil
         self.client = client
+        let clientSessionID = UUID()
+        self.clientSessionID = clientSessionID
+        client.onDisconnect { [weak self] in
+            Task { await self?.parentDisconnected(clientSessionID: clientSessionID) }
+        }
+        guard client.isConnected else {
+            parentDisconnected(clientSessionID: clientSessionID)
+            throw SSHTransportError.sessionClosed
+        }
 
         let readiness = PTYReadiness()
         let request = SSHChannelRequestEvent.PseudoTerminalRequest(
@@ -100,7 +123,9 @@ actor CitadelSSHTransport: SSHTransport {
         sessionTask = Task { [weak self] in
             do {
                 try await client.withPTY(request) { inbound, outbound in
-                    await self?.setWriter(outbound)
+                    guard await self?.setWriter(outbound, clientSessionID: clientSessionID) == true else {
+                        throw CancellationError()
+                    }
                     await readiness.resolve(.success(()))
                     for try await event in inbound {
                         switch event {
@@ -112,29 +137,40 @@ actor CitadelSSHTransport: SSHTransport {
                     }
                 }
                 guard !Task.isCancelled else { return }
-                self?.outputContinuation.finish()
+                await self?.beginCleanSessionEnd(clientSessionID: clientSessionID)
+                try await Task.sleep(nanoseconds: 250_000_000)
+                guard !Task.isCancelled else { return }
+                await self?.finishCleanSessionEnd(clientSessionID: clientSessionID)
             } catch {
                 await readiness.resolve(.failure(error))
                 guard !Task.isCancelled else { return }
-                self?.outputContinuation.finish(throwing: error)
+                await self?.finishOutput(throwing: error)
             }
         }
 
         do {
             try await readiness.wait()
+            guard self.clientSessionID == clientSessionID, self.client === client, client.isConnected else {
+                throw SSHTransportError.sessionClosed
+            }
         } catch {
+            if self.client === client {
+                self.clientSessionID = nil
+                self.client = nil
+            }
             try? await client.close()
-            self.client = nil
             throw error
         }
     }
 
     func write(_ data: Data) async throws {
+        if sessionEndingCleanly { return }
         guard let writer else { throw SSHTransportError.notConnected }
         try await writer.write(ByteBuffer(bytes: data))
     }
 
     func resize(columns: Int, rows: Int, pixelWidth: Int, pixelHeight: Int) async throws {
+        if sessionEndingCleanly { return }
         guard let writer else { throw SSHTransportError.notConnected }
         try await writer.changeSize(
             cols: max(1, columns),
@@ -145,20 +181,65 @@ actor CitadelSSHTransport: SSHTransport {
     }
 
     func disconnect() async {
+        disconnectRequested = true
+        connectTask?.cancel()
+        connectTask = nil
         sessionTask?.cancel()
         sessionTask = nil
+        sessionEndingCleanly = true
         writer = nil
         hostKeyValidator?.cancelPendingRequest()
         hostKeyValidator = nil
         connectionAttemptID = nil
+        clientSessionID = nil
+        let client = self.client
+        self.client = nil
+        finishOutput()
         if let client {
             try? await client.close()
-            self.client = nil
         }
     }
 
-    private func setWriter(_ writer: TTYStdinWriter) {
+    private func setWriter(_ writer: TTYStdinWriter, clientSessionID: UUID) -> Bool {
+        guard self.clientSessionID == clientSessionID, !disconnectRequested else { return false }
         self.writer = writer
+        return true
+    }
+
+    private func beginCleanSessionEnd(clientSessionID: UUID) {
+        guard self.clientSessionID == clientSessionID, !disconnectRequested else { return }
+        sessionEndingCleanly = true
+        writer = nil
+    }
+
+    private func finishCleanSessionEnd(clientSessionID: UUID) {
+        guard self.clientSessionID == clientSessionID, sessionEndingCleanly, !disconnectRequested else { return }
+        finishOutput()
+    }
+
+    private func parentDisconnected(clientSessionID: UUID) {
+        guard self.clientSessionID == clientSessionID else { return }
+        sessionTask?.cancel()
+        sessionTask = nil
+        sessionEndingCleanly = true
+        writer = nil
+        self.client = nil
+        self.clientSessionID = nil
+        if disconnectRequested {
+            finishOutput()
+        } else {
+            finishOutput(throwing: SSHTransportError.sessionClosed)
+        }
+    }
+
+    private func finishOutput(throwing error: Error? = nil) {
+        guard !outputFinished else { return }
+        outputFinished = true
+        if let error {
+            outputContinuation.finish(throwing: error)
+        } else {
+            outputContinuation.finish()
+        }
     }
 
     private static func connectionError(_ error: Error, host: Host) -> Error {

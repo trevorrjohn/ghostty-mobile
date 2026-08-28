@@ -25,7 +25,9 @@ This document maps the shared [architecture](../ARCHITECTURE.md) to iOS and cont
 
 ## Session Lifecycle
 
-The current terminal screen owns one observable session model, Ghostty engine, output task, and debounced resize state. Each connection or manual retry creates a fresh transport, and leaving the screen disconnects the session.
+The current terminal screen owns one observable session model, Ghostty engine, output task, and debounced resize state. Each connection or manual retry creates a fresh transport, and leaving the screen disconnects the session. Remote closure publishes disconnected or failed state before transport teardown, closes the transport before waiting on pending writes, and prevents a retry from starting until that teardown completes.
+
+Citadel 0.12.1 exposes parent-channel closure but not a public SSH keepalive/global-request API or prompt cancellation of its underlying NIO connect future. Those remain explicit transport limitations rather than being approximated with terminal input or reachability alone.
 
 This is a maturity gap rather than a different product architecture. A future app-level registry must preserve shared isolation and reconnect contracts while respecting iOS suspension limits; it must not imitate Android foreground-service guarantees.
 
@@ -73,4 +75,4 @@ Choose a simulator available in the installed Xcode version when that destinatio
 
 ## Current Platform Gaps
 
-Current status is maintained in the [roadmap](../ROADMAP.md). Important iOS-specific gaps include comprehensive cancellation, keepalive and network-aware reconnect policy, broader hardware-key and modifier handling, draggable selection and scrollback search, live effect policy, multiple sessions, lifecycle ownership, and accessibility.
+Current status is maintained in the [roadmap](../ROADMAP.md). Important iOS-specific gaps include prompt in-progress connect cancellation, keepalive and network-aware reconnect policy, broader hardware-key and modifier handling, draggable selection and scrollback search, live effect policy, multiple sessions, lifecycle ownership, and accessibility.

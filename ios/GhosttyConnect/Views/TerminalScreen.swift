@@ -28,9 +28,9 @@ struct TerminalScreen: View {
                         TerminalGridView(
                             snapshot: snapshot,
                             fontSize: terminalFontSize,
-                            onTap: { keyboardFocused = true },
+                            onTap: { if session.state == .connected { keyboardFocused = true } },
                             onDoubleTap: { column, row in
-                                keyboardFocused = true
+                                if session.state == .connected { keyboardFocused = true }
                                 contextualSelection = session.contextualSelection(column: column, row: row)
                             },
                             onScrollRows: session.scrollViewport(byRows:),
@@ -64,7 +64,7 @@ struct TerminalScreen: View {
             } else {
                 Spacer()
             }
-            if model.keyboardBarConfig.enabled && keyboardFocused {
+            if model.keyboardBarConfig.enabled && keyboardFocused && session.state == .connected {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 8) {
                         ForEach(model.keyboardBarConfig.items) { item in
@@ -139,9 +139,11 @@ struct TerminalScreen: View {
                     Image(systemName: "keyboard")
                 }
                 .accessibilityLabel(keyboardFocused ? "Hide Keyboard" : "Show Keyboard")
+                .disabled(session.state != .connected)
 
                 Menu {
                     Button("Paste", systemImage: "doc.on.clipboard") { requestPaste() }
+                        .disabled(session.state != .connected)
                     if session.snapshot?.hasSelection == true {
                         Button("Copy Selection", systemImage: "doc.on.doc") { copySelection() }
                         Button("Clear Selection", systemImage: "xmark") { session.clearSelection() }
@@ -166,7 +168,10 @@ struct TerminalScreen: View {
         }
         .onChange(of: session.state) { _, state in
             if state == .connected { keyboardFocused = true }
-            else { keyboardBarState.reset() }
+            else {
+                keyboardFocused = false
+                keyboardBarState.reset()
+            }
         }
         .onChange(of: keyboardFocused) { _, focused in
             if !focused { keyboardBarState.consumeOneShot() }
@@ -396,6 +401,7 @@ struct TerminalScreen: View {
     }
 
     private func handleInput(_ event: TerminalInputEvent) {
+        guard session.state == .connected else { return }
         let modifiers = TerminalKeyModifiers(keyboardBarState.activeModifiers)
         guard !modifiers.isEmpty else {
             session.send(event)
@@ -418,6 +424,7 @@ struct TerminalScreen: View {
     }
 
     private func requestPaste() {
+        guard session.state == .connected else { return }
         guard let text = UIPasteboard.general.string, !text.isEmpty else {
             pastePrompt = .empty(UUID())
             return

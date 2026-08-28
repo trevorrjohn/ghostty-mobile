@@ -13,10 +13,12 @@ final class TerminalSessionModel: ObservableObject {
     private var writeTask: Task<Void, Never>?
     private var resizeTask: Task<Void, Never>?
     private var hostTrustTask: Task<Void, Never>?
+    private var cleanupTask: (id: UUID, task: Task<Void, Never>)?
     private var requestedDimensions: TerminalDimensions?
     private var appliedDimensions: TerminalDimensions?
     private var connectionAttemptID: UUID?
     private var activeDestination: String?
+    private var lifecycleGeneration = 0
     private(set) var hasConnectedShell = false
 
     init(
@@ -36,7 +38,10 @@ final class TerminalSessionModel: ObservableObject {
     }
 
     func connect(to host: Host, secret: String?, key: StoredKey? = nil, isReconnect: Bool = false) async {
-        guard let engine, connectionAttemptID == nil, transport == nil else { return }
+        guard let engine else { return }
+        let generation = lifecycleGeneration
+        if let cleanupTask { await cleanupTask.task.value }
+        guard lifecycleGeneration == generation, connectionAttemptID == nil, transport == nil else { return }
         let credential: SSHCredential
         switch host.authenticationType {
         case .password:
@@ -236,8 +241,7 @@ final class TerminalSessionModel: ObservableObject {
                 await finishAttempt(
                     attemptID: attemptID,
                     transport: transport,
-                    failure: SSHFailureClassifier.classify(error, destination: destination),
-                    waitForWrites: false
+                    failure: SSHFailureClassifier.classify(error, destination: destination)
                 )
             }
         }
@@ -290,50 +294,56 @@ final class TerminalSessionModel: ObservableObject {
     private func finishAttempt(
         attemptID: UUID,
         transport: any SSHTransport,
-        failure: SessionFailure?,
-        waitForWrites: Bool = true
+        failure: SessionFailure?
     ) async {
-        guard connectionAttemptID == attemptID else { return }
+        guard connectionAttemptID == attemptID, self.transport === transport else { return }
         connectionAttemptID = nil
-        outputTask?.cancel()
-        outputTask = nil
-        let pendingWrite = writeTask
-        pendingWrite?.cancel()
-        writeTask = nil
-        if waitForWrites { _ = await pendingWrite?.result }
-        resizeTask?.cancel()
-        resizeTask = nil
-        hostTrustTask?.cancel()
-        hostTrustTask = nil
-        pendingHostTrust?.answer(accepted: false)
-        pendingHostTrust = nil
-        await transport.disconnect()
-        guard connectionAttemptID == nil, self.transport === transport else { return }
         self.transport = nil
         activeDestination = nil
         state = failure.map(SessionState.failed) ?? .disconnected
-    }
-
-    func disconnect() async {
-        let transport = self.transport
-        connectionAttemptID = nil
         outputTask?.cancel()
         outputTask = nil
-        let pendingWrite = writeTask
-        pendingWrite?.cancel()
+        writeTask?.cancel()
         writeTask = nil
-        _ = await pendingWrite?.result
         resizeTask?.cancel()
         resizeTask = nil
         hostTrustTask?.cancel()
         hostTrustTask = nil
         pendingHostTrust?.answer(accepted: false)
         pendingHostTrust = nil
-        await transport?.disconnect()
-        guard connectionAttemptID == nil else { return }
+        await closeTransport(transport)
+    }
+
+    func disconnect() async {
+        lifecycleGeneration += 1
+        let transport = self.transport
+        connectionAttemptID = nil
         self.transport = nil
         activeDestination = nil
         state = .disconnected
+        outputTask?.cancel()
+        outputTask = nil
+        writeTask?.cancel()
+        writeTask = nil
+        resizeTask?.cancel()
+        resizeTask = nil
+        hostTrustTask?.cancel()
+        hostTrustTask = nil
+        pendingHostTrust?.answer(accepted: false)
+        pendingHostTrust = nil
+        if let transport {
+            await closeTransport(transport)
+        } else if let cleanupTask {
+            await cleanupTask.task.value
+        }
+    }
+
+    private func closeTransport(_ transport: any SSHTransport) async {
+        let id = UUID()
+        let task = Task { await transport.disconnect() }
+        cleanupTask = (id, task)
+        await task.value
+        if cleanupTask?.id == id { cleanupTask = nil }
     }
 }
 
