@@ -172,6 +172,9 @@ class MainActivity : Activity() {
     private var feedbackVisible = false
     private var trustedHostsVisible = false
     private var identitiesVisible = false
+    private var hostsVisible = false
+    private val hostSessionStatusViews = mutableMapOf<String, TextView>()
+    private val hostSessionRetryButtons = mutableMapOf<String, View>()
     private var feedbackDraftViews: FeedbackDraftViews? = null
     private var terminalSearchQuery = ""
     private val activeModifiers = mutableSetOf<KeyboardModifier>()
@@ -185,6 +188,7 @@ class MainActivity : Activity() {
     private val accent = Color.rgb(139, 233, 179)
     private val sessionListener = object : SshSessionService.Listener {
         override fun onSessionStatus(sessionId: String, status: String) {
+            if (refreshHostSessionRow(sessionId)) return
             if (sessionId != selectedSessionId) return
             val service = sessionService ?: return
             terminalStatus?.text = "$status · ${service.host(sessionId)?.destination.orEmpty()}"
@@ -260,6 +264,7 @@ class MainActivity : Activity() {
         }
 
         override fun onSessionClosed(sessionId: String, error: String?) {
+            if (refreshHostSessionRow(sessionId)) return
             if (sessionId != selectedSessionId) return
             val retryable = sessionService?.summaries()?.firstOrNull { it.sessionId == sessionId }?.canRetry == true
             if (!retryable) terminalStatus?.text = if (error == null) "Disconnected" else "Connection failed"
@@ -523,6 +528,9 @@ class MainActivity : Activity() {
     }
 
     private fun showHosts(disconnect: Boolean = false) {
+        hostsVisible = true
+        hostSessionStatusViews.clear()
+        hostSessionRetryButtons.clear()
         setTerminalNavigationHidden(false)
         window.clearFlags(WindowManager.LayoutParams.FLAG_SECURE)
         editingHostId = null
@@ -559,18 +567,22 @@ class MainActivity : Activity() {
             activeSessions.forEach { session ->
                 val row = vertical(12).apply { setBackgroundColor(raised) }
                 row.addView(label(session.hostName, 17f, primary, Typeface.BOLD))
-                row.addView(label("${session.status} · ${session.destination}", 13f, secondary))
+                row.addView(label("${session.status} · ${session.destination}", 13f, secondary).also {
+                    hostSessionStatusViews[session.sessionId] = it
+                })
                 val actions = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
                 actions.addView(compactButton("Open") { openSession(session.sessionId) })
                 sessionService?.host(session.sessionId)?.let { host ->
                     actions.addView(compactButton("Duplicate session") { requestCredentialAndConnect(host) })
                 }
-                if (session.canRetry) {
-                    actions.addView(compactButton("Retry / Reauthenticate") { reauthenticate(session.sessionId) })
-                }
+                actions.addView(compactButton("Retry / Reauthenticate") {
+                    reauthenticate(session.sessionId)
+                }.apply {
+                    visibility = if (session.canRetry) View.VISIBLE else View.GONE
+                    hostSessionRetryButtons[session.sessionId] = this
+                })
                 actions.addView(compactButton("Disconnect") {
                     sessionService?.disconnect(session.sessionId)
-                    showHosts(disconnect = false)
                 })
                 row.addView(actions.margins(top = 8))
                 root.addView(row.margins(bottom = 12))
@@ -654,7 +666,21 @@ class MainActivity : Activity() {
         setContentView(scroll(root))
     }
 
+    private fun refreshHostSessionRow(sessionId: String): Boolean {
+        if (!hostsVisible) return false
+        val summary = sessionService?.summaries()?.firstOrNull { it.sessionId == sessionId }
+        val status = hostSessionStatusViews[sessionId]
+        if (summary == null || status == null) {
+            showHosts()
+            return true
+        }
+        status.text = "${summary.status} · ${summary.destination}"
+        hostSessionRetryButtons[sessionId]?.visibility = if (summary.canRetry) View.VISIBLE else View.GONE
+        return true
+    }
+
     private fun showHostEditor(hostId: String? = null, draft: Host? = null) {
+        hostsVisible = false
         editingHostId = hostId
         val existing = draft ?: hostStore.loadAll().firstOrNull { it.id == hostId }
         val isDuplicate = draft != null
@@ -1052,6 +1078,7 @@ class MainActivity : Activity() {
     }
 
     private fun showKeyboardSettings() {
+        hostsVisible = false
         settingsVisible = true
         feedbackVisible = false
         trustedHostsVisible = false
@@ -1208,6 +1235,7 @@ class MainActivity : Activity() {
     }
 
     private fun showSshIdentities() {
+        hostsVisible = false
         settingsVisible = false
         feedbackVisible = false
         trustedHostsVisible = false
@@ -1375,6 +1403,7 @@ class MainActivity : Activity() {
     }
 
     private fun showTrustedHosts() {
+        hostsVisible = false
         settingsVisible = false
         feedbackVisible = false
         trustedHostsVisible = true
@@ -1484,6 +1513,7 @@ class MainActivity : Activity() {
     }
 
     private fun showFeedbackLog() {
+        hostsVisible = false
         settingsVisible = false
         feedbackVisible = true
         trustedHostsVisible = false
@@ -1795,6 +1825,7 @@ class MainActivity : Activity() {
     }
 
     private fun showGhosttyPreview() {
+        hostsVisible = false
         val theme = terminalThemeStore.load()
         val terminal = GhosttyTerminal(
             foreground = theme.foreground,
@@ -1833,6 +1864,7 @@ class MainActivity : Activity() {
     }
 
     private fun showArchivedTerminal(host: Host) {
+        hostsVisible = false
         val terminal = runCatching {
             GhosttyTerminal(restoredState = terminalStateStore.load(host.id))
         }.getOrElse {
@@ -1904,6 +1936,7 @@ class MainActivity : Activity() {
     }
 
     private fun showFileBrowser(browserId: String) {
+        hostsVisible = false
         setTerminalNavigationHidden(false)
         selectedBrowserId = browserId
         sftpService?.selectBrowser(browserId)
@@ -2481,6 +2514,7 @@ class MainActivity : Activity() {
     }
 
     private fun renderTerminal(service: SshSessionService, sessionId: String) {
+        hostsVisible = false
         setTerminalNavigationHidden(false)
         val host = service.host(sessionId) ?: return
         val terminal = service.terminal(sessionId) ?: return

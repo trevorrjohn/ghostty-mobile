@@ -371,8 +371,8 @@ class SshSessionService : Service() {
         val record = sessions[sessionId] ?: return@onServiceMain
         record.pendingVerification?.answer?.invoke(false)
         record.pendingVerification = null
-        listener?.onSessionClosed(sessionId, null)
         removeSession(record)
+        listener?.onSessionClosed(sessionId, null)
     }
 
     override fun onDestroy() {
@@ -446,15 +446,15 @@ class SshSessionService : Service() {
                 if (!networkUsable) {
                     handleClosure(record, SshClosure(SshClosureKind.RETRYABLE, "Network connection lost"))
                 } else {
-                    listener?.onSessionClosed(record.sessionId, null)
                     removeSession(record)
+                    listener?.onSessionClosed(record.sessionId, null)
                 }
             }
             SshClosureKind.PERMANENT -> {
                 val message = closure.message ?: "SSH connection failed"
                 appendTerminalMessage(record, "Connection failed: $message")
-                listener?.onSessionClosed(record.sessionId, message)
                 removeSession(record)
+                listener?.onSessionClosed(record.sessionId, message)
             }
             SshClosureKind.RETRYABLE -> {
                 appendTerminalMessage(record, "Connection lost. Terminal input is paused while the connection is restored.")
@@ -482,8 +482,8 @@ class SshSessionService : Service() {
         if (delay == null) {
             val message = "Automatic reconnect stopped after 5 attempts."
             appendTerminalMessage(record, message)
-            listener?.onSessionClosed(record.sessionId, message)
             removeSession(record)
+            listener?.onSessionClosed(record.sessionId, message)
             return
         }
         record.waitingToReconnect = true
@@ -674,7 +674,7 @@ class SshSessionService : Service() {
         val sessionId = record?.sessionId
         val builder = Notification.Builder(this, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.stat_sys_upload)
-            .setContentTitle(record?.host?.let { "Connected to ${it.name}" } ?: "Ghostty Connect")
+            .setContentTitle(record?.host?.name ?: "Ghostty Connect")
             .setContentText(message)
             .setContentIntent(sessionId?.let(::openIntent))
             .setOngoing(true)

@@ -50,11 +50,22 @@ class ReconnectPolicyTest {
     }
 
     @Test
+    fun unexpectedTransportEofIsRetryable() {
+        listOf(
+            TransportException(EOFException()),
+            TransportException("Broken transport; encountered EOF"),
+        ).forEach { error ->
+            assertEquals(SshClosureKind.RETRYABLE, classifySshClosure(error).kind)
+        }
+    }
+
+    @Test
     fun authenticationKeysProtocolAndEofArePermanent() {
         listOf(
             UserAuthException("denied"),
             KeyDecryptionFailedException("bad key"),
             TransportException(DisconnectReason.PROTOCOL_ERROR),
+            TransportException(DisconnectReason.UNKNOWN),
             EOFException(),
         ).forEach { error ->
             assertEquals(SshClosureKind.PERMANENT, classifySshClosure(error).kind)

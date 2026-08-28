@@ -1,6 +1,7 @@
 package dev.ghostty.connect.terminal
 
 import com.hierynomus.sshj.common.KeyDecryptionFailedException
+import java.io.EOFException
 import java.net.ConnectException
 import java.net.NoRouteToHostException
 import java.net.SocketException
@@ -31,7 +32,10 @@ internal fun classifySshClosure(error: Throwable?): SshClosure {
     causes.filterIsInstance<SSHException>().firstOrNull()?.let { sshError ->
         when (sshError.disconnectReason) {
             DisconnectReason.CONNECTION_LOST -> return SshClosure(SshClosureKind.RETRYABLE, message)
-            DisconnectReason.UNKNOWN -> Unit
+            DisconnectReason.UNKNOWN -> if (
+                causes.any { it is EOFException } ||
+                sshError.message?.contains("encountered EOF", ignoreCase = true) == true
+            ) return SshClosure(SshClosureKind.RETRYABLE, message)
             else -> return SshClosure(SshClosureKind.PERMANENT, message)
         }
     }

@@ -50,8 +50,8 @@ internal class AuthenticatedSshClient(
         val challengeResponses = mutableListOf<CharArray>()
         var challengeProvider: InteractiveChallengeProvider? = null
         val ssh = SSHClient()
-        clientReady(ssh)
         try {
+            clientReady(ssh)
             callbacks.status("Connecting…")
             installModernBouncyCastle()
             val destination = SshDestination.create(host.hostname, host.port)

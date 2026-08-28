@@ -9,6 +9,7 @@ import net.schmizz.sshj.connection.ConnectionException
 import net.schmizz.sshj.connection.channel.direct.Session
 import net.schmizz.sshj.connection.channel.direct.Signal
 import java.util.concurrent.Executors
+import java.util.concurrent.CancellationException
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.concurrent.thread
 
@@ -30,6 +31,7 @@ class SshConnection(
     private var client: SSHClient? = null
     private var session: Session? = null
     private var shell: Session.Shell? = null
+    private val resourceLock = Any()
     @Volatile private var stopping = false
     @Volatile private var columns = 80
     @Volatile private var rows = 24
@@ -40,13 +42,13 @@ class SshConnection(
     fun connect(host: Host, passwordOrPassphrase: CharArray) = thread(name = "ssh-${host.hostname}") {
         try {
             val ssh = AuthenticatedSshClient(context, keyStore, callbacks)
-                .connect(host, passwordOrPassphrase) { client = it }
-            val activeSession = ssh.startSession().also { session = it }
+                .connect(host, passwordOrPassphrase, ::ownClient)
+            val activeSession = ownSession(ssh.startSession())
             setOptionalEnvironment(activeSession, "COLORTERM", "truecolor")
             setOptionalEnvironment(activeSession, "TERM_PROGRAM", "ghostty")
             setOptionalEnvironment(activeSession, "TERM_PROGRAM_VERSION", BuildConfig.VERSION_NAME)
             activeSession.allocatePTY("xterm-256color", columns, rows, pixelWidth, pixelHeight, emptyMap())
-            val activeShell = activeSession.startShell().also { shell = it }
+            val activeShell = ownShell(activeSession.startShell())
             callbacks.connected()
             thread(name = "ssh-stderr", isDaemon = true) {
                 val errorBuffer = ByteArray(4096)
@@ -54,15 +56,15 @@ class SshConnection(
                     while (!stopping) {
                         val count = activeShell.errorStream.read(errorBuffer)
                         if (count < 0) break
-                        if (count > 0) callbacks.output(errorBuffer.copyOf(count))
+                        if (count > 0 && !stopping) callbacks.output(errorBuffer.copyOf(count))
                     }
-                }
+                }.onFailure(::reportClosed)
             }
             val buffer = ByteArray(8192)
             while (!stopping) {
                 val count = activeShell.inputStream.read(buffer)
                 if (count < 0) break
-                callbacks.output(buffer.copyOf(count))
+                if (!stopping) callbacks.output(buffer.copyOf(count))
             }
             if (!stopping) reportClosed(null)
         } catch (error: Exception) {
@@ -79,14 +81,18 @@ class SshConnection(
 
     fun send(bytes: ByteArray) {
         if (stopping) return
-        runCatching { channelExecutor.execute {
-            runCatching {
-                shell?.outputStream?.apply {
+        runCatching {
+            channelExecutor.execute {
+                runCatching {
+                    val activeShell = synchronized(resourceLock) { shell }
+                        ?: error("SSH shell is not available")
+                    activeShell.outputStream.apply {
                     write(bytes)
                     flush()
-                }
-            }.onFailure(::reportClosed)
-        } }
+                    }
+                }.onFailure(::reportClosed)
+            }
+        }.onFailure(::reportClosed)
     }
 
     fun resize(columns: Int, rows: Int, pixelWidth: Int, pixelHeight: Int) {
@@ -95,19 +101,39 @@ class SshConnection(
         this.pixelWidth = pixelWidth
         this.pixelHeight = pixelHeight
         if (stopping) return
-        runCatching { channelExecutor.execute {
-            runCatching { shell?.changeWindowDimensions(columns, rows, pixelWidth, pixelHeight) }
-        } }
+        runCatching {
+            channelExecutor.execute {
+                runCatching {
+                    synchronized(resourceLock) { shell }
+                        ?.changeWindowDimensions(columns, rows, pixelWidth, pixelHeight)
+                }.onFailure(::reportClosed)
+            }
+        }.onFailure(::reportClosed)
     }
 
     fun signal(signal: Signal) {
         if (stopping) return
-        runCatching { channelExecutor.execute { runCatching { shell?.signal(signal) } } }
+        runCatching {
+            channelExecutor.execute {
+                runCatching {
+                    val activeShell = synchronized(resourceLock) { shell }
+                        ?: error("SSH shell is not available")
+                    activeShell.signal(signal)
+                }.onFailure(::reportClosed)
+            }
+        }.onFailure(::reportClosed)
     }
 
     fun disconnect() {
-        stopping = true
-        closeResources()
+        val close = synchronized(resourceLock) {
+            if (stopping) false else {
+                stopping = true
+                true
+            }
+        }
+        if (!close) return
+        channelExecutor.shutdownNow()
+        thread(name = "ssh-close", isDaemon = true, block = ::closeResources)
     }
 
     private fun setOptionalEnvironment(session: Session, name: String, value: String) {
@@ -120,15 +146,62 @@ class SshConnection(
 
     private fun closeResources() {
         channelExecutor.shutdownNow()
-        runCatching { shell?.close() }
-        runCatching { session?.close() }
-        runCatching { client?.disconnect() }
+        val resources = synchronized(resourceLock) {
+            Triple(shell, session, client).also {
+                shell = null
+                session = null
+                client = null
+            }
+        }
+        runCatching { resources.third?.disconnect() }
+        runCatching { resources.first?.close() }
+        runCatching { resources.second?.close() }
     }
 
     private fun reportClosed(error: Throwable?) {
-        if (!stopping && closureReported.compareAndSet(false, true)) {
-            callbacks.closed(classifySshClosure(error))
+        val report = synchronized(resourceLock) {
+            if (stopping || !closureReported.compareAndSet(false, true)) false
+            else {
+                stopping = true
+                true
+            }
         }
+        if (!report) return
+        callbacks.closed(classifySshClosure(error))
+        closeResources()
+    }
+
+    private fun ownClient(value: SSHClient) = synchronized(resourceLock) {
+        if (stopping) throw CancellationException("SSH connection was cancelled")
+        client = value
+    }
+
+    private fun ownSession(value: Session): Session {
+        val accepted = synchronized(resourceLock) {
+            if (stopping) false else {
+                session = value
+                true
+            }
+        }
+        if (!accepted) {
+            runCatching(value::close)
+            throw CancellationException("SSH connection was cancelled")
+        }
+        return value
+    }
+
+    private fun ownShell(value: Session.Shell): Session.Shell {
+        val accepted = synchronized(resourceLock) {
+            if (stopping) false else {
+                shell = value
+                true
+            }
+        }
+        if (!accepted) {
+            runCatching(value::close)
+            throw CancellationException("SSH connection was cancelled")
+        }
+        return value
     }
 
 }
