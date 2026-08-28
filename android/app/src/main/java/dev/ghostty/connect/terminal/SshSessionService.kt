@@ -201,11 +201,17 @@ class SshSessionService : Service() {
 
         override fun closed(closure: SshClosure) = onMain {
             if (!isCurrentAttempt(record, generation)) return@onMain
-            record.stableConnectionRunnable?.let(mainHandler::removeCallbacks)
-            record.stableConnectionRunnable = null
-            record.connection = null
-            record.connected = false
-            handleClosure(record, closure)
+            val connection = record.connection ?: return@onMain
+            connection.whenFinished {
+                onMain finished@{
+                    if (!isCurrentAttempt(record, generation) || record.connection !== connection) return@finished
+                    record.stableConnectionRunnable?.let(mainHandler::removeCallbacks)
+                    record.stableConnectionRunnable = null
+                    record.connection = null
+                    record.connected = false
+                    handleClosure(record, closure)
+                }
+            }
         }
     }
 
@@ -358,13 +364,21 @@ class SshSessionService : Service() {
             credential.fill('\u0000')
             return@onServiceMain
         }
-        cancelAttempt(record)
-        record.reconnectPolicy.reset()
-        record.waitingToReconnect = false
         record.manualRetryAvailable = false
-        resetParsers(record)
-        setStatus(record, "Connecting…")
-        startAttempt(record, credential)
+        cancelAttempt(record) { cancellationGeneration ->
+            if (!isCurrent(record) || record.cleaningUp.get() ||
+                record.attemptGeneration != cancellationGeneration || record.connection != null
+            ) {
+                credential.fill('\u0000')
+                return@cancelAttempt
+            }
+            record.reconnectPolicy.reset()
+            record.waitingToReconnect = false
+            record.manualRetryAvailable = false
+            resetParsers(record)
+            setStatus(record, "Connecting…")
+            startAttempt(record, credential)
+        }
     }
 
     fun disconnect(sessionId: String) = onServiceMain {
@@ -426,7 +440,7 @@ class SshSessionService : Service() {
         connection.connect(record.host, credential)
     }
 
-    private fun cancelAttempt(record: SessionRecord) {
+    private fun cancelAttempt(record: SessionRecord, afterFinished: ((Long) -> Unit)? = null) {
         record.retryRunnable?.let(mainHandler::removeCallbacks)
         record.retryRunnable = null
         record.stableConnectionRunnable?.let(mainHandler::removeCallbacks)
@@ -436,10 +450,20 @@ class SshSessionService : Service() {
         record.pendingVerification = null
         record.pendingChallenge?.answer?.invoke(null)
         record.pendingChallenge = null
-        record.attemptGeneration++
+        val cancellationGeneration = ++record.attemptGeneration
         record.connected = false
-        record.connection?.disconnect()
-        record.connection = null
+        val connection = record.connection
+        if (connection == null) {
+            afterFinished?.invoke(cancellationGeneration)
+            return
+        }
+        if (afterFinished != null) connection.whenFinished {
+            onMain {
+                if (record.connection === connection) record.connection = null
+                afterFinished(cancellationGeneration)
+            }
+        }
+        connection.disconnect()
     }
 
     private fun handleClosure(record: SessionRecord, closure: SshClosure) {

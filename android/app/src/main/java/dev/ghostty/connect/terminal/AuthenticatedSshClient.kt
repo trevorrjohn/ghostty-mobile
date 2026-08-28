@@ -19,6 +19,7 @@ import net.schmizz.sshj.userauth.password.Resource
 import net.schmizz.sshj.transport.verification.HostKeyVerifier
 import org.bouncycastle.jce.provider.BouncyCastleProvider
 import java.io.File
+import java.net.InetAddress
 import java.security.PublicKey
 import java.security.Security
 import java.util.concurrent.CountDownLatch
@@ -44,7 +45,13 @@ internal class AuthenticatedSshClient(
     private val keyStore: SshKeyStore,
     private val callbacks: SshAuthenticationCallbacks,
 ) {
-    fun connect(host: Host, credential: CharArray, clientReady: (SSHClient) -> Unit = {}): SSHClient {
+    fun connect(
+        host: Host,
+        credential: CharArray,
+        resolvedAddress: InetAddress? = null,
+        disconnectOnFailure: Boolean = true,
+        clientReady: (SSHClient) -> Unit = {},
+    ): SSHClient {
         var temporaryKey: File? = null
         var privateKeyBytes: ByteArray? = null
         val challengeResponses = mutableListOf<CharArray>()
@@ -57,7 +64,11 @@ internal class AuthenticatedSshClient(
             val destination = SshDestination.create(host.hostname, host.port)
             ssh.connectTimeout = CONNECT_TIMEOUT_MS
             ssh.addHostKeyVerifier(verifier(destination))
-            ssh.connect(destination.hostname, destination.port)
+            if (resolvedAddress == null) {
+                ssh.connect(destination.hostname, destination.port)
+            } else {
+                ssh.connect(resolvedAddress, destination.port)
+            }
             ssh.connection.keepAlive.keepAliveInterval = 30
             callbacks.status("Authenticating…")
             if (host.authenticationType == AuthenticationType.SSH_KEY) {
@@ -86,7 +97,7 @@ internal class AuthenticatedSshClient(
             }
             return ssh
         } catch (error: Exception) {
-            runCatching { ssh.disconnect() }
+            if (disconnectOnFailure) runCatching { ssh.disconnect() }
             throw error
         } finally {
             credential.fill('\u0000')

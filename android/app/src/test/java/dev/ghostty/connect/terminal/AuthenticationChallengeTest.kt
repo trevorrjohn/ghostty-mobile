@@ -35,4 +35,25 @@ class AuthenticationChallengeTest {
 
         assertArrayEquals("123456".toCharArray(), response.await(1, TimeUnit.MILLISECONDS))
     }
+
+    @Test
+    fun canceledHostVerificationRejectsLateApproval() {
+        var accepted: Boolean? = null
+        val answer = ExactlyOnceAnswer<Boolean> { accepted = it }
+
+        assertTrue(answer.answer(false))
+        assertFalse(answer.answer(true))
+        assertFalse(accepted!!)
+    }
+
+    @Test
+    fun rejectedLateSecretIsWipedByPromptOwner() {
+        val answer = ExactlyOnceAnswer<CharArray> {}
+        val late = "late".toCharArray()
+        assertTrue(answer.answer(null))
+
+        if (!answer.answer(late)) late.fill('\u0000')
+
+        assertTrue(late.all { it == '\u0000' })
+    }
 }
