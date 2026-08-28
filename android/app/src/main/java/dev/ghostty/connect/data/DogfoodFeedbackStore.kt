@@ -15,34 +15,29 @@ import org.json.JSONObject
 class DogfoodFeedbackStore(context: Context) {
     private val encryptedStore = EncryptedFileStore(context)
 
-    @Synchronized
-    fun loadAll(): List<DogfoodFeedbackEntry> {
-        if (!encryptedStore.exists(FILE_NAME)) return emptyList()
+    fun loadAll(): List<DogfoodFeedbackEntry> = synchronized(STORE_LOCK) {
+        if (!encryptedStore.exists(FILE_NAME)) return@synchronized emptyList()
         val root = JSONObject(encryptedStore.read(FILE_NAME).toString(Charsets.UTF_8))
         require(root.getInt("version") == VERSION) { "Unsupported feedback data version." }
         val values = root.getJSONArray("entries")
-        return buildList {
+        buildList {
             for (index in 0 until values.length()) add(decode(values.getJSONObject(index)))
         }.sortedByDescending(DogfoodFeedbackEntry::createdAtEpochMillis)
     }
 
-    @Synchronized
-    fun append(entry: DogfoodFeedbackEntry): Boolean {
+    fun append(entry: DogfoodFeedbackEntry): Boolean = synchronized(STORE_LOCK) {
         val existing = loadAll()
         val removedOldest = existing.size >= MAX_FEEDBACK_ENTRIES && existing.none { it.id == entry.id }
         save(mergeDogfoodFeedbackEntries(entry, existing))
-        return removedOldest
+        removedOldest
     }
 
-    @Synchronized
-    fun delete(id: String) = save(loadAll().filterNot { it.id == id })
+    fun delete(id: String) = synchronized(STORE_LOCK) { save(loadAll().filterNot { it.id == id }) }
 
-    @Synchronized
-    fun clear() = save(emptyList())
+    fun clear() = synchronized(STORE_LOCK) { save(emptyList()) }
 
-    @Synchronized
-    fun loadDraft(): DogfoodFeedbackDraft? {
-        if (!encryptedStore.exists(DRAFT_FILE_NAME)) return null
+    fun loadDraft(): DogfoodFeedbackDraft? = synchronized(STORE_LOCK) {
+        if (!encryptedStore.exists(DRAFT_FILE_NAME)) return@synchronized null
         val root = JSONObject(encryptedStore.read(DRAFT_FILE_NAME).toString(Charsets.UTF_8))
         require(root.getInt("version") == VERSION) { "Unsupported feedback draft version." }
         if (root.isNull("draft")) return null
@@ -58,13 +53,12 @@ class DogfoodFeedbackStore(context: Context) {
         }
         if (loadAll().any { it.id == draft.id }) {
             runCatching { clearDraft() }
-            return null
+            return@synchronized null
         }
-        return draft
+        draft
     }
 
-    @Synchronized
-    fun saveDraft(draft: DogfoodFeedbackDraft) {
+    fun saveDraft(draft: DogfoodFeedbackDraft) = synchronized(STORE_LOCK) {
         require(draft.area.toByteArray().size <= MAX_FEEDBACK_AREA_BYTES) { "Feedback draft area is too large." }
         require(draft.note.toByteArray().size <= MAX_NOTE_BYTES) { "Feedback draft note is too large." }
         require(draft.expectedBehavior.toByteArray().size <= MAX_EXPECTED_BEHAVIOR_BYTES) {
@@ -80,8 +74,7 @@ class DogfoodFeedbackStore(context: Context) {
         })
     }
 
-    @Synchronized
-    fun clearDraft() = saveDraftValue(JSONObject.NULL)
+    fun clearDraft() = synchronized(STORE_LOCK) { saveDraftValue(JSONObject.NULL) }
 
     private fun save(entries: List<DogfoodFeedbackEntry>) {
         val root = JSONObject().apply {
@@ -136,5 +129,6 @@ class DogfoodFeedbackStore(context: Context) {
         private const val FILE_NAME = "dogfood-feedback.enc"
         private const val DRAFT_FILE_NAME = "dogfood-feedback-draft.enc"
         private const val VERSION = 1
+        private val STORE_LOCK = Any()
     }
 }

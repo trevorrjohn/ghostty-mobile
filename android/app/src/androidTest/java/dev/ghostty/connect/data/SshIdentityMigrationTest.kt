@@ -5,6 +5,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import dev.ghostty.connect.model.AuthenticationType
 import dev.ghostty.connect.model.Host
+import dev.ghostty.connect.model.SshIdentity
 import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.After
@@ -15,6 +16,9 @@ import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 
 @RunWith(AndroidJUnit4::class)
 class SshIdentityMigrationTest {
@@ -231,6 +235,32 @@ class SshIdentityMigrationTest {
         val host = HostStore(context, SshKeyStore(context)).loadAll().single()
 
         assertEquals("00000000-0000-0000-0000-000000000001", host.identityId)
+    }
+
+    @Test
+    fun concurrentImportsAcrossInstancesPreserveEveryIdentityAndBlob() {
+        val executor = Executors.newFixedThreadPool(8)
+        val start = CountDownLatch(1)
+        val keys = List(12) { index ->
+            "-----BEGIN PRIVATE KEY-----\nKEY-$index\n-----END PRIVATE KEY-----\n".toByteArray()
+        }
+        try {
+            val futures = keys.mapIndexed { index, key ->
+                executor.submit<SshIdentity> {
+                    assertTrue(start.await(5, TimeUnit.SECONDS))
+                    SshKeyStore(context).import("Key $index", key)
+                }
+            }
+            start.countDown()
+            val imported = futures.map { it.get(10, TimeUnit.SECONDS) }
+            val restored = SshKeyStore(context)
+
+            assertEquals(imported.mapTo(mutableSetOf()) { it.id }, restored.identities().mapTo(mutableSetOf()) { it.id })
+            imported.forEachIndexed { index, identity -> assertArrayEquals(keys[index], restored.read(identity.id)) }
+        } finally {
+            executor.shutdownNow()
+            executor.awaitTermination(5, TimeUnit.SECONDS)
+        }
     }
 
     private fun clearStorage() {

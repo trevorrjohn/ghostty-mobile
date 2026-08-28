@@ -128,7 +128,7 @@ The matrix reflects the current working tree, not only the last commit.
 | Short-lived credential handling | `Partial` | `Partial` | Both avoid persistence, but a full secret-lifetime, logging, clipboard, and crash-path audit remains. |
 | Biometric identity unlock and app lock | `Planned` | `Planned` | Must be opt-in, cancellation-safe, and must not misrepresent transport state. |
 | Screenshot and recent-app content protection | `Partial` | `Planned` | Android protects detected password input; both need a clear user-controlled policy. |
-| Atomic concurrent secure-store updates | `Partial` | `Partial` | Required before concurrent management and synchronization can be considered safe. |
+| Atomic concurrent secure-store updates | `Implemented` | `Partial` | Android serializes per-file atomic commits and protects aggregate host, identity, trust, favorite, and feedback updates across store instances, with concurrent instrumentation coverage. Multi-file identity changes use recovery-safe ordering rather than claiming a cross-file transaction. iOS still needs explicit concurrent-update verification. |
 | Encrypted configuration import and export | `Planned` | `Planned` | Export must exclude transient credentials and preview conflicts before replacement. |
 | Optional personal encrypted synchronization | `Planned` | `Planned` | Deferred until a separate threat model and conflict model exist. Shared team credentials remain excluded. |
 
@@ -228,12 +228,11 @@ These are deferred rather than rejected and should be reconsidered only after or
 ## Near-Term Execution
 
 1. Use the Android feedback log during daily host, terminal, and interruption workflows and triage by severity and repetition.
-2. Make Android aggregate secure-store updates concurrency-safe.
-3. Complete Android cancellation, configurable retry, input hardening, and Bash/zsh shell-integration validation.
-4. Exercise Android multi-session ownership through backgrounding, rotation, network changes, VPN changes, and process death.
-5. Add disposable SSH-server, lifecycle, accessibility, and UI automation for the validated Android behavior.
-6. Update shared contracts and fixtures with product decisions discovered through Android dogfooding.
-7. Continue iOS connection reliability, complete scrollback selection/search interactions, and add platform-appropriate session ownership.
-8. Connect iOS remote-effect policy only after its core daily workflow reaches parity.
+2. Complete Android cancellation, configurable retry, input hardening, and Bash/zsh shell-integration validation.
+3. Exercise Android multi-session ownership through backgrounding, rotation, network changes, VPN changes, and process death.
+4. Add disposable SSH-server, lifecycle, accessibility, and UI automation for the validated Android behavior.
+5. Update shared contracts and fixtures with product decisions discovered through Android dogfooding.
+6. Continue iOS connection reliability, complete scrollback selection/search interactions, and add platform-appropriate session ownership.
+7. Connect iOS remote-effect policy only after its core daily workflow reaches parity.
 
 This order uses Android to validate trust, daily terminal usability, and interruption recovery before duplicating behavior or adding protocol breadth.

@@ -16,7 +16,7 @@ internal class EncryptedFileStore(
     private val context: Context,
     private val keyAlias: String = "ghostty-connect-key-encryption",
 ) {
-    fun write(fileName: String, value: ByteArray) {
+    fun write(fileName: String, value: ByteArray) = withFileLock(fileName) {
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
         cipher.init(Cipher.ENCRYPT_MODE, secretKey())
         val encrypted = cipher.doFinal(value)
@@ -36,7 +36,7 @@ internal class EncryptedFileStore(
         }
     }
 
-    fun read(fileName: String): ByteArray {
+    fun read(fileName: String): ByteArray = withFileLock(fileName) {
         val payload = atomicFile(fileName).openRead().use { it.readBytes() }
         require(payload.size >= 4 + MIN_IV_BYTES + GCM_TAG_BYTES) { "Encrypted file is truncated." }
         val buffer = ByteBuffer.wrap(payload)
@@ -46,24 +46,29 @@ internal class EncryptedFileStore(
         }
         val iv = ByteArray(ivSize).also(buffer::get)
         val encrypted = ByteArray(buffer.remaining()).also(buffer::get)
-        return Cipher.getInstance("AES/GCM/NoPadding").run {
+        Cipher.getInstance("AES/GCM/NoPadding").run {
             init(Cipher.DECRYPT_MODE, secretKey(), GCMParameterSpec(128, iv))
             doFinal(encrypted)
         }
     }
 
-    fun exists(fileName: String): Boolean = atomicFile(fileName).baseFile.let { base ->
-        base.exists() || File("${base.path}.bak").exists()
+    fun exists(fileName: String): Boolean = withFileLock(fileName) {
+        atomicFile(fileName).baseFile.let { base ->
+            base.exists() || File("${base.path}.bak").exists()
+        }
     }
 
-    fun delete(fileName: String) = atomicFile(fileName).delete()
+    fun delete(fileName: String) = withFileLock(fileName) { atomicFile(fileName).delete() }
+
+    internal fun <T> withFileLock(fileName: String, action: () -> T): T =
+        synchronized(fileLocks[fileLockIndex(fileName)], action)
 
     private fun atomicFile(fileName: String) = AtomicFile(context.getFileStreamPath(fileName))
 
-    private fun secretKey(): SecretKey {
+    private fun secretKey(): SecretKey = synchronized(keyLocks[keyLockIndex(keyAlias)]) {
         val keyStore = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
-        (keyStore.getKey(keyAlias, null) as? SecretKey)?.let { return it }
-        return KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, "AndroidKeyStore").run {
+        (keyStore.getKey(keyAlias, null) as? SecretKey)?.let { return@synchronized it }
+        KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, "AndroidKeyStore").run {
             init(
                 KeyGenParameterSpec.Builder(
                     keyAlias,
@@ -77,9 +82,16 @@ internal class EncryptedFileStore(
         }
     }
 
+    private fun fileLockIndex(fileName: String): Int =
+        (context.getFileStreamPath(fileName).canonicalPath.hashCode() and Int.MAX_VALUE) % fileLocks.size
+
+    private fun keyLockIndex(alias: String): Int = (alias.hashCode() and Int.MAX_VALUE) % keyLocks.size
+
     companion object {
         private const val MIN_IV_BYTES = 12
         private const val MAX_IV_BYTES = 16
         private const val GCM_TAG_BYTES = 16
+        private val fileLocks = Array(64) { Any() }
+        private val keyLocks = Array(16) { Any() }
     }
 }

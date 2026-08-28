@@ -12,6 +12,9 @@ import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 
 @RunWith(AndroidJUnit4::class)
 class KnownHostStoreTest {
@@ -127,6 +130,29 @@ class KnownHostStoreTest {
 
         assertThrows(IllegalArgumentException::class.java) { KnownHostStore(context).loadAll() }
         assertTrue(original.contentEquals(encryptedStore.read("known-hosts.enc")))
+    }
+
+    @Test
+    fun concurrentTrustAcrossInstancesPreservesEveryDestination() {
+        val executor = Executors.newFixedThreadPool(8)
+        val start = CountDownLatch(1)
+        val destinations = List(20) { index -> "server-$index.example.com" }
+        try {
+            val futures = destinations.mapIndexed { index, hostname ->
+                executor.submit {
+                    assertTrue(start.await(5, TimeUnit.SECONDS))
+                    val store = KnownHostStore(context)
+                    assertTrue(store.trust(store.lookup(hostname, 22), "SHA256:$index"))
+                }
+            }
+            start.countDown()
+            futures.forEach { it.get(10, TimeUnit.SECONDS) }
+
+            assertEquals(destinations.toSet(), KnownHostStore(context).loadAll().mapNotNull { it.hostname }.toSet())
+        } finally {
+            executor.shutdownNow()
+            executor.awaitTermination(5, TimeUnit.SECONDS)
+        }
     }
 
     private fun clearStorage() {

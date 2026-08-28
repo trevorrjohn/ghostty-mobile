@@ -26,7 +26,7 @@ iOS and Android block the SSH handshake for explicit first-use and changed-key a
 
 Android uses AES-GCM files protected by a non-exportable Android Keystore key and disables application backup. iOS uses Keychain records restricted to the unlocked device and excluded from migration to another device.
 
-Android encrypted-file replacement is atomic. Both implementations still need explicit concurrent update and migration behavior before concurrent management or synchronization ships.
+Android serializes encrypted-file reads, atomic replacement, and deletion by canonical app-private path within its single application process. Aggregate host, identity, trust, favorite, and feedback mutations use process-wide locks so separately constructed store instances cannot lose unrelated updates. Multi-file identity changes publish blobs before index additions and remove index entries before blobs; interruption can retain encrypted orphan blobs for recovery but cannot publish a missing new blob. iOS still needs explicit concurrent-update verification, and any future multi-process or synchronization design requires a separate locking and conflict model.
 
 ## Remote Effects
 
