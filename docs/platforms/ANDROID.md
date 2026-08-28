@@ -44,8 +44,8 @@ Native artifacts are included for arm64 and x86_64. They must remain reproducibl
 
 - Dirty-row snapshots and per-row render caches.
 - Android text shaping, fallback fonts, combining graphemes, and emoji.
-- Touch scrollback, selection, search, pinch scaling, mouse reporting, and accessibility actions.
-- `InputConnection`, hardware keys, configurable modifier controls, paste safety, and Ghostty mode-aware encoding.
+- Touch scrollback, explicit local selection over remote mouse mode, search, pinch scaling, mouse reporting, and accessibility actions.
+- `InputConnection`, hardware keys, configurable volume-button and modifier controls, paste safety, and Ghostty mode-aware encoding.
 
 The UI consumes immutable snapshots. Terminal parsing and SSH I/O do not run on the main thread, and the client does not locally echo input.
 

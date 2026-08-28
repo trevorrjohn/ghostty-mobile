@@ -71,6 +71,7 @@ class GhosttyTerminalView(
     var onContextSelection: (column: Int, row: Int) -> ContextualSelection? = { _, _ -> null }
     var onContextCopy: (String) -> Unit = {}
     var onOpenLink: (String) -> Unit = {}
+    var onLocalSelectionModeChanged: (Boolean) -> Unit = {}
     var onMetadataChanged: (title: String, pwd: String, atPrompt: Boolean, passwordInput: Boolean) -> Unit =
         { _, _, _, _ -> }
     var onResize: (columns: Int, rows: Int, pixelWidth: Int, pixelHeight: Int) -> Unit = { _, _, _, _ -> }
@@ -115,6 +116,9 @@ class GhosttyTerminalView(
     private var remoteDownX = 0f
     private var remoteDownY = 0f
     private var remoteWheelPixels = 0f
+    private val remoteGenericButtons = RemoteButtonState()
+    private var remoteGenericX = 0f
+    private var remoteGenericY = 0f
     private var pointerMetaState = 0
     private var selectionActive = false
     private var selectionVisible = false
@@ -146,6 +150,9 @@ class GhosttyTerminalView(
     private var lastTapX = 0f
     private var lastTapY = 0f
     private var contextualSelection: ContextualSelection? = null
+    private var selectionActionMode: ActionMode? = null
+    var isLocalSelectionMode = false
+        private set
     private var passwordInput = false
     private var accessibilityText: String? = null
     private var accessibilityUpdatePending = false
@@ -227,6 +234,8 @@ class GhosttyTerminalView(
     }
 
     override fun onDetachedFromWindow() {
+        setLocalSelectionMode(false)
+        cancelPendingLongPress()
         removeCallbacks(selectionAutoScroll)
         removeCallbacks(accessibilityUpdate)
         accessibilityUpdatePending = false
@@ -234,6 +243,45 @@ class GhosttyTerminalView(
         kittyBitmaps.clear()
         discardRowCaches()
         super.onDetachedFromWindow()
+    }
+
+    fun setLocalSelectionMode(enabled: Boolean) {
+        if (isLocalSelectionMode == enabled) {
+            if (!enabled) clearSelectionState()
+            return
+        }
+        if (enabled) {
+            if (remotePressSent) sendRemoteMouse(MOUSE_RELEASE, MOUSE_LEFT, remoteDownX, remoteDownY, false)
+            remoteGenericButtons.drain().forEach { button ->
+                sendRemoteMouse(
+                    MOUSE_RELEASE,
+                    button,
+                    remoteGenericX,
+                    remoteGenericY,
+                    remoteGenericButtons.anyPressed,
+                )
+            }
+            clearSelectionState()
+            resetTouchInteraction()
+            isLocalSelectionMode = true
+        } else {
+            isLocalSelectionMode = false
+            clearSelectionState()
+            resetTouchInteraction()
+        }
+        lastTapUpTime = 0L
+        runCatching(::refresh)
+        onLocalSelectionModeChanged(enabled)
+    }
+
+    private fun clearSelectionState() {
+        val mode = selectionActionMode
+        selectionActionMode = null
+        mode?.finish()
+        contextualSelection = null
+        runCatching(terminal::clearSelection)
+        selectionVisible = false
+        runCatching(::refresh)
     }
 
     private fun resizeTerminal() {
@@ -560,7 +608,7 @@ class GhosttyTerminalView(
                 lastTouchY = event.y
                 dragging = false
                 scaleGesture = false
-                remoteMouseGesture = isMouseTracking()
+                remoteMouseGesture = shouldRouteRemoteMouse(isMouseTracking(), isLocalSelectionMode)
                 remotePressSent = false
                 remoteTwoFingerGesture = false
                 remoteDownX = event.x
@@ -649,7 +697,7 @@ class GhosttyTerminalView(
                     selectionActive = false
                     draggedHandle = HANDLE_NONE
                     updateSelectionAutoScroll(height / 2f)
-                    startActionMode(selectionActions, ActionMode.TYPE_FLOATING)
+                    showSelectionActions()
                     refresh()
                     endTouch()
                     return true
@@ -696,15 +744,15 @@ class GhosttyTerminalView(
                         if (contextualSelection != null) {
                             selectionVisible = true
                             refresh()
-                            startActionMode(selectionActions, ActionMode.TYPE_FLOATING)
+                            showSelectionActions()
                         } else {
-                            performClick()
+                            if (!isLocalSelectionMode) performClick()
                         }
                     } else {
                         lastTapUpTime = event.eventTime
                         lastTapX = event.x
                         lastTapY = event.y
-                        performClick()
+                        if (!isLocalSelectionMode) performClick()
                     }
                 }
                 endTouch()
@@ -729,10 +777,21 @@ class GhosttyTerminalView(
     }
 
     override fun onGenericMotionEvent(event: MotionEvent): Boolean {
-        if (!isEnabled || !isMouseTracking() || event.source and InputDevice.SOURCE_CLASS_POINTER == 0) {
+        if (!isEnabled || event.source and InputDevice.SOURCE_CLASS_POINTER == 0) {
             return super.onGenericMotionEvent(event)
         }
         pointerMetaState = event.metaState
+        if (isLocalSelectionMode) {
+            if (event.actionMasked == MotionEvent.ACTION_SCROLL) {
+                val vertical = event.getAxisValue(MotionEvent.AXIS_VSCROLL)
+                if (vertical != 0f) {
+                    terminal.scrollRows(if (vertical > 0) -3 else 3)
+                    refresh()
+                }
+            }
+            return true
+        }
+        if (!isMouseTracking()) return super.onGenericMotionEvent(event)
         when (event.actionMasked) {
             MotionEvent.ACTION_SCROLL -> {
                 val vertical = event.getAxisValue(MotionEvent.AXIS_VSCROLL)
@@ -754,7 +813,16 @@ class GhosttyTerminalView(
                     else -> MOUSE_LEFT
                 }
                 val pressed = event.actionMasked == MotionEvent.ACTION_BUTTON_PRESS
-                sendRemoteMouse(if (pressed) MOUSE_PRESS else MOUSE_RELEASE, button, event.x, event.y, pressed)
+                remoteGenericX = event.x
+                remoteGenericY = event.y
+                if (pressed) remoteGenericButtons.press(button) else remoteGenericButtons.release(button)
+                sendRemoteMouse(
+                    if (pressed) MOUSE_PRESS else MOUSE_RELEASE,
+                    button,
+                    event.x,
+                    event.y,
+                    remoteGenericButtons.anyPressed,
+                )
                 return true
             }
             MotionEvent.ACTION_HOVER_MOVE -> {
@@ -772,6 +840,17 @@ class GhosttyTerminalView(
 
     private val selectionActions = object : ActionMode.Callback {
         override fun onCreateActionMode(mode: ActionMode, menu: Menu): Boolean {
+            populateSelectionMenu(menu)
+            return true
+        }
+
+        override fun onPrepareActionMode(mode: ActionMode, menu: Menu): Boolean {
+            menu.clear()
+            populateSelectionMenu(menu)
+            return true
+        }
+
+        private fun populateSelectionMenu(menu: Menu) {
             val copyLabel = when (contextualSelection?.kind) {
                 ContextualSelectionKind.LINK -> "Copy Link"
                 ContextualSelectionKind.PATH -> "Copy Path"
@@ -783,10 +862,7 @@ class GhosttyTerminalView(
                 menu.add(0, ACTION_OPEN_LINK, 1, "Open in Browser")
             }
             menu.add(0, ACTION_CLEAR, 2, "Clear")
-            return true
         }
-
-        override fun onPrepareActionMode(mode: ActionMode, menu: Menu) = false
 
         override fun onActionItemClicked(mode: ActionMode, item: MenuItem): Boolean {
             when (item.itemId) {
@@ -795,24 +871,37 @@ class GhosttyTerminalView(
                     if (contextualSelection?.kind == ContextualSelectionKind.LINK && value.isNotEmpty()) {
                         onContextCopy(value)
                     } else {
-                        onSelectionFinished()
+                        runCatching(onSelectionFinished)
                     }
                 }
                 ACTION_OPEN_LINK -> onOpenLink(contextualSelection?.value.orEmpty())
                 ACTION_CLEAR -> Unit
                 else -> return false
             }
-            terminal.clearSelection()
+            runCatching(terminal::clearSelection)
             contextualSelection = null
             selectionVisible = false
-            refresh()
+            runCatching(::refresh)
             mode.finish()
             return true
         }
 
         override fun onDestroyActionMode(mode: ActionMode) {
+            if (selectionActionMode === mode) selectionActionMode = null
             contextualSelection = null
+            runCatching(terminal::clearSelection)
+            selectionVisible = false
+            runCatching(::refresh)
+            if (isLocalSelectionMode) setLocalSelectionMode(false)
         }
+    }
+
+    private fun showSelectionActions() {
+        selectionActionMode?.let {
+            it.invalidate()
+            return
+        }
+        selectionActionMode = startActionMode(selectionActions, ActionMode.TYPE_FLOATING)
     }
 
     private fun updateSelectionAutoScroll(y: Float) {
@@ -852,6 +941,7 @@ class GhosttyTerminalView(
     }
 
     private fun sendRemoteMouse(action: Int, button: Int, x: Float, y: Float, pressed: Boolean) {
+        if (isLocalSelectionMode) return
         onMouseEvent(
             action, button, x, y, width, height,
             cellWidth.toInt().coerceAtLeast(1), cellHeight.toInt().coerceAtLeast(1), pressed,
@@ -906,6 +996,22 @@ class GhosttyTerminalView(
         parent?.requestDisallowInterceptTouchEvent(false)
         velocityTracker?.recycle()
         velocityTracker = null
+    }
+
+    private fun resetTouchInteraction() {
+        cancelPendingLongPress()
+        removeCallbacks(selectionAutoScroll)
+        selectionEdgeDirection = 0
+        scroller.forceFinished(true)
+        remoteMouseGesture = false
+        remotePressSent = false
+        remoteTwoFingerGesture = false
+        remoteWheelPixels = 0f
+        selectionActive = false
+        draggedHandle = HANDLE_NONE
+        dragging = false
+        scaleGesture = false
+        endTouch()
     }
 
     private fun updateFontMetrics() {

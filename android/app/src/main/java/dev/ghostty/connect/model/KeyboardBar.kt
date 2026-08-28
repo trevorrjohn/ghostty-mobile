@@ -32,9 +32,15 @@ data class KeyboardBarConfig(
     val enabled: Boolean = true,
     val items: List<KeyboardBarItem> = KeyboardBarCatalog.defaultItems,
     val combinations: List<KeyboardBarItem> = emptyList(),
+    val volumeUpActionId: String = KeyboardBarCatalog.DEFAULT_VOLUME_UP_ACTION_ID,
+    val volumeDownActionId: String = KeyboardBarCatalog.DEFAULT_VOLUME_DOWN_ACTION_ID,
 )
 
 object KeyboardBarCatalog {
+    const val SYSTEM_VOLUME_ACTION_ID = "system-volume"
+    const val DEFAULT_VOLUME_UP_ACTION_ID = "key-escape"
+    const val DEFAULT_VOLUME_DOWN_ACTION_ID = "key-tab"
+
     val modifiers = KeyboardModifier.entries.map { modifier ->
         KeyboardBarItem(
             id = "modifier-${modifier.name.lowercase()}",
@@ -74,6 +80,14 @@ object KeyboardBarCatalog {
     )
 
     val availableItems = modifiers + keys + lastUsedModifier + lastUsedCombination
+
+    fun volumeAction(id: String): KeyboardBarItem? = keys.firstOrNull { it.id == id }
+
+    fun normalizedVolumeActionId(id: String?, defaultId: String): String = when {
+        id == SYSTEM_VOLUME_ACTION_ID -> SYSTEM_VOLUME_ACTION_ID
+        keys.any { it.id == id } -> requireNotNull(id)
+        else -> defaultId
+    }
 
     val defaultItems = listOf(
         keys.first { it.key == "ESCAPE" },

@@ -95,6 +95,8 @@ import dev.ghostty.connect.terminal.ContextualSelection
 import dev.ghostty.connect.terminal.ContextualSelectionKind
 import dev.ghostty.connect.terminal.HostKeyVerification
 import dev.ghostty.connect.terminal.TerminalTokenMatcher
+import dev.ghostty.connect.terminal.ghosttyKeyAction
+import dev.ghostty.connect.terminal.HardwareKeyModifierState
 import dev.ghostty.connect.terminal.bridge.GhosttyTerminal
 import dev.ghostty.connect.terminal.bridge.TerminalEffects
 import dev.ghostty.connect.terminal.view.GhosttyTerminalView
@@ -157,6 +159,7 @@ class MainActivity : Activity() {
     private var terminalStatus: TextView? = null
     private var terminalTitle: TextView? = null
     private var terminalRetryButton: Button? = null
+    private var terminalSelectButton: Button? = null
     private var terminalView: GhosttyTerminalView? = null
     private var shellIntegrationNotice: View? = null
     private var shellIntegrationNoticeRunnable: Runnable? = null
@@ -182,6 +185,7 @@ class MainActivity : Activity() {
     private var terminalSearchQuery = ""
     private val activeModifiers = mutableSetOf<KeyboardModifier>()
     private val lockedModifiers = mutableSetOf<KeyboardModifier>()
+    private val hardwareKeyModifiers = HardwareKeyModifierState()
     private var lastUsedModifier: KeyboardModifier? = null
     private var lastUsedCombination: KeyboardBarItem? = null
     private val surface = Color.rgb(17, 19, 24)
@@ -550,6 +554,8 @@ class MainActivity : Activity() {
         terminalStatus = null
         terminalTitle = null
         terminalRetryButton = null
+        terminalSelectButton = null
+        terminalView?.setLocalSelectionMode(false)
         terminalView = null
         shellIntegrationNotice = null
         cancelShellIntegrationNotice()
@@ -1181,6 +1187,46 @@ class MainActivity : Activity() {
         root.addView(button("SSH identities", secondary) { showSshIdentities() }.margins(bottom = 8))
         root.addView(button("Trusted hosts", secondary) { showTrustedHosts() }.margins(bottom = 20))
 
+        root.addView(label("Hardware volume buttons", 18f, primary, Typeface.BOLD))
+        root.addView(label(
+            "Send terminal keys while a connected terminal is open. Choose System volume to keep the normal device action.",
+            14f,
+            secondary,
+        ).margins(bottom = 10))
+        val volumeActionIds = listOf(KeyboardBarCatalog.SYSTEM_VOLUME_ACTION_ID) +
+            KeyboardBarCatalog.keys.map(KeyboardBarItem::id)
+        val volumeActionLabels = listOf("System volume") + KeyboardBarCatalog.keys.map(KeyboardBarItem::label)
+        fun volumeActionSpinner(label: String, currentId: String, save: (String) -> Unit) {
+            var selectedId = currentId
+            root.addView(this.label(label, 14f, secondary).margins(bottom = 4))
+            val spinner = Spinner(this).apply {
+                adapter = ArrayAdapter(
+                    this@MainActivity,
+                    android.R.layout.simple_spinner_dropdown_item,
+                    volumeActionLabels,
+                )
+                setBackgroundColor(raised)
+                setSelection(volumeActionIds.indexOf(currentId).coerceAtLeast(0))
+                onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+                    override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
+                        val selected = volumeActionIds[position]
+                        if (selected != selectedId) {
+                            selectedId = selected
+                            save(selected)
+                        }
+                    }
+                    override fun onNothingSelected(parent: AdapterView<*>?) = Unit
+                }
+            }
+            root.addView(spinner.margins(bottom = 10))
+        }
+        volumeActionSpinner("Volume Up", keyboardBarConfig.volumeUpActionId) { actionId ->
+            saveKeyboardBarConfig(keyboardBarConfig.copy(volumeUpActionId = actionId), refreshSettings = false)
+        }
+        volumeActionSpinner("Volume Down", keyboardBarConfig.volumeDownActionId) { actionId ->
+            saveKeyboardBarConfig(keyboardBarConfig.copy(volumeDownActionId = actionId), refreshSettings = false)
+        }
+
         root.addView(label("Keyboard bar", 18f, primary, Typeface.BOLD))
         root.addView(label("Shown above the keyboard while the terminal is live.", 14f, secondary).margins(bottom = 12))
 
@@ -1273,7 +1319,11 @@ class MainActivity : Activity() {
             }
         }
         root.addView(button("Reset to defaults", secondary) {
-            saveKeyboardBarConfig(keyboardBarConfig.copy(items = KeyboardBarCatalog.defaultItems))
+            saveKeyboardBarConfig(keyboardBarConfig.copy(
+                items = KeyboardBarCatalog.defaultItems,
+                volumeUpActionId = KeyboardBarCatalog.DEFAULT_VOLUME_UP_ACTION_ID,
+                volumeDownActionId = KeyboardBarCatalog.DEFAULT_VOLUME_DOWN_ACTION_ID,
+            ))
         }.margins(top = 8))
         root.addView(label("Dogfooding", 18f, primary, Typeface.BOLD).margins(top = 24, bottom = 6))
         root.addView(label(
@@ -2573,6 +2623,7 @@ class MainActivity : Activity() {
         val terminal = service.terminal(sessionId) ?: return
         activeModifiers.clear()
         lockedModifiers.clear()
+        hardwareKeyModifiers.clear()
         terminalAtBottom = true
         settingsVisible = false
         feedbackVisible = false
@@ -2586,6 +2637,29 @@ class MainActivity : Activity() {
             label(host.name, 18f, primary, Typeface.BOLD).also { terminalTitle = it },
             LinearLayout.LayoutParams(0, -2, 1f),
         )
+        lateinit var selectButton: Button
+        fun updateSelectButton(active: Boolean) {
+            selectButton.text = if (active) "Done" else "Select"
+            selectButton.setTextColor(if (active) Color.rgb(8, 15, 12) else primary)
+            selectButton.setBackgroundColor(if (active) accent else surface)
+            selectButton.isSelected = active
+            selectButton.contentDescription = if (active) {
+                "Exit local selection; remote mouse input is paused"
+            } else {
+                "Select terminal text locally"
+            }
+        }
+        selectButton = barButton("Select") {
+            terminalView?.let {
+                val enabled = !it.isLocalSelectionMode
+                it.setLocalSelectionMode(enabled)
+                if (enabled) toast("Local selection on. Double-tap a link or long-press and drag text.")
+            }
+        }
+        selectButton.isEnabled = false
+        terminalSelectButton = selectButton
+        updateSelectButton(false)
+        titleRow.addView(selectButton, LinearLayout.LayoutParams(-2, -2))
         val overflow = label("...", 24f, primary).apply {
             contentDescription = "More options"
             gravity = Gravity.CENTER
@@ -2754,6 +2828,7 @@ class MainActivity : Activity() {
                 writeClipboard(text)
                 toast("Link copied")
             }
+            onLocalSelectionModeChanged = ::updateSelectButton
             onMetadataChanged = { title, pwd, atPrompt, passwordInput ->
                 terminalTitle?.text = title.ifBlank { host.name }
                 if (pwd.isNotBlank()) terminalStatus?.text = displayRemotePwd(pwd)
@@ -2961,27 +3036,43 @@ class MainActivity : Activity() {
         consumeOneShotModifiers()
     }
 
-    private fun sendHardwareKey(terminal: GhosttyTerminal, event: KeyEvent): Boolean {
-        val key = androidKeyName(event.keyCode) ?: return false
+    private fun sendHardwareKey(terminal: GhosttyTerminal, event: KeyEvent, logicalKey: String? = null): Boolean {
+        val action = ghosttyKeyAction(event.action, event.repeatCount) ?: return false
+        val key = logicalKey ?: androidKeyName(event.keyCode) ?: return false
         val codepoint = event.unicodeChar
-        val text = codepoint.takeIf { it > 31 && it != 127 }?.let { String(Character.toChars(it)) }.orEmpty()
-        val action = when {
-            event.action == KeyEvent.ACTION_UP -> GhosttyTerminal.KEY_ACTION_RELEASE
-            event.repeatCount > 0 -> GhosttyTerminal.KEY_ACTION_REPEAT
-            else -> GhosttyTerminal.KEY_ACTION_PRESS
+        val text = if (logicalKey == null) {
+            codepoint.takeIf { it > 31 && it != 127 }?.let { String(Character.toChars(it)) }.orEmpty()
+        } else {
+            ""
         }
-        val modifiers = ghosttyModifierBits(activeModifiers) or
+        val currentModifiers = ghosttyModifierBits(activeModifiers) or
             (if (event.isShiftPressed) GHOSTTY_MOD_SHIFT else 0) or
             (if (event.isCtrlPressed) GHOSTTY_MOD_CTRL else 0) or
             (if (event.isAltPressed) GHOSTTY_MOD_ALT else 0) or
             (if (event.isMetaPressed) GHOSTTY_MOD_SUPER else 0) or
             (if (event.isCapsLockOn) GHOSTTY_MOD_CAPS_LOCK else 0) or
             (if (event.isNumLockOn) GHOSTTY_MOD_NUM_LOCK else 0)
+        val modifiers = hardwareKeyModifiers.modifiers(event.keyCode, action, currentModifiers) ?: return false
         selectedSessionId?.let { sessionService?.send(it, terminal.encodeKey(key, text, modifiers, action)) }
         if (action == GhosttyTerminal.KEY_ACTION_PRESS && !KeyEvent.isModifierKey(event.keyCode)) {
             consumeOneShotModifiers()
         }
         return true
+    }
+
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        val actionId = when (event.keyCode) {
+            KeyEvent.KEYCODE_VOLUME_UP -> keyboardBarConfig.volumeUpActionId
+            KeyEvent.KEYCODE_VOLUME_DOWN -> keyboardBarConfig.volumeDownActionId
+            else -> return super.dispatchKeyEvent(event)
+        }
+        val sessionId = selectedSessionId ?: return super.dispatchKeyEvent(event)
+        val service = sessionService ?: return super.dispatchKeyEvent(event)
+        val view = terminalView?.takeIf { it.isEnabled } ?: return super.dispatchKeyEvent(event)
+        if (service.status(sessionId) != "Connected" || !view.isShown) return super.dispatchKeyEvent(event)
+        val action = KeyboardBarCatalog.volumeAction(actionId) ?: return super.dispatchKeyEvent(event)
+        val terminal = service.terminal(sessionId) ?: return super.dispatchKeyEvent(event)
+        return sendHardwareKey(terminal, event, action.key) || super.dispatchKeyEvent(event)
     }
 
     private fun androidKeyName(keyCode: Int): String? = when (keyCode) {
@@ -3196,7 +3287,12 @@ class MainActivity : Activity() {
     }
 
     private fun setTerminalEnabled(enabled: Boolean) {
+        if (!enabled) {
+            terminalView?.setLocalSelectionMode(false)
+            hardwareKeyModifiers.clear()
+        }
         terminalView?.isEnabled = enabled
+        terminalSelectButton?.isEnabled = enabled
         if (enabled) terminalView?.requestFocus()
     }
 
@@ -3235,6 +3331,7 @@ class MainActivity : Activity() {
         else if (identitiesVisible) showKeyboardSettings()
         else if (settingsVisible) showHosts(disconnect = false)
         else if (browserVisible) currentBrowserState?.let(::closeFileBrowser) ?: showHosts(disconnect = false)
+        else if (terminalView?.isLocalSelectionMode == true) terminalView?.setLocalSelectionMode(false)
         else if (terminalView != null || previewTerminal != null) showHosts()
         else finish()
     }

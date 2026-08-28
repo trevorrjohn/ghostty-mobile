@@ -2,6 +2,7 @@ package dev.ghostty.connect.data
 
 import android.content.Context
 import dev.ghostty.connect.model.KeyboardBarConfig
+import dev.ghostty.connect.model.KeyboardBarCatalog
 import dev.ghostty.connect.model.KeyboardBarItem
 import dev.ghostty.connect.model.KeyboardBarItemType
 import dev.ghostty.connect.model.KeyboardModifier
@@ -16,15 +17,29 @@ class KeyboardBarStore(context: Context) {
         val root = JSONObject(encryptedStore.read(FILE_NAME).toString(Charsets.UTF_8))
         val items = decodeItems(root.getJSONArray("items"))
         val combinations = decodeItems(root.optJSONArray("combinations") ?: JSONArray())
-        return KeyboardBarConfig(root.optBoolean("enabled", true), items, combinations)
+        return KeyboardBarConfig(
+            enabled = root.optBoolean("enabled", true),
+            items = items,
+            combinations = combinations,
+            volumeUpActionId = KeyboardBarCatalog.normalizedVolumeActionId(
+                root.optString("volumeUpActionId").takeIf(String::isNotBlank),
+                KeyboardBarCatalog.DEFAULT_VOLUME_UP_ACTION_ID,
+            ),
+            volumeDownActionId = KeyboardBarCatalog.normalizedVolumeActionId(
+                root.optString("volumeDownActionId").takeIf(String::isNotBlank),
+                KeyboardBarCatalog.DEFAULT_VOLUME_DOWN_ACTION_ID,
+            ),
+        )
     }
 
     fun save(config: KeyboardBarConfig) {
         val root = JSONObject().apply {
-            put("version", 1)
+            put("version", 2)
             put("enabled", config.enabled)
             put("items", encodeItems(config.items))
             put("combinations", encodeItems(config.combinations))
+            put("volumeUpActionId", config.volumeUpActionId)
+            put("volumeDownActionId", config.volumeDownActionId)
         }
         encryptedStore.write(FILE_NAME, root.toString().toByteArray())
     }
