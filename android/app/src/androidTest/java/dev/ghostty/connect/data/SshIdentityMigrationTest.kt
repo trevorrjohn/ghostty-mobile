@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import dev.ghostty.connect.model.AuthenticationType
+import dev.ghostty.connect.model.RetryBackoff
 import dev.ghostty.connect.model.Host
 import dev.ghostty.connect.model.SshIdentity
 import org.json.JSONArray
@@ -185,6 +186,9 @@ class SshIdentityMigrationTest {
         val storedHosts = encryptedStore.read("hosts.enc").toString(Charsets.UTF_8)
 
         assertEquals(keyStore.identities().single().id, host.identityId)
+        assertEquals(true, host.retryEnabled)
+        assertEquals(5, host.retryMaxAttempts)
+        assertEquals(RetryBackoff.BALANCED, host.retryBackoff)
         assertTrue(storedHosts.contains("\"keyName\":\"work\""))
         assertEquals(true, JSONObject(JSONArray(storedHosts).getJSONObject(0).toString()).has("identityId"))
     }

@@ -2,7 +2,9 @@ package dev.ghostty.connect.data
 
 import android.content.Context
 import dev.ghostty.connect.model.AuthenticationType
+import dev.ghostty.connect.model.DEFAULT_RETRY_ATTEMPTS
 import dev.ghostty.connect.model.Host
+import dev.ghostty.connect.model.RetryBackoff
 import org.json.JSONArray
 import org.json.JSONObject
 import java.util.UUID
@@ -65,6 +67,9 @@ class HostStore(context: Context, private val keyStore: SshKeyStore) {
                 put("allowRemoteClipboard", host.allowRemoteClipboard ?: JSONObject.NULL)
                 put("allowRemoteNotifications", host.allowRemoteNotifications ?: JSONObject.NULL)
                 put("allowSftpDelete", host.allowSftpDelete)
+                put("retryEnabled", host.retryEnabled)
+                put("retryMaxAttempts", host.retryMaxAttempts)
+                put("retryBackoff", host.retryBackoff.name)
             })
         }
     }.toString().toByteArray()
@@ -111,6 +116,11 @@ class HostStore(context: Context, private val keyStore: SshKeyStore) {
                         value.isNull("allowRemoteNotifications")
                     },
                     allowSftpDelete = value.optBoolean("allowSftpDelete", false),
+                    retryEnabled = value.optBoolean("retryEnabled", true),
+                    retryMaxAttempts = value.optInt("retryMaxAttempts", DEFAULT_RETRY_ATTEMPTS),
+                    retryBackoff = RetryBackoff.valueOf(
+                        value.optString("retryBackoff", RetryBackoff.BALANCED.name),
+                    ),
                 ))
             }
         }

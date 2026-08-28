@@ -71,7 +71,10 @@ import dev.ghostty.connect.model.KeyboardBarConfig
 import dev.ghostty.connect.model.KeyboardBarItem
 import dev.ghostty.connect.model.KeyboardBarItemType
 import dev.ghostty.connect.model.KeyboardModifier
+import dev.ghostty.connect.model.MAX_RETRY_ATTEMPTS
+import dev.ghostty.connect.model.MIN_RETRY_ATTEMPTS
 import dev.ghostty.connect.model.MAX_FEEDBACK_ENTRIES
+import dev.ghostty.connect.model.RetryBackoff
 import dev.ghostty.connect.model.TerminalThemes
 import dev.ghostty.connect.model.TrustedHost
 import dev.ghostty.connect.model.SshIdentity
@@ -738,6 +741,53 @@ class MainActivity : Activity() {
         root.addView(addKey.margins(bottom = 16))
         updateKeyControls()
 
+        root.addView(label("Reconnect", 14f, secondary).margins(top = 6, bottom = 4))
+        val retryEnabled = CheckBox(this).apply {
+            text = "Automatically retry transient failures"
+            setTextColor(primary)
+            isChecked = existing?.retryEnabled != false
+        }
+        root.addView(retryEnabled)
+        val retryAttemptsLabel = label("Maximum attempts", 13f, secondary).margins(top = 4, bottom = 4)
+        root.addView(retryAttemptsLabel)
+        val retryAttempts = Spinner(this).apply {
+            adapter = ArrayAdapter(
+                this@MainActivity,
+                android.R.layout.simple_spinner_dropdown_item,
+                (MIN_RETRY_ATTEMPTS..MAX_RETRY_ATTEMPTS).map(Int::toString),
+            )
+            setBackgroundColor(raised)
+            setSelection((existing?.retryMaxAttempts ?: 5) - MIN_RETRY_ATTEMPTS)
+        }
+        root.addView(retryAttempts.margins(bottom = 10))
+        val retryBackoffLabel = label("Backoff", 13f, secondary).margins(bottom = 4)
+        root.addView(retryBackoffLabel)
+        val retryBackoffs = RetryBackoff.entries
+        val retryBackoff = Spinner(this).apply {
+            adapter = ArrayAdapter(
+                this@MainActivity,
+                android.R.layout.simple_spinner_dropdown_item,
+                listOf("Fast", "Balanced", "Conservative"),
+            )
+            setBackgroundColor(raised)
+            setSelection(retryBackoffs.indexOf(existing?.retryBackoff ?: RetryBackoff.BALANCED))
+        }
+        root.addView(retryBackoff.margins(bottom = 8))
+        root.addView(label(
+            "Reconnect always starts a new shell. Unattended retry requires an SSH key that has no passphrase.",
+            12f,
+            secondary,
+        ).margins(bottom = 12))
+        fun updateRetryControls() {
+            val enabled = retryEnabled.isChecked
+            retryAttemptsLabel.isEnabled = enabled
+            retryAttempts.isEnabled = enabled
+            retryBackoffLabel.isEnabled = enabled
+            retryBackoff.isEnabled = enabled
+        }
+        retryEnabled.setOnCheckedChangeListener { _, _ -> updateRetryControls() }
+        updateRetryControls()
+
         root.addView(label("Remote requests", 14f, secondary).margins(top = 6, bottom = 6))
         val policyChoices = listOf("Ask first time", "Allow", "Block")
         fun policySpinner(label: String, value: Boolean?): Spinner {
@@ -805,6 +855,9 @@ class MainActivity : Activity() {
                 allowRemoteClipboard = selectedPolicy(clipboardPolicy),
                 allowRemoteNotifications = selectedPolicy(notificationPolicy),
                 allowSftpDelete = allowSftpDelete.isChecked,
+                retryEnabled = retryEnabled.isChecked,
+                retryMaxAttempts = retryAttempts.selectedItemPosition + MIN_RETRY_ATTEMPTS,
+                retryBackoff = retryBackoffs[retryBackoff.selectedItemPosition],
             ))
             editingHostId = null
             showHosts()

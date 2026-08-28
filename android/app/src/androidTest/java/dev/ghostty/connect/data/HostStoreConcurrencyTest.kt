@@ -5,6 +5,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import dev.ghostty.connect.model.AuthenticationType
 import dev.ghostty.connect.model.Host
+import dev.ghostty.connect.model.RetryBackoff
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -57,6 +58,22 @@ class HostStoreConcurrencyTest {
             executor.shutdownNow()
             executor.awaitTermination(5, TimeUnit.SECONDS)
         }
+    }
+
+    @Test
+    fun retryPolicyRoundTripsThroughEncryptedHostStore() {
+        val host = Host(
+            id = "host",
+            hostname = "server.example.com",
+            username = "user",
+            retryEnabled = false,
+            retryMaxAttempts = 8,
+            retryBackoff = RetryBackoff.CONSERVATIVE,
+        )
+
+        HostStore(context, SshKeyStore(context)).save(host)
+
+        assertEquals(host, HostStore(context, SshKeyStore(context)).loadAll().single())
     }
 
     private fun clearStorage() {

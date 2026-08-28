@@ -17,6 +17,9 @@ class HostTest {
             allowRemoteClipboard = true,
             allowRemoteNotifications = false,
             allowSftpDelete = true,
+            retryEnabled = false,
+            retryMaxAttempts = 8,
+            retryBackoff = RetryBackoff.CONSERVATIVE,
         )
 
         val duplicate = host.duplicate("duplicate", listOf(host.name))
@@ -43,5 +46,19 @@ class HostTest {
         val host = Host(id = "host", hostname = "example.com", username = "ghost")
 
         assertEquals(false, host.allowSftpDelete)
+    }
+
+    @Test
+    fun retryDefaultsPreserveExistingBehavior() {
+        val host = Host(id = "host", hostname = "example.com", username = "ghost")
+
+        assertEquals(true, host.retryEnabled)
+        assertEquals(5, host.retryMaxAttempts)
+        assertEquals(RetryBackoff.BALANCED, host.retryBackoff)
+    }
+
+    @Test(expected = IllegalArgumentException::class)
+    fun retryAttemptLimitIsBounded() {
+        Host(id = "host", hostname = "example.com", username = "ghost", retryMaxAttempts = 11)
     }
 }

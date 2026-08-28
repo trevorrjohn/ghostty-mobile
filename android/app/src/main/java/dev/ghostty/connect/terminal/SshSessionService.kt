@@ -75,7 +75,7 @@ class SshSessionService : Service() {
         val pendingEffects = ArrayDeque<TerminalEffects>()
         val framePending = AtomicBoolean(false)
         val cleaningUp = AtomicBoolean(false)
-        val reconnectPolicy = ReconnectPolicy()
+        val reconnectPolicy = ReconnectPolicy(host.retryEnabled, host.retryMaxAttempts, host.retryBackoff)
         var connection: SshConnection? = null
         var itermImageParser: ItermInlineImageParser? = null
         var tmuxPassthroughParser: TmuxPassthroughParser? = null
@@ -432,6 +432,8 @@ class SshSessionService : Service() {
         record.stableConnectionRunnable?.let(mainHandler::removeCallbacks)
         record.stableConnectionRunnable = null
         record.waitingToReconnect = false
+        record.pendingVerification?.answer?.invoke(false)
+        record.pendingVerification = null
         record.pendingChallenge?.answer?.invoke(null)
         record.pendingChallenge = null
         record.attemptGeneration++
@@ -458,13 +460,20 @@ class SshSessionService : Service() {
             }
             SshClosureKind.RETRYABLE -> {
                 appendTerminalMessage(record, "Connection lost. Terminal input is paused while the connection is restored.")
-                if (record.autoReconnectEligible) {
-                    scheduleReconnect(record)
-                } else {
-                    record.manualRetryAvailable = true
-                    appendTerminalMessage(record, "Re-authentication is required to start a new SSH shell.")
-                    setStatus(record, STATUS_REAUTHENTICATION_REQUIRED)
-                    listener?.onSessionClosed(record.sessionId, closure.message)
+                when (automaticReconnectAvailability(record.host.retryEnabled, record.autoReconnectEligible)) {
+                    AutomaticReconnectAvailability.AVAILABLE -> scheduleReconnect(record)
+                    AutomaticReconnectAvailability.DISABLED -> {
+                        record.manualRetryAvailable = true
+                        appendTerminalMessage(record, "Automatic reconnect is disabled for this host.")
+                        setStatus(record, STATUS_AUTOMATIC_RECONNECT_DISABLED)
+                        listener?.onSessionClosed(record.sessionId, closure.message)
+                    }
+                    AutomaticReconnectAvailability.REAUTHENTICATION_REQUIRED -> {
+                        record.manualRetryAvailable = true
+                        appendTerminalMessage(record, "Re-authentication is required to start a new SSH shell.")
+                        setStatus(record, STATUS_REAUTHENTICATION_REQUIRED)
+                        listener?.onSessionClosed(record.sessionId, closure.message)
+                    }
                 }
             }
         }
@@ -472,17 +481,22 @@ class SshSessionService : Service() {
 
     private fun scheduleReconnect(record: SessionRecord) {
         if (!isCurrent(record) || record.cleaningUp.get()) return
+        val now = android.os.SystemClock.elapsedRealtime()
         if (!networkUsable) {
+            record.reconnectPolicy.pause(now)
             record.waitingToReconnect = true
             setStatus(record, STATUS_WAITING_FOR_NETWORK)
             return
         }
-        val now = android.os.SystemClock.elapsedRealtime()
+        record.reconnectPolicy.resume(now)
         val delay = record.reconnectPolicy.nextDelay(now)
         if (delay == null) {
-            val message = "Automatic reconnect stopped after 5 attempts."
+            val attempts = record.reconnectPolicy.attemptCount
+            val message = "Automatic reconnect stopped after $attempts ${if (attempts == 1) "attempt" else "attempts"}."
             appendTerminalMessage(record, message)
-            removeSession(record)
+            record.waitingToReconnect = false
+            record.manualRetryAvailable = true
+            setStatus(record, STATUS_AUTOMATIC_RECONNECT_STOPPED)
             listener?.onSessionClosed(record.sessionId, message)
             return
         }
@@ -553,9 +567,12 @@ class SshSessionService : Service() {
         val usable = currentNetworkUsable()
         if (networkUsable == usable) return@onMain
         networkUsable = usable
+        val now = android.os.SystemClock.elapsedRealtime()
         if (usable) {
+            sessions.values.forEach { it.reconnectPolicy.resume(now) }
             sessions.values.filter { it.waitingToReconnect && it.connection == null }.forEach(::scheduleReconnect)
         } else {
+            sessions.values.forEach { it.reconnectPolicy.pause(now) }
             sessions.values.filter { it.waitingToReconnect }.forEach { record ->
                 record.retryRunnable?.let(mainHandler::removeCallbacks)
                 record.retryRunnable = null
@@ -734,6 +751,8 @@ class SshSessionService : Service() {
         private const val STABLE_CONNECTION_MS = 60_000L
         private const val STATUS_CONNECTED = "Connected"
         private const val STATUS_WAITING_FOR_NETWORK = "Waiting for network"
+        private const val STATUS_AUTOMATIC_RECONNECT_DISABLED = "Automatic reconnect disabled"
+        private const val STATUS_AUTOMATIC_RECONNECT_STOPPED = "Automatic reconnect stopped"
         private const val STATUS_REAUTHENTICATION_REQUIRED = "Re-authentication required"
     }
 }
