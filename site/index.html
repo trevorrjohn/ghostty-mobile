@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0b1210">
+  <meta name="description" content="Ghostty Connect is a focused native SSH client for Android and iOS, powered by Ghostty's terminal engine.">
+  <meta property="og:title" content="Ghostty Connect">
+  <meta property="og:description" content="Your remote shell, built for the device in your hand.">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://founder.fail/">
+  <link rel="canonical" href="https://founder.fail/">
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="styles.css">
+  <title>Ghostty Connect | Native mobile SSH</title>
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+
+  <header class="site-header">
+    <a class="brand" href="/" aria-label="Ghostty Connect home">
+      <span class="brand-mark" aria-hidden="true">&gt;_</span>
+      <span>Ghostty Connect</span>
+    </a>
+    <nav aria-label="Primary navigation">
+      <a href="#principles">Principles</a>
+      <a href="#capabilities">Capabilities</a>
+      <a href="https://github.com/trevorrjohn/ghostty-mobile">GitHub</a>
+    </nav>
+  </header>
+
+  <main id="main">
+    <section class="hero">
+      <div class="hero-copy">
+        <div class="eyebrow"><span></span> Native SSH for Android + iOS</div>
+        <h1>Your remote shell,<br><em>built for mobile.</em></h1>
+        <p class="lede">Ghostty Connect is a focused SSH client powered by Ghostty's terminal engine. Save your hosts, verify who you are connecting to, and work from a terminal designed for touch and hardware keyboards.</p>
+        <div class="hero-actions">
+          <a class="button button-primary" href="https://github.com/trevorrjohn/ghostty-mobile">Follow development <span aria-hidden="true">↗</span></a>
+          <a class="button button-secondary" href="https://github.com/trevorrjohn/ghostty-mobile/blob/main/docs/ROADMAP.md">Read the roadmap</a>
+        </div>
+        <p class="availability"><span>●</span> In active development. Not yet available in app stores.</p>
+      </div>
+
+      <div class="terminal-frame" role="img" aria-label="Stylized Ghostty Connect terminal preview">
+        <div class="terminal-topbar">
+          <span class="terminal-host">production</span>
+          <span class="terminal-status"><i></i> connected</span>
+        </div>
+        <div class="terminal-body" aria-hidden="true">
+          <p><span class="prompt">~</span> ssh deploy@edge-01</p>
+          <p class="muted">Host key verified · ED25519</p>
+          <p class="spacer"></p>
+          <p><span class="prompt">edge-01</span> uptime</p>
+          <p>19:42 up 47 days, 3 users</p>
+          <p><span class="prompt">edge-01</span> git status --short</p>
+          <p><span class="changed">M</span>&nbsp; services/gateway/config.toml</p>
+          <p class="cursor-line"><span class="prompt">edge-01</span> <span class="cursor"></span></p>
+        </div>
+        <div class="key-row" aria-hidden="true">
+          <span>esc</span><span>ctrl</span><span>alt</span><span>tab</span><span>↑</span><span>↓</span><span>⌘</span>
+        </div>
+      </div>
+    </section>
+
+    <section class="signal-strip" aria-label="Product highlights">
+      <p><strong>01</strong> Explicit host trust</p>
+      <p><strong>02</strong> Native on both platforms</p>
+      <p><strong>03</strong> Ghostty VT engine</p>
+      <p><strong>04</strong> Secrets stay on-device</p>
+    </section>
+
+    <section class="principles" id="principles">
+      <div class="section-heading">
+        <p class="kicker">Designed around reality</p>
+        <h2>A terminal that understands where it runs.</h2>
+        <p>Mobile networks change. Apps get suspended. Screens rotate. Ghostty Connect treats those constraints as product behavior, not edge cases.</p>
+      </div>
+
+      <div class="principle-grid">
+        <article class="principle-card card-dark">
+          <span class="card-number">01 / TRUST</span>
+          <h3>Know the host.</h3>
+          <p>Unknown and changed host keys stop the connection until you review the full fingerprint and make an explicit decision.</p>
+          <div class="fingerprint" aria-hidden="true">
+            <span>SHA256</span>
+            <code>vR7pK6Qx...2mAZ9d</code>
+            <b>Review required</b>
+          </div>
+        </article>
+
+        <article class="principle-card card-light">
+          <span class="card-number">02 / NATIVE</span>
+          <h3>At home on your device.</h3>
+          <p>Platform-native rendering, secure storage, lifecycle handling, and input on Android and iOS. Shared behavior without a lowest-common-denominator UI.</p>
+          <div class="platform-pills" role="group" aria-label="Supported platforms">
+            <span>Android</span>
+            <span>iPhone</span>
+            <span>iPad</span>
+          </div>
+        </article>
+
+        <article class="principle-card card-accent">
+          <span class="card-number">03 / HONESTY</span>
+          <h3>No pretend reconnects.</h3>
+          <p>When a connection is lost, the app says so. A retry starts a new remote shell and never implies that an old process survived.</p>
+          <div class="state-flow" aria-hidden="true">
+            <span>connected</span><i>→</i><span>offline</span><i>→</i><span>new shell</span>
+          </div>
+        </article>
+      </div>
+    </section>
+
+    <section class="capabilities" id="capabilities">
+      <div class="capabilities-intro">
+        <p class="kicker">Core workflow</p>
+        <h2>Everything between you and the prompt.</h2>
+      </div>
+      <div class="capability-list">
+        <article>
+          <span class="capability-icon" aria-hidden="true">⌁</span>
+          <div>
+            <h3>Saved hosts and identities</h3>
+            <p>Organize remote hosts and import encrypted Ed25519 or RSA keys using platform-secure storage.</p>
+          </div>
+        </article>
+        <article>
+          <span class="capability-icon" aria-hidden="true">▦</span>
+          <div>
+            <h3>A real terminal engine</h3>
+            <p>Unicode, colors, cursor state, scrollback, selection, and mode-aware input through a pinned libghostty-vt revision.</p>
+          </div>
+        </article>
+        <article>
+          <span class="capability-icon" aria-hidden="true">⇥</span>
+          <div>
+            <h3>Input for mobile work</h3>
+            <p>Touch selection, configurable extra keys, external keyboards, safe paste, and correct remote PTY resizing.</p>
+          </div>
+        </article>
+        <article>
+          <span class="capability-icon" aria-hidden="true">◇</span>
+          <div>
+            <h3>Bounded remote effects</h3>
+            <p>Remote clipboard requests, notifications, links, and graphics are treated as untrusted input with explicit policy.</p>
+          </div>
+        </article>
+      </div>
+    </section>
+
+    <section class="open-build">
+      <div>
+        <p class="kicker">Built in the open</p>
+        <h2>Follow every decision.</h2>
+      </div>
+      <p>The product scope, cross-platform contracts, security model, architecture decisions, and current platform parity are public in the repository.</p>
+      <a class="text-link" href="https://github.com/trevorrjohn/ghostty-mobile/tree/main/docs">Explore the documentation <span aria-hidden="true">→</span></a>
+    </section>
+  </main>
+
+  <footer>
+    <a class="brand" href="/">
+      <span class="brand-mark" aria-hidden="true">&gt;_</span>
+      <span>Ghostty Connect</span>
+    </a>
+    <p>Native mobile SSH, powered by Ghostty.</p>
+    <div class="footer-links">
+      <a href="https://github.com/trevorrjohn/ghostty-mobile">Source</a>
+      <a href="https://github.com/trevorrjohn/ghostty-mobile/blob/main/docs/SECURITY.md">Security</a>
+      <a href="https://github.com/trevorrjohn/ghostty-mobile/blob/main/docs/ROADMAP.md">Roadmap</a>
+    </div>
+  </footer>
+</body>
+</html>
