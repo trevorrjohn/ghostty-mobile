@@ -4,7 +4,7 @@ import WidgetKit
 
 @available(iOSApplicationExtension 18.0, *)
 struct QuickConnectControl: ControlWidget {
-    static let kind = "dev.ghostty.connect.quick-connect"
+    static let kind = "fail.founder.terminal.quick-connect"
 
     var body: some ControlWidgetConfiguration {
         StaticControlConfiguration(kind: Self.kind) {

@@ -2,6 +2,8 @@
 
 Ghostty Mobile contains the native Android and iOS Ghostty Connect applications.
 
+Website: [founder.fail](https://founder.fail)
+
 ```text
 android/  Android application
 ios/      iOS application

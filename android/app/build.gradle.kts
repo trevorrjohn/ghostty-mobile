@@ -8,7 +8,7 @@ configure<ApplicationExtension> {
     ndkVersion = "27.1.12297006"
 
     defaultConfig {
-        applicationId = "dev.ghostty.connect"
+        applicationId = "fail.founder.terminal"
         minSdk = 29
         targetSdk = 36
         versionCode = 1

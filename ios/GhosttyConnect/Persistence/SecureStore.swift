@@ -14,7 +14,7 @@ enum SecureStoreError: LocalizedError {
 }
 
 struct SecureStore {
-    private let service = "dev.ghostty.connect"
+    private let service = "fail.founder.terminal"
 
     func read<T: Decodable>(
         _ type: T.Type,

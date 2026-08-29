@@ -1,6 +1,6 @@
 name: GhosttyConnect
 options:
-  bundleIdPrefix: dev.ghostty
+  bundleIdPrefix: fail.founder
   deploymentTarget:
     iOS: "17.0"
 settings:
@@ -22,7 +22,7 @@ targets:
         CFBundleDisplayName: Ghostty Connect
         CFBundleURLTypes:
           - CFBundleTypeRole: Editor
-            CFBundleURLName: dev.ghostty.connect
+            CFBundleURLName: fail.founder.terminal
             CFBundleURLSchemes:
               - ghostty-connect
         UIApplicationSceneManifest:
@@ -38,7 +38,7 @@ targets:
         embed: true
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: dev.ghostty.connect
+        PRODUCT_BUNDLE_IDENTIFIER: fail.founder.terminal
         PRODUCT_NAME: Ghostty Connect
         PRODUCT_MODULE_NAME: GhosttyConnect
         CURRENT_PROJECT_VERSION: 1
@@ -62,7 +62,7 @@ targets:
           NSExtensionPointIdentifier: com.apple.widgetkit-extension
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: dev.ghostty.connect.quick-connect
+        PRODUCT_BUNDLE_IDENTIFIER: fail.founder.terminal.quick-connect
         PRODUCT_NAME: Quick Connect
         PRODUCT_MODULE_NAME: GhosttyConnectControl
         CURRENT_PROJECT_VERSION: 1
