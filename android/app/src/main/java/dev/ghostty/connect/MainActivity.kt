@@ -1321,6 +1321,7 @@ class MainActivity : Activity() {
         root.addView(button("Reset to defaults", secondary) {
             saveKeyboardBarConfig(keyboardBarConfig.copy(
                 items = KeyboardBarCatalog.defaultItems,
+                combinations = KeyboardBarCatalog.defaultCombinations,
                 volumeUpActionId = KeyboardBarCatalog.DEFAULT_VOLUME_UP_ACTION_ID,
                 volumeDownActionId = KeyboardBarCatalog.DEFAULT_VOLUME_DOWN_ACTION_ID,
             ))
@@ -2330,10 +2331,13 @@ class MainActivity : Activity() {
             .setTitle(entry.name)
             .setItems(actions.toTypedArray()) { _, index ->
                 when (actions[index]) {
-                    "Open" -> if (entry.type == SftpEntryType.DIRECTORY) {
-                        sftpService?.enter(browserId, entry)
-                    } else {
-                        openRemoteFile(browserId, entry)
+                    "Open" -> {
+                        clearSftpSearch(browserId)
+                        if (entry.type == SftpEntryType.DIRECTORY) {
+                            sftpService?.enter(browserId, entry)
+                        } else {
+                            openRemoteFile(browserId, entry)
+                        }
                     }
                     "Favorite folder" -> if (hostId != null && folderPath != null && state != null) {
                         updateFavorite(state, hostId, folderPath, add = true)
@@ -3435,7 +3439,10 @@ class MainActivity : Activity() {
             val row = browserEntryRow(entry, metadata, trailing, mutedColor)
             if (entry.supported) {
                 if (entry.type == SftpEntryType.DIRECTORY) {
-                    row.setOnClickListener { sftpService?.enter(state.browserId, entry) }
+                    row.setOnClickListener {
+                        clearSftpSearch(state.browserId)
+                        sftpService?.enter(state.browserId, entry)
+                    }
                 }
                 row.isLongClickable = true
                 row.setOnLongClickListener {
@@ -3450,6 +3457,11 @@ class MainActivity : Activity() {
             }
             list.addView(row)
         }
+    }
+
+    private fun clearSftpSearch(browserId: String) {
+        if (sftpSearchQueries.remove(browserId).isNullOrEmpty()) return
+        currentBrowserState?.takeIf { it.browserId == browserId }?.let(::renderFileBrowser)
     }
 
     private fun browserParentRow(mutedColor: Int, action: () -> Unit): View = LinearLayout(this).apply {

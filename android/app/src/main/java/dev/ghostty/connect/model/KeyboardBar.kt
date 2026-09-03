@@ -31,7 +31,7 @@ data class KeyboardBarItem(
 data class KeyboardBarConfig(
     val enabled: Boolean = true,
     val items: List<KeyboardBarItem> = KeyboardBarCatalog.defaultItems,
-    val combinations: List<KeyboardBarItem> = emptyList(),
+    val combinations: List<KeyboardBarItem> = KeyboardBarCatalog.defaultCombinations,
     val volumeUpActionId: String = KeyboardBarCatalog.DEFAULT_VOLUME_UP_ACTION_ID,
     val volumeDownActionId: String = KeyboardBarCatalog.DEFAULT_VOLUME_DOWN_ACTION_ID,
 )
@@ -79,6 +79,16 @@ object KeyboardBarCatalog {
         type = KeyboardBarItemType.LAST_USED_COMBINATION,
     )
 
+    val controlB = KeyboardBarItem(
+        id = "combination-control-b",
+        label = "Ctrl+B",
+        type = KeyboardBarItemType.COMBINATION,
+        key = "b",
+        modifiers = setOf(KeyboardModifier.CONTROL),
+    )
+
+    val defaultCombinations = listOf(controlB)
+
     val availableItems = modifiers + keys + lastUsedModifier + lastUsedCombination
 
     fun volumeAction(id: String): KeyboardBarItem? = keys.firstOrNull { it.id == id }
@@ -91,7 +101,7 @@ object KeyboardBarCatalog {
 
     val defaultItems = listOf(
         keys.first { it.key == "ESCAPE" },
-        modifiers.first { it.modifiers.contains(KeyboardModifier.CONTROL) },
+        controlB,
         modifiers.first { it.modifiers.contains(KeyboardModifier.ALT) },
         keys.first { it.key == "TAB" },
         modifiers.first { it.modifiers.contains(KeyboardModifier.SHIFT) },

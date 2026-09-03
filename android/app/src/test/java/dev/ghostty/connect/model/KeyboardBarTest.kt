@@ -7,6 +7,17 @@ import org.junit.Test
 
 class KeyboardBarTest {
     @Test
+    fun defaultsIncludeControlBCombination() {
+        val config = KeyboardBarConfig()
+        val controlB = config.items.single { it.id == "combination-control-b" }
+
+        assertEquals(KeyboardBarItemType.COMBINATION, controlB.type)
+        assertEquals("b", controlB.key)
+        assertEquals(setOf(KeyboardModifier.CONTROL), controlB.modifiers)
+        assertEquals(listOf(controlB), config.combinations)
+    }
+
+    @Test
     fun volumeButtonsDefaultToEscapeAndTab() {
         val config = KeyboardBarConfig()
 
