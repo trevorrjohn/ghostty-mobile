@@ -343,12 +343,21 @@ struct KeyboardBarConfig: Codable, Equatable {
     static let maximumEncodedBytes = 16_384
     static let maximumActions = 16
     static let maximumItems = KeyboardBarItemID.allCases.count + maximumActions
-    static let defaultItemIDs: [KeyboardBarItemID] = [
-        .escape, .control, .alt, .tab, .shift, .up, .down, .left, .right, .lastModifier,
+    static let defaultControlB = KeyboardAction(
+        id: UUID(uuidString: "4b1da4ad-2b5c-4c70-8e63-e76b0f6f4354")!,
+        label: "Ctrl+B",
+        key: .b,
+        modifiers: [.control]
+    )
+    static let defaultItems: [KeyboardBarItem] = [
+        .builtIn(.escape), .action(defaultControlB.id), .builtIn(.alt), .builtIn(.tab),
+        .builtIn(.shift), .builtIn(.up), .builtIn(.down), .builtIn(.left), .builtIn(.right),
+        .builtIn(.lastModifier),
     ]
     static let defaults = KeyboardBarConfig(
         enabled: true,
-        items: defaultItemIDs.map(KeyboardBarItem.builtIn)
+        items: defaultItems,
+        actions: [defaultControlB]
     )
 
     var enabled: Bool
@@ -357,7 +366,7 @@ struct KeyboardBarConfig: Codable, Equatable {
 
     init(
         enabled: Bool = true,
-        items: [KeyboardBarItem] = Self.defaultItemIDs.map(KeyboardBarItem.builtIn),
+        items: [KeyboardBarItem],
         actions: [KeyboardAction] = []
     ) {
         self.enabled = enabled

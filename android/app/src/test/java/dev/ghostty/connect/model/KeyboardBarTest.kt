@@ -14,6 +14,9 @@ class KeyboardBarTest {
         assertEquals(KeyboardBarItemType.COMBINATION, controlB.type)
         assertEquals("b", controlB.key)
         assertEquals(setOf(KeyboardModifier.CONTROL), controlB.modifiers)
+        assertEquals("tmux", controlB.titleContains)
+        assertTrue(controlB.isVisibleForTerminalTitle("work — tmux"))
+        assertTrue(!controlB.isVisibleForTerminalTitle("work — shell"))
         assertEquals(listOf(controlB), config.combinations)
     }
 

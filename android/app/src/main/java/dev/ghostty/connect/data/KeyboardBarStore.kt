@@ -59,6 +59,7 @@ class KeyboardBarStore(context: Context) {
                 type = KeyboardBarItemType.valueOf(value.getString("type")),
                 key = value.optString("key").takeIf { !value.isNull("key") && it.isNotBlank() },
                 modifiers = modifiers,
+                titleContains = value.optString("titleContains").takeIf { it.isNotBlank() },
             ))
         }
     }
@@ -71,6 +72,7 @@ class KeyboardBarStore(context: Context) {
                 put("type", item.type.name)
                 put("key", item.key ?: JSONObject.NULL)
                 put("modifiers", JSONArray(item.modifiers.map(KeyboardModifier::name)))
+                put("titleContains", item.titleContains ?: JSONObject.NULL)
             })
         }
     }

@@ -26,7 +26,11 @@ data class KeyboardBarItem(
     val type: KeyboardBarItemType,
     val key: String? = null,
     val modifiers: Set<KeyboardModifier> = emptySet(),
+    val titleContains: String? = null,
 )
+
+fun KeyboardBarItem.isVisibleForTerminalTitle(title: String): Boolean =
+    titleContains.isNullOrBlank() || title.contains(titleContains, ignoreCase = true)
 
 data class KeyboardBarConfig(
     val enabled: Boolean = true,
@@ -85,6 +89,7 @@ object KeyboardBarCatalog {
         type = KeyboardBarItemType.COMBINATION,
         key = "b",
         modifiers = setOf(KeyboardModifier.CONTROL),
+        titleContains = "tmux",
     )
 
     val defaultCombinations = listOf(controlB)

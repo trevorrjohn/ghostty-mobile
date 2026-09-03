@@ -81,6 +81,30 @@ class SftpModelsTest {
     }
 
     @Test
+    fun hiddenEntriesAreHiddenByDefaultAndCanBeShown() {
+        val entries = listOf(
+            SftpEntry("visible", SftpEntryType.DIRECTORY),
+            SftpEntry(".hidden", SftpEntryType.DIRECTORY),
+            SftpEntry(".env", SftpEntryType.FILE),
+        )
+
+        assertEquals(
+            listOf("visible"),
+            filterAndSortSftpEntries(entries, "", SftpSortMode.NAME, false).map(SftpEntry::name),
+        )
+        assertEquals(
+            listOf(".hidden", "visible", ".env"),
+            filterAndSortSftpEntries(entries, "", SftpSortMode.NAME, false, showHidden = true).map(SftpEntry::name),
+        )
+        assertTrue(filterAndSortSftpEntries(entries, "env", SftpSortMode.NAME, false).isEmpty())
+        assertEquals(
+            listOf(".env"),
+            filterAndSortSftpEntries(entries, "env", SftpSortMode.NAME, false, showHidden = true)
+                .map(SftpEntry::name),
+        )
+    }
+
+    @Test
     fun sortingKeepsDirectoriesFirstAndUnknownMetadataLast() {
         val entries = listOf(
             SftpEntry("small", SftpEntryType.FILE, size = 10, modifiedAtSeconds = 30, accessedAtSeconds = 10),

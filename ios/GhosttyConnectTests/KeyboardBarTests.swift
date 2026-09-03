@@ -4,10 +4,12 @@ import XCTest
 final class KeyboardBarTests: XCTestCase {
     func testDefaultsMatchSharedBasicOrder() {
         XCTAssertEqual(KeyboardBarConfig.defaults.items, [
-            .builtIn(.escape), .builtIn(.control), .builtIn(.alt), .builtIn(.tab),
+            .builtIn(.escape), .action(KeyboardBarConfig.defaultControlB.id), .builtIn(.alt), .builtIn(.tab),
             .builtIn(.shift), .builtIn(.up), .builtIn(.down), .builtIn(.left), .builtIn(.right),
             .builtIn(.lastModifier),
         ])
+        XCTAssertEqual(KeyboardBarConfig.defaults.actions, [KeyboardBarConfig.defaultControlB])
+        XCTAssertEqual(KeyboardBarConfig.defaultControlB.event, .key(.character("B"), text: "b", modifiers: .control))
     }
 
     func testConfigurationRoundTripsIncludingEmptyBar() throws {

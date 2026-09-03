@@ -62,8 +62,12 @@ fun filterAndSortSftpEntries(
     query: String,
     sortMode: SftpSortMode,
     descending: Boolean,
+    showHidden: Boolean = false,
 ): List<SftpEntry> {
-    val scores = entries.mapNotNull { entry -> fuzzyScore(entry.name, query)?.let { entry to it } }.toMap()
+    val scores = entries.asSequence()
+        .filter { showHidden || !it.name.startsWith('.') }
+        .mapNotNull { entry -> fuzzyScore(entry.name, query)?.let { entry to it } }
+        .toMap()
     return scores.keys.sortedWith { left, right ->
         val directoryOrder = compareValues(left.type != SftpEntryType.DIRECTORY, right.type != SftpEntryType.DIRECTORY)
         if (directoryOrder != 0) return@sortedWith directoryOrder

@@ -13,8 +13,10 @@ import android.content.Context
 import android.content.ServiceConnection
 import android.content.ClipboardManager
 import android.content.ClipData
+import android.content.res.ColorStateList
 import android.graphics.Color
 import android.graphics.drawable.GradientDrawable
+import android.graphics.drawable.StateListDrawable
 import android.graphics.Rect
 import android.graphics.Typeface
 import android.net.Uri
@@ -25,6 +27,7 @@ import android.os.Build
 import android.os.Looper
 import android.content.pm.PackageManager
 import android.provider.OpenableColumns
+import android.provider.Settings
 import android.text.InputType
 import android.text.Editable
 import android.text.TextWatcher
@@ -36,6 +39,7 @@ import android.view.View
 import android.view.ViewGroup
 import android.view.WindowInsets
 import android.view.WindowManager
+import android.view.inputmethod.InputMethodManager
 import android.window.OnBackInvokedDispatcher
 import android.widget.ArrayAdapter
 import android.widget.AdapterView
@@ -71,6 +75,7 @@ import dev.ghostty.connect.model.KeyboardBarConfig
 import dev.ghostty.connect.model.KeyboardBarItem
 import dev.ghostty.connect.model.KeyboardBarItemType
 import dev.ghostty.connect.model.KeyboardModifier
+import dev.ghostty.connect.model.isVisibleForTerminalTitle
 import dev.ghostty.connect.model.MAX_RETRY_ATTEMPTS
 import dev.ghostty.connect.model.MIN_RETRY_ATTEMPTS
 import dev.ghostty.connect.model.MAX_FEEDBACK_ENTRIES
@@ -150,11 +155,15 @@ class MainActivity : Activity() {
     private var pendingDownloadUri: Uri? = null
     private var pendingUploadUri: Uri? = null
     private val sftpSearchQueries = mutableMapOf<String, String>()
+    private var sftpSearchField: EditText? = null
     private val sftpSortModes = mutableMapOf<String, SftpSortMode>()
     private val sftpSortDescending = mutableMapOf<String, Boolean>()
+    private val sftpShowHidden = mutableSetOf<String>()
+    private val sftpKeepSearchFocused = mutableSetOf<String>()
     private var lastOpenedSftpUri: String? = null
     private var activeSftpPreviewUri: Uri? = null
     private var activeSftpPreviewBrowserId: String? = null
+    private var pendingApkInstall: Pair<String, String>? = null
     private var selectedSessionId: String? = null
     private var terminalStatus: TextView? = null
     private var terminalTitle: TextView? = null
@@ -190,6 +199,7 @@ class MainActivity : Activity() {
     private var lastUsedCombination: KeyboardBarItem? = null
     private val surface = Color.rgb(17, 19, 24)
     private val raised = Color.rgb(26, 29, 36)
+    private val browserButtonColor = Color.rgb(42, 45, 55)
     private val primary = Color.rgb(241, 243, 248)
     private val secondary = Color.rgb(174, 182, 198)
     private val accent = Color.rgb(139, 233, 179)
@@ -956,6 +966,16 @@ class MainActivity : Activity() {
     @Deprecated("Activity result callback retained without an AndroidX dependency")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == REQUEST_APK_INSTALL_PERMISSION) {
+            val pending = pendingApkInstall
+            pendingApkInstall = null
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O || packageManager.canRequestPackageInstalls()) {
+                pending?.let { (browserId, uri) -> openSftpUri(browserId, uri) }
+            } else {
+                toast("Allow Ghostty Connect to install unknown apps, then open the APK again.")
+            }
+            return
+        }
         if (resultCode != RESULT_OK) {
             if (requestCode == CREATE_DOWNLOAD_DOCUMENT) pendingDownloadRequest = null
             if (requestCode == OPEN_UPLOAD_DOCUMENT) pendingUploadRequest = null
@@ -1826,14 +1846,14 @@ class MainActivity : Activity() {
     private fun settingsBarPreview(): View {
         val row = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
-            setPadding(dp(4), dp(4), dp(4), dp(4))
+            setPadding(dp(6), dp(5), dp(6), dp(5))
         }
-        keyboardBarConfig.items.forEach { row.addView(barButton(it.label) {}) }
-        row.addView(barButton("More") {})
+        keyboardBarConfig.items.forEach { row.addView(barButton(it.label) {}, keyboardBarLayoutParams()) }
+        row.addView(barButton("More") {}, keyboardBarLayoutParams(endMargin = 0))
         return HorizontalScrollView(this).apply {
             isHorizontalScrollBarEnabled = false
             setBackgroundColor(raised)
-            addView(row, ViewGroup.LayoutParams(-2, dp(48)))
+            addView(row, ViewGroup.LayoutParams(-2, dp(50)))
         }
     }
 
@@ -1868,8 +1888,10 @@ class MainActivity : Activity() {
         val form = vertical(16)
         val name = field("Label (optional)", existing?.label.orEmpty())
         val key = field("Key, for example b or ARROW_LEFT", existing?.key.orEmpty())
+        val titleContains = field("Show when terminal title contains (optional)", existing?.titleContains.orEmpty())
         form.addView(name.margins(bottom = 8))
-        form.addView(key.margins(bottom = 10))
+        form.addView(key.margins(bottom = 8))
+        form.addView(titleContains.margins(bottom = 10))
         form.addView(label("Modifiers", 14f, secondary).margins(bottom = 4))
         val checks = KeyboardModifier.entries.associateWith { modifier ->
             CheckBox(this).apply {
@@ -1896,6 +1918,11 @@ class MainActivity : Activity() {
                 val labelValue = name.text.toString().trim().ifBlank {
                     (modifiers.joinToString("+") { it.displayName }) + "+" + keyValue
                 }
+                val titleCondition = titleContains.text.toString().trim().take(128).takeIf(String::isNotBlank)
+                if (titleCondition?.any(Char::isISOControl) == true) {
+                    toast("The terminal-title condition contains invalid characters.")
+                    return@setOnClickListener
+                }
                 val combination = KeyboardBarItem(
                     id = existing?.id ?: "combination-${UUID.randomUUID()}",
                     label = labelValue,
@@ -1904,6 +1931,7 @@ class MainActivity : Activity() {
                         KeyboardBarCatalog.keys.any { it.key == candidate }
                     } ?: keyValue,
                     modifiers = modifiers,
+                    titleContains = titleCondition,
                 )
                 val items = if (existing == null) {
                     keyboardBarConfig.items + combination
@@ -2059,6 +2087,7 @@ class MainActivity : Activity() {
 
     private fun renderFileBrowser(state: SftpBrowserState) {
         if (!browserVisible || state.browserId != selectedBrowserId) return
+        val keepSearchFocused = sftpKeepSearchFocused.remove(state.browserId) || sftpSearchField?.hasFocus() == true
         currentBrowserState = state
         val hostId = sftpService?.host(state.browserId)?.id
         val favorites = hostId?.let { runCatching { sftpFavoriteStore.load(it) }.getOrElse { emptyList() } }.orEmpty()
@@ -2075,6 +2104,7 @@ class MainActivity : Activity() {
                 sftpSortModes[state.browserId] ?: SftpSortMode.NAME,
                 sftpSortDescending[state.browserId] == true,
                 browserMuted,
+                state.browserId in sftpShowHidden,
             )
         }
         state.transfer?.takeIf {
@@ -2196,6 +2226,7 @@ class MainActivity : Activity() {
                 menu.add("New folder")
                 menu.add(if (state.path in favorites) "Remove current favorite" else "Favorite current folder")
                 menu.add("Refresh")
+                menu.add(if (state.browserId in sftpShowHidden) "Hide hidden files" else "Show hidden files")
                 menu.add("Open terminal")
                 setOnMenuItemClickListener { item ->
                     when (item.title) {
@@ -2207,6 +2238,14 @@ class MainActivity : Activity() {
                             updateFavorite(state, hostId, state.path, add = false)
                         } else Unit
                         "Refresh" -> sftpService?.refresh(state.browserId)
+                        "Show hidden files" -> {
+                            sftpShowHidden += state.browserId
+                            renderFileBrowser(state)
+                        }
+                        "Hide hidden files" -> {
+                            sftpShowHidden -= state.browserId
+                            renderFileBrowser(state)
+                        }
                         "Open terminal" -> {
                             val host = sftpService?.host(state.browserId)
                             if (host == null) toast("The saved host is unavailable.") else requestCredentialAndConnect(host)
@@ -2231,7 +2270,7 @@ class MainActivity : Activity() {
                     updateDirectoryList()
                 }
             })
-        }
+        }.also { sftpSearchField = it }
         toolbar.addView(search, LinearLayout.LayoutParams(-1, dp(44)).apply { topMargin = dp(10) })
         toolbar.addView(label(state.status, 13f, if (state.connected) accent else browserMuted).margins(top = 8))
         state.error?.let { toolbar.addView(label(it, 13f, Color.rgb(255, 145, 145)).margins(top = 5)) }
@@ -2304,6 +2343,7 @@ class MainActivity : Activity() {
             addView(content, ViewGroup.LayoutParams(-1, -2))
         }, LinearLayout.LayoutParams(-1, 0, 1f))
         setContentView(root)
+        if (keepSearchFocused) focusSftpSearch(search)
     }
 
     private fun showEntryActions(browserId: String, entry: SftpEntry) {
@@ -2377,8 +2417,23 @@ class MainActivity : Activity() {
 
     private fun openSftpUri(browserId: String, uriString: String): Boolean {
         val uri = Uri.parse(uriString)
+        val mimeType = contentResolver.getType(uri) ?: "application/octet-stream"
+        if (mimeType == "application/vnd.android.package-archive" &&
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && !packageManager.canRequestPackageInstalls()
+        ) {
+            pendingApkInstall = browserId to uriString
+            return runCatching {
+                startActivityForResult(
+                    Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:$packageName")),
+                    REQUEST_APK_INSTALL_PERMISSION,
+                )
+            }.onFailure {
+                pendingApkInstall = null
+                toast("Open Settings and allow Ghostty Connect to install unknown apps.")
+            }.isSuccess
+        }
         val intent = Intent(Intent.ACTION_VIEW).apply {
-            setDataAndType(uri, contentResolver.getType(uri) ?: "application/octet-stream")
+            setDataAndType(uri, mimeType)
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         }
         return runCatching { startActivity(intent) }
@@ -2607,6 +2662,8 @@ class MainActivity : Activity() {
         sftpSearchQueries.remove(browserId)
         sftpSortModes.remove(browserId)
         sftpSortDescending.remove(browserId)
+        sftpShowHidden.remove(browserId)
+        sftpKeepSearchFocused.remove(browserId)
     }
 
     private fun bindSessionService() {
@@ -2634,18 +2691,23 @@ class MainActivity : Activity() {
         trustedHostsVisible = false
         browserVisible = false
         val root = vertical(0)
-        val status = label("Connecting…", 13f, accent).also { terminalStatus = it }
-        val toolbar = vertical(16).apply { setBackgroundColor(raised) }
+        val status = label("Connecting…", 11f, accent).also { terminalStatus = it }
+        val toolbar = vertical(8).apply { setBackgroundColor(raised) }
         val titleRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
         titleRow.addView(
-            label(host.name, 18f, primary, Typeface.BOLD).also { terminalTitle = it },
+            label(host.name, 16f, primary, Typeface.BOLD).also { terminalTitle = it },
             LinearLayout.LayoutParams(0, -2, 1f),
         )
         lateinit var selectButton: Button
         fun updateSelectButton(active: Boolean) {
             selectButton.text = if (active) "Done" else "Select"
             selectButton.setTextColor(if (active) Color.rgb(8, 15, 12) else primary)
-            selectButton.setBackgroundColor(if (active) accent else surface)
+            selectButton.background = pressableBackground(
+                if (active) accent else raised,
+                Color.rgb(180, 255, 210),
+                10,
+                accent,
+            )
             selectButton.isSelected = active
             selectButton.contentDescription = if (active) {
                 "Exit local selection; remote mouse input is paused"
@@ -2663,8 +2725,8 @@ class MainActivity : Activity() {
         selectButton.isEnabled = false
         terminalSelectButton = selectButton
         updateSelectButton(false)
-        titleRow.addView(selectButton, LinearLayout.LayoutParams(-2, -2))
-        val overflow = label("...", 24f, primary).apply {
+        titleRow.addView(selectButton, LinearLayout.LayoutParams(-2, dp(36)))
+        val overflow = label("…", 22f, primary).apply {
             contentDescription = "More options"
             gravity = Gravity.CENTER
             setPadding(dp(12), dp(4), dp(12), dp(4))
@@ -2760,7 +2822,7 @@ class MainActivity : Activity() {
                 }
             }
         }
-        titleRow.addView(overflow, LinearLayout.LayoutParams(dp(48), -2))
+        titleRow.addView(overflow, LinearLayout.LayoutParams(dp(40), dp(36)))
         toolbar.addView(titleRow)
         toolbar.addView(status)
         toolbar.addView(vertical(10).apply {
@@ -2834,7 +2896,11 @@ class MainActivity : Activity() {
             }
             onLocalSelectionModeChanged = ::updateSelectButton
             onMetadataChanged = { title, pwd, atPrompt, passwordInput ->
-                terminalTitle?.text = title.ifBlank { host.name }
+                val displayedTitle = title.ifBlank { host.name }
+                if (terminalTitle?.text?.toString() != displayedTitle) {
+                    terminalTitle?.text = displayedTitle
+                    renderModifierBarItems()
+                }
                 if (pwd.isNotBlank()) terminalStatus?.text = displayRemotePwd(pwd)
                 if (atPrompt) {
                     service.markShellIntegrationDetected(sessionId)
@@ -2957,21 +3023,24 @@ class MainActivity : Activity() {
         val row = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             setBackgroundColor(raised)
-            setPadding(dp(6), dp(4), dp(6), dp(4))
+            setPadding(dp(6), dp(5), dp(6), dp(5))
         }.also { modifierBarRow = it }
         renderModifierBarItems()
         return HorizontalScrollView(this).apply {
             isHorizontalScrollBarEnabled = false
             setBackgroundColor(raised)
-            addView(row, ViewGroup.LayoutParams(-2, dp(48)))
+            addView(row, ViewGroup.LayoutParams(-2, dp(50)))
         }
     }
 
     private fun renderModifierBarItems() {
         val row = modifierBarRow ?: return
         row.removeAllViews()
-        keyboardBarConfig.items.forEach { item -> row.addView(modifierBarButton(item)) }
-        row.addView(barButton("More") { showAllKeyboardKeys() })
+        val title = terminalTitle?.text?.toString().orEmpty()
+        keyboardBarConfig.items.filter { it.isVisibleForTerminalTitle(title) }.forEach { item ->
+            row.addView(modifierBarButton(item), keyboardBarLayoutParams())
+        }
+        row.addView(barButton("More") { showAllKeyboardKeys() }, keyboardBarLayoutParams(endMargin = 0))
     }
 
     private fun modifierBarButton(item: KeyboardBarItem): View {
@@ -3282,7 +3351,9 @@ class MainActivity : Activity() {
         val items = KeyboardBarCatalog.availableItems.filter {
             it.type != KeyboardBarItemType.LAST_USED_MODIFIER &&
                 it.type != KeyboardBarItemType.LAST_USED_COMBINATION
-        } + keyboardBarConfig.combinations
+        } + keyboardBarConfig.combinations.filter {
+            it.isVisibleForTerminalTitle(terminalTitle?.text?.toString().orEmpty())
+        }
         AlertDialog.Builder(this)
             .setTitle("Keyboard keys")
             .setItems(items.map(KeyboardBarItem::label).toTypedArray()) { _, index -> activateBarItem(items[index]) }
@@ -3408,12 +3479,13 @@ class MainActivity : Activity() {
         sortMode: SftpSortMode,
         descending: Boolean,
         mutedColor: Int,
+        showHidden: Boolean,
     ) {
         list.removeAllViews()
         if (query.isBlank() && state.canNavigateBack) list.addView(browserParentRow(mutedColor) {
             sftpService?.navigateBack(state.browserId)
         })
-        val entries = filterAndSortSftpEntries(state.entries, query, sortMode, descending)
+        val entries = filterAndSortSftpEntries(state.entries, query, sortMode, descending, showHidden)
         if (entries.isEmpty() && state.connected) {
             list.addView(label(
                 if (state.entries.isEmpty()) "This directory is empty." else "No matching files.",
@@ -3440,7 +3512,7 @@ class MainActivity : Activity() {
             if (entry.supported) {
                 if (entry.type == SftpEntryType.DIRECTORY) {
                     row.setOnClickListener {
-                        clearSftpSearch(state.browserId)
+                        if (!clearSftpSearch(state.browserId)) releaseSftpSearchFocus()
                         sftpService?.enter(state.browserId, entry)
                     }
                 }
@@ -3459,9 +3531,33 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun clearSftpSearch(browserId: String) {
-        if (sftpSearchQueries.remove(browserId).isNullOrEmpty()) return
-        currentBrowserState?.takeIf { it.browserId == browserId }?.let(::renderFileBrowser)
+    private fun clearSftpSearch(browserId: String): Boolean {
+        val search = sftpSearchField?.takeIf { selectedBrowserId == browserId }
+        val hadQuery = !sftpSearchQueries[browserId].isNullOrBlank() || search?.text?.isNotBlank() == true
+        sftpSearchQueries.remove(browserId)
+        if (hadQuery) sftpKeepSearchFocused += browserId
+        search?.let {
+            if (search.text.isNotEmpty()) search.text.clear()
+            if (hadQuery) focusSftpSearch(search)
+        }
+        return hadQuery
+    }
+
+    private fun releaseSftpSearchFocus() {
+        sftpSearchField?.clearFocus()
+        getSystemService(InputMethodManager::class.java).hideSoftInputFromWindow(
+            sftpSearchField?.windowToken,
+            0,
+        )
+    }
+
+    private fun focusSftpSearch(search: EditText) {
+        search.post {
+            if (!browserVisible || search !== sftpSearchField) return@post
+            search.requestFocus()
+            search.setSelection(search.text.length)
+            getSystemService(InputMethodManager::class.java).showSoftInput(search, InputMethodManager.SHOW_IMPLICIT)
+        }
     }
 
     private fun browserParentRow(mutedColor: Int, action: () -> Unit): View = LinearLayout(this).apply {
@@ -3535,7 +3631,7 @@ class MainActivity : Activity() {
     }
     private fun field(hint: String, value: String, type: Int = InputType.TYPE_CLASS_TEXT) = EditText(this).apply {
         this.hint = hint; setHintTextColor(secondary); setTextColor(primary); setText(value); inputType = type
-        setSingleLine(true); setBackgroundColor(raised); setPadding(dp(14), dp(12), dp(14), dp(12))
+        setSingleLine(true); background = roundedBackground(raised, 12); setPadding(dp(14), dp(12), dp(14), dp(12))
     }
     private fun feedbackField(hint: String, lines: Int) = EditText(this).apply {
         this.hint = hint; setHintTextColor(secondary); setTextColor(primary)
@@ -3543,20 +3639,59 @@ class MainActivity : Activity() {
             InputType.TYPE_TEXT_FLAG_CAP_SENTENCES or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
         imeOptions = android.view.inputmethod.EditorInfo.IME_FLAG_NO_PERSONALIZED_LEARNING
         minLines = lines; maxLines = lines * 2; gravity = Gravity.TOP
-        setBackgroundColor(raised); setPadding(dp(14), dp(12), dp(14), dp(12))
+        background = roundedBackground(raised, 12); setPadding(dp(14), dp(12), dp(14), dp(12))
     }
     private fun button(text: String, color: Int = accent, action: () -> Unit) = Button(this).apply {
-        this.text = text; setTextColor(Color.rgb(8, 15, 12)); setBackgroundColor(color); isAllCaps = false; setOnClickListener { action() }
+        this.text = text; setTextColor(Color.rgb(8, 15, 12)); isAllCaps = false; backgroundTintList = null
+        background = pressableBackground(color, blendColors(color, Color.WHITE, 0.18f), 12)
+        setOnClickListener { action() }
     }
     private fun compactButton(text: String, enabled: Boolean = true, action: () -> Unit) = Button(this).apply {
-        this.text = text; isEnabled = enabled; isAllCaps = false; setTextColor(primary); setBackgroundColor(surface)
+        this.text = text; isEnabled = enabled; isAllCaps = false
+        setTextColor(ColorStateList(
+            arrayOf(intArrayOf(-android.R.attr.state_enabled), intArrayOf()),
+            intArrayOf(secondary, primary),
+        ))
+        backgroundTintList = null
+        background = pressableBackground(browserButtonColor, blendColors(browserButtonColor, Color.WHITE, 0.12f), 10)
         minWidth = 0; minimumWidth = 0; setPadding(dp(8), 0, dp(8), 0); setOnClickListener { action() }
     }
     private fun barButton(text: String, active: Boolean = false, action: () -> Unit) = Button(this).apply {
-        this.text = text; isAllCaps = false; setTextColor(if (active) Color.rgb(8, 15, 12) else primary)
-        setBackgroundColor(if (active) accent else surface); minWidth = dp(52); minimumWidth = dp(52)
-        setPadding(dp(10), 0, dp(10), 0); setOnClickListener { action() }
+        this.text = text
+        isAllCaps = false
+        setTextColor(ColorStateList(
+            arrayOf(intArrayOf(android.R.attr.state_pressed), intArrayOf()),
+            intArrayOf(Color.rgb(8, 15, 12), if (active) Color.rgb(8, 15, 12) else primary),
+        ))
+        backgroundTintList = null
+        background = pressableBackground(if (active) accent else raised, Color.rgb(180, 255, 210), 10, accent)
+        minWidth = dp(52)
+        minimumWidth = dp(52)
+        setPadding(dp(10), 0, dp(10), 0)
+        setOnClickListener {
+            performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+            action()
+        }
     }
+    private fun keyboardBarLayoutParams(endMargin: Int = 6) = LinearLayout.LayoutParams(-2, -1).apply {
+        marginEnd = dp(endMargin)
+    }
+    private fun pressableBackground(
+        normal: Int,
+        pressed: Int,
+        radius: Int,
+        stroke: Int? = null,
+    ) = StateListDrawable().apply {
+        addState(intArrayOf(android.R.attr.state_pressed), roundedBackground(pressed, radius))
+        addState(intArrayOf(), roundedBackground(normal, radius).apply {
+            stroke?.let { setStroke(dp(1), it) }
+        })
+    }
+    private fun blendColors(base: Int, overlay: Int, amount: Float): Int = Color.rgb(
+        (Color.red(base) + (Color.red(overlay) - Color.red(base)) * amount).toInt(),
+        (Color.green(base) + (Color.green(overlay) - Color.green(base)) * amount).toInt(),
+        (Color.blue(base) + (Color.blue(overlay) - Color.blue(base)) * amount).toInt(),
+    )
     private fun View.margins(top: Int = 0, bottom: Int = 0): View = apply {
         layoutParams = LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(top); bottomMargin = dp(bottom) }
     }
@@ -3569,6 +3704,7 @@ class MainActivity : Activity() {
         const val NOTIFICATION_PERMISSION = 1002
         const val CREATE_DOWNLOAD_DOCUMENT = 1003
         const val OPEN_UPLOAD_DOCUMENT = 1004
+        const val REQUEST_APK_INSTALL_PERMISSION = 1005
         const val GHOSTTY_MOD_SHIFT = 1 shl 0
         const val GHOSTTY_MOD_CTRL = 1 shl 1
         const val GHOSTTY_MOD_ALT = 1 shl 2

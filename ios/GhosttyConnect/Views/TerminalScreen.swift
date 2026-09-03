@@ -16,6 +16,7 @@ struct TerminalScreen: View {
     @State private var pastePrompt: PastePrompt?
     @State private var contextualSelection: ContextualSelection?
     @State private var transientFontSize: Double?
+    @State private var pressedKeyboardBarItem: KeyboardBarItem?
 
     var body: some View {
         let theme = TerminalTheme.theme(id: model.settings.themeID)
@@ -78,11 +79,17 @@ struct TerminalScreen: View {
                                 .font(.system(.caption2, design: .monospaced).weight(.semibold))
                                 .padding(.horizontal, 9)
                                 .frame(minWidth: 44, minHeight: 44)
-                                .foregroundStyle(isActive(item) ? Color.ghosttySurface : Color.ghosttyAccent)
+                                .foregroundStyle(
+                                    isActive(item) || pressedKeyboardBarItem == item
+                                        ? Color.ghosttySurface : Color.ghosttyAccent
+                                )
                                 .background(
-                                    isActive(item) ? Color.ghosttyAccent : Color.clear,
+                                    pressedKeyboardBarItem == item
+                                        ? Color.ghosttyAccent.opacity(0.75)
+                                        : (isActive(item) ? Color.ghosttyAccent : Color.clear),
                                     in: RoundedRectangle(cornerRadius: 7)
                                 )
+                                .scaleEffect(pressedKeyboardBarItem == item ? 0.94 : 1)
                                 .contentShape(Rectangle())
                                 .gesture(
                                     LongPressGesture(minimumDuration: 0.5)
@@ -96,6 +103,11 @@ struct TerminalScreen: View {
                                             default: break
                                             }
                                         }
+                                )
+                                .simultaneousGesture(
+                                    DragGesture(minimumDistance: 0)
+                                        .onChanged { _ in pressedKeyboardBarItem = item }
+                                        .onEnded { _ in pressedKeyboardBarItem = nil }
                                 )
                                 .accessibilityAddTraits(.isButton)
                                 .accessibilityAction { activateKeyboardBarItem(item) }
@@ -247,7 +259,7 @@ struct TerminalScreen: View {
         }
         .foregroundStyle(Color.ghosttySecondary)
         .padding(.horizontal, 12)
-        .frame(minHeight: 34)
+        .frame(minHeight: 24)
         .background(Color.ghosttyRaised)
     }
 
@@ -369,6 +381,7 @@ struct TerminalScreen: View {
     }
 
     private func activateKeyboardBarItem(_ item: KeyboardBarItem) {
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
         if let modifier = resolvedModifier(item) {
             keyboardBarState.toggle(modifier)
             return
