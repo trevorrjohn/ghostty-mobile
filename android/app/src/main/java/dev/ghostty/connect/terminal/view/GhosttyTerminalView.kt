@@ -65,7 +65,6 @@ class GhosttyTerminalView(
         width: Int, height: Int, cellWidth: Int, cellHeight: Int, anyPressed: Boolean, metaState: Int,
     ) -> Unit = { _, _, _, _, _, _, _, _, _, _ -> }
     var onTerminalFocusChanged: (Boolean) -> Unit = {}
-    var onSelectionStart: (column: Int, row: Int) -> Boolean = { _, _ -> false }
     var onSelectionUpdate: (start: Boolean, column: Int, row: Int) -> Unit = { _, _, _ -> }
     var onSelectionFinished: () -> Unit = {}
     var onContextSelection: (column: Int, row: Int) -> ContextualSelection? = { _, _ -> null }
@@ -145,7 +144,6 @@ class GhosttyTerminalView(
             postDelayed(this, SELECTION_SCROLL_INTERVAL_MS)
         }
     }
-    private var pendingLongPress: Runnable? = null
     private var lastTapUpTime = 0L
     private var lastTapX = 0f
     private var lastTapY = 0f
@@ -235,7 +233,6 @@ class GhosttyTerminalView(
 
     override fun onDetachedFromWindow() {
         setLocalSelectionMode(false)
-        cancelPendingLongPress()
         removeCallbacks(selectionAutoScroll)
         removeCallbacks(accessibilityUpdate)
         accessibilityUpdatePending = false
@@ -619,27 +616,11 @@ class GhosttyTerminalView(
                     selectionActive = true
                     selectionDragX = event.x
                     selectionDragY = event.y
-                    cancelPendingLongPress()
                     return true
                 }
-                pendingLongPress = Runnable {
-                    if (!dragging && !scaleGesture) {
-                        remoteMouseGesture = false
-                        contextualSelection = null
-                        selectionActive = onSelectionStart(cellColumn(remoteDownX), cellRow(remoteDownY))
-                        if (selectionActive) {
-                            selectionVisible = true
-                            draggedHandle = HANDLE_END
-                            selectionDragX = remoteDownX
-                            selectionDragY = remoteDownY
-                            refresh()
-                        }
-                    }
-                }.also { postDelayed(it, ViewConfiguration.getLongPressTimeout().toLong()) }
                 return true
             }
             MotionEvent.ACTION_POINTER_DOWN -> {
-                cancelPendingLongPress()
                 if (remoteMouseGesture) {
                     if (remotePressSent) sendRemoteMouse(MOUSE_RELEASE, MOUSE_LEFT, event.x, event.y, false)
                     remoteMouseGesture = false
@@ -662,7 +643,6 @@ class GhosttyTerminalView(
                     refresh()
                     return true
                 }
-                if (abs(event.x - remoteDownX) > touchSlop || abs(event.y - remoteDownY) > touchSlop) cancelPendingLongPress()
                 if (remoteTwoFingerGesture && event.pointerCount >= 2) {
                     val y = pointerAverageY(event)
                     remoteWheelPixels += y - lastTouchY
@@ -686,13 +666,15 @@ class GhosttyTerminalView(
                 if (scaleDetector.isInProgress || scaleGesture) return true
                 velocityTracker?.addMovement(event)
                 val distance = event.y - lastTouchY
-                if (!dragging && abs(event.y - downY) > touchSlop) dragging = true
+                if (!dragging && (abs(event.x - remoteDownX) > touchSlop || abs(event.y - downY) > touchSlop)) {
+                    dragging = true
+                    lastTapUpTime = 0L
+                }
                 if (dragging) scrollByPixels(distance)
                 lastTouchY = event.y
                 return true
             }
             MotionEvent.ACTION_UP -> {
-                cancelPendingLongPress()
                 if (selectionActive) {
                     selectionActive = false
                     draggedHandle = HANDLE_NONE
@@ -759,7 +741,6 @@ class GhosttyTerminalView(
                 return true
             }
             MotionEvent.ACTION_CANCEL -> {
-                cancelPendingLongPress()
                 if (remoteMouseGesture && remotePressSent) {
                     sendRemoteMouse(MOUSE_RELEASE, MOUSE_LEFT, event.x, event.y, false)
                 }
@@ -961,11 +942,6 @@ class GhosttyTerminalView(
 
     private fun cellRow(y: Float) = floor(y / cellHeight).toInt().coerceIn(0, snapshot.rows - 1)
 
-    private fun cancelPendingLongPress() {
-        pendingLongPress?.let(::removeCallbacks)
-        pendingLongPress = null
-    }
-
     override fun performClick(): Boolean {
         super.performClick()
         if (!acceptsInput) return true
@@ -999,7 +975,6 @@ class GhosttyTerminalView(
     }
 
     private fun resetTouchInteraction() {
-        cancelPendingLongPress()
         removeCallbacks(selectionAutoScroll)
         selectionEdgeDirection = 0
         scroller.forceFinished(true)
@@ -1146,49 +1121,41 @@ class GhosttyTerminalView(
         }
         outAttrs.imeOptions = EditorInfo.IME_FLAG_NO_EXTRACT_UI or EditorInfo.IME_FLAG_NO_FULLSCREEN
         return object : BaseInputConnection(this, false) {
-            private var composingText = ""
+            private val inputBuffer = TerminalImeInputBuffer(
+                sendInput = ::sendInput,
+                sendSpecialKey = { onSpecialKey(it) },
+                schedule = { action -> post(action) },
+            )
 
             override fun commitText(text: CharSequence?, newCursorPosition: Int): Boolean {
-                composingText = ""
-                if (!text.isNullOrEmpty()) sendInput(text.toString())
+                inputBuffer.commit(text)
                 return true
             }
 
             override fun setComposingText(text: CharSequence?, newCursorPosition: Int): Boolean {
-                composingText = text?.toString().orEmpty()
+                inputBuffer.setComposing(text)
                 return true
             }
 
             override fun finishComposingText(): Boolean {
-                flushComposition()
+                inputBuffer.finishComposing()
                 return true
             }
 
             override fun deleteSurroundingText(beforeLength: Int, afterLength: Int): Boolean {
-                if (composingText.isNotEmpty()) {
-                    composingText = composingText.dropLast(beforeLength.coerceAtLeast(1))
-                    return true
-                }
-                repeat(beforeLength.coerceAtLeast(1)) { onSpecialKey("BACKSPACE") }
+                inputBuffer.deleteSurrounding(beforeLength, afterLength)
                 return true
             }
 
             override fun sendKeyEvent(event: KeyEvent): Boolean {
-                if (event.action == KeyEvent.ACTION_DOWN) flushComposition()
+                if (event.action == KeyEvent.ACTION_DOWN) inputBuffer.flush()
                 return onKeyEvent(event) || super.sendKeyEvent(event)
             }
 
             override fun performEditorAction(actionCode: Int): Boolean {
-                flushComposition()
+                inputBuffer.flush()
                 onSpecialKey("ENTER")
                 return true
-            }
-
-            private fun flushComposition() {
-                if (composingText.isNotEmpty()) {
-                    sendInput(composingText)
-                    composingText = ""
-                }
             }
         }
     }
@@ -1264,5 +1231,68 @@ class GhosttyTerminalView(
         private const val ACTION_NEXT_PROMPT = 0x01020002
         private const val ACTION_COPY_OUTPUT = 0x01020003
         private const val KITTY_BELOW_BACKGROUND = Int.MIN_VALUE / 2
+    }
+}
+
+internal class TerminalImeInputBuffer(
+    private val sendInput: (String) -> Unit,
+    private val sendSpecialKey: (String) -> Unit,
+    private val schedule: (() -> Unit) -> Unit,
+) {
+    private var composingText = ""
+    private var pendingText = ""
+    private var pendingGeneration = 0
+
+    fun commit(text: CharSequence?) {
+        composingText = ""
+        discardPending()
+        text?.toString()?.takeIf(String::isNotEmpty)?.let(sendInput)
+    }
+
+    fun setComposing(text: CharSequence?) {
+        flushPending()
+        composingText = text?.toString().orEmpty()
+    }
+
+    fun finishComposing() {
+        if (composingText.isEmpty()) return
+        pendingText = composingText
+        composingText = ""
+        val generation = ++pendingGeneration
+        schedule {
+            if (generation == pendingGeneration) flushPending()
+        }
+    }
+
+    fun deleteSurrounding(beforeLength: Int, afterLength: Int) {
+        flushPending()
+        val before = beforeLength.coerceAtLeast(0)
+        val after = afterLength.coerceAtLeast(0)
+        if (composingText.isNotEmpty()) {
+            composingText = composingText.dropLast(before.coerceAtMost(composingText.length))
+        } else {
+            repeat(before) { sendSpecialKey("BACKSPACE") }
+        }
+        repeat(after) { sendSpecialKey("DELETE") }
+    }
+
+    fun flush() {
+        flushPending()
+        if (composingText.isNotEmpty()) {
+            sendInput(composingText)
+            composingText = ""
+        }
+    }
+
+    private fun flushPending() {
+        if (pendingText.isEmpty()) return
+        val text = pendingText
+        discardPending()
+        sendInput(text)
+    }
+
+    private fun discardPending() {
+        pendingText = ""
+        pendingGeneration++
     }
 }

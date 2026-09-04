@@ -101,6 +101,7 @@ Input is normalized into text, named key, modifiers, action, and optional pointe
 - Browsing history does not pause terminal output and does not imply remote process control; sending input returns the viewport to live output.
 - Selection references never escape the terminal adapter as mutable native pointers.
 - Copy emits plain text, unwraps soft-wrapped rows, trims trailing whitespace, and clears the copied selection.
+- When local touch routing is active, one-finger dragging outside visible selection handles scrolls and never starts selection; double-tap starts contextual selection, and its handles adjust the selected range.
 - Double-tap contextual selection prefers a bounded web link or remote path token, then semantic command output, then a terminal-owned word. Opening a link is a separate explicit action and remains limited to allowlisted schemes.
 - Clipboard text and selected terminal content are user data and are never logged or added to diagnostics.
 

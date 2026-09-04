@@ -12,6 +12,7 @@ import android.os.Binder
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.os.SystemClock
 import android.provider.OpenableColumns
 import dev.ghostty.connect.MainActivity
 import dev.ghostty.connect.data.HostStore
@@ -471,8 +472,16 @@ class SftpBrowserService : Service() {
         ))
         startTransferForeground(record)
         record.executor.execute {
+            var latestTransferred = 0L
+            var latestTotal = total
+            var lastProgressUpdateAt = 0L
             try {
                 action(record, connection, canceled) { transferred, knownTotal ->
+                    latestTransferred = transferred
+                    latestTotal = knownTotal
+                    val now = SystemClock.elapsedRealtime()
+                    if (now - lastProgressUpdateAt < PROGRESS_UPDATE_INTERVAL_MS) return@action
+                    lastProgressUpdateAt = now
                     onMain {
                         if (!isCurrent(record, generation) || canceled.get()) return@onMain
                         val current = record.state.transfer ?: return@onMain
@@ -491,6 +500,8 @@ class SftpBrowserService : Service() {
                     val current = record.state.transfer ?: return@onMain
                     update(record, record.state.copy(
                         transfer = current.copy(
+                            transferred = latestTransferred,
+                            total = latestTotal,
                             status = SftpTransferStatus.COMPLETED,
                             message = if (canceled.get()) {
                                 "Transfer completed before cancellation took effect."
@@ -678,6 +689,7 @@ class SftpBrowserService : Service() {
         private const val CHANNEL_ID = "sftp_transfers"
         private const val NOTIFICATION_ID = 200
         private const val CANCEL_GRACE_MS = 1_000L
+        private const val PROGRESS_UPDATE_INTERVAL_MS = 250L
         private const val STATUS_CONNECTING = "Connecting"
         private const val STATUS_LOADING = "Loading"
         private const val STATUS_READY = "Ready"

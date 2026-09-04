@@ -2012,7 +2012,6 @@ class MainActivity : Activity() {
             isEnabled = true
             acceptsInput = false
             isMouseTracking = { false }
-            onSelectionStart = terminal::selectWord
             onSelectionUpdate = { start, column, row -> terminal.setSelectionEndpoint(start, column, row) }
             onSelectionFinished = {
                 terminal.selectedText().takeIf(String::isNotEmpty)?.let { writeClipboard(it) }
@@ -2719,7 +2718,7 @@ class MainActivity : Activity() {
             terminalView?.let {
                 val enabled = !it.isLocalSelectionMode
                 it.setLocalSelectionMode(enabled)
-                if (enabled) toast("Local selection on. Double-tap a link or long-press and drag text.")
+                if (enabled) toast("Local selection on. Double-tap text to select it, then drag the handles to adjust.")
             }
         }
         selectButton.isEnabled = false
@@ -2878,7 +2877,6 @@ class MainActivity : Activity() {
             onTerminalFocusChanged = { focused ->
                 terminal.encodeFocus(focused).takeIf(ByteArray::isNotEmpty)?.let { sessionService?.send(sessionId, it) }
             }
-            onSelectionStart = terminal::selectWord
             onSelectionUpdate = { start, column, row -> terminal.setSelectionEndpoint(start, column, row) }
             onSelectionFinished = {
                 val selected = terminal.selectedText()

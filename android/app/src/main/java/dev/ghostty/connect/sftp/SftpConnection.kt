@@ -121,11 +121,13 @@ internal class SftpConnection(
         }
         client().open(path, EnumSet.of(OpenMode.READ)).use { remote ->
             val buffer = ByteArray(TRANSFER_BUFFER_BYTES)
+            val input = remote.ReadAheadRemoteFileInputStream(READ_AHEAD_REQUESTS)
             var offset = 0L
             while (!canceled.get()) {
-                val count = remote.read(offset, buffer, 0, buffer.size)
+                val count = input.read(buffer)
                 if (count < 0) break
                 if (count == 0) continue
+                check(!canceled.get()) { "Transfer canceled" }
                 if (maxBytes != null && offset + count > maxBytes) {
                     error("This file is too large to open directly. Download it instead.")
                 }
@@ -217,6 +219,7 @@ internal class SftpConnection(
     companion object {
         private const val IO_TIMEOUT_MS = 30_000
         private const val TRANSFER_BUFFER_BYTES = 64 * 1024
+        private const val READ_AHEAD_REQUESTS = 8
         private const val MAX_REMOTE_PATH_BYTES = 4096
     }
 }
