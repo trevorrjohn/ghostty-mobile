@@ -23,6 +23,7 @@ final class SFTPBrowserModel: ObservableObject {
     private var transferID: UUID?
     private let locationStore = SFTPLocationStore()
     private var hostID: UUID?
+    private var pathHistory: [String] = []
 
     init(transportFactory: @escaping () -> any SFTPTransport = { CitadelSFTPTransport() }) {
         self.transportFactory = transportFactory
@@ -42,6 +43,8 @@ final class SFTPBrowserModel: ObservableObject {
         return false
     }
 
+    var canNavigateBack: Bool { !pathHistory.isEmpty }
+
     func connect(to host: Host, secret: String?, key: StoredKey?) async {
         guard transport == nil else { return }
         let credential: SSHCredential
@@ -57,6 +60,7 @@ final class SFTPBrowserModel: ObservableObject {
         }
         let id = UUID()
         hostID = host.id
+        pathHistory = []
         if let locations = try? locationStore.load(hostID: host.id) {
             favorites = locations.favorites
             recentPaths = locations.recent
@@ -108,8 +112,24 @@ final class SFTPBrowserModel: ObservableObject {
 
     func navigate(to requestedPath: String) async {
         guard transport != nil else { return }
-        do { try await load(path: requestedPath) }
+        let previousPath = path
+        do {
+            try await load(path: requestedPath)
+            if !previousPath.isEmpty, previousPath != path {
+                pathHistory.append(previousPath)
+                pathHistory = Array(pathHistory.suffix(100))
+            }
+        }
         catch { operationFailed(error) }
+    }
+
+    func navigateBack() async {
+        guard let previousPath = pathHistory.popLast() else { return }
+        do { try await load(path: previousPath) }
+        catch {
+            pathHistory.append(previousPath)
+            operationFailed(error)
+        }
     }
 
     func navigateUp() async {
@@ -261,6 +281,7 @@ final class SFTPBrowserModel: ObservableObject {
         let transport = self.transport
         self.transport = nil
         connectionID = nil
+        pathHistory = []
         status = .disconnected
         await transport?.disconnect()
         await wait?()
@@ -278,6 +299,7 @@ final class SFTPBrowserModel: ObservableObject {
         let transport = self.transport
         self.transport = nil
         connectionID = nil
+        pathHistory = []
         status = .disconnected
         await transport?.disconnect()
         await wait?()

@@ -39,10 +39,16 @@ struct SFTPBrowserScreen: View {
             if let transfer = browser.transfer { transferView(transfer) }
             fileList
         }
-        .background(Color.ghosttySurface)
-        .navigationTitle(host.name)
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbar { ToolbarItem(placement: .primaryAction) { browserMenu } }
+        .background(Color.ghosttySurface.ignoresSafeArea())
+        .toolbar(.hidden, for: .navigationBar)
+        .persistentSystemOverlays(.hidden)
+        .simultaneousGesture(DragGesture(minimumDistance: 24).onEnded { gesture in
+            guard gesture.startLocation.x <= 28,
+                  gesture.translation.width >= 72,
+                  abs(gesture.translation.width) > abs(gesture.translation.height) else { return }
+            if browser.canNavigateBack { Task { await browser.navigateBack() } }
+            else { dismiss() }
+        })
         .onAppear { requestConnection() }
         .onDisappear {
             secret = ""
@@ -137,14 +143,6 @@ struct SFTPBrowserScreen: View {
 
     private var addressBar: some View {
         HStack(spacing: 8) {
-            Button { Task { await browser.navigateUp() } } label: {
-                Image(systemName: "chevron.up")
-                    .frame(width: 38, height: 38)
-            }
-            .buttonStyle(.bordered)
-            .disabled(!browser.connected || browser.path == "/")
-            .accessibilityLabel("Parent directory")
-
             TextField("Current directory or search", text: Binding(
                 get: { browser.addressText },
                 set: browser.updateAddress
@@ -158,6 +156,8 @@ struct SFTPBrowserScreen: View {
             .frame(height: 42)
             .background(Color.ghosttyRaised, in: RoundedRectangle(cornerRadius: 12))
             .accessibilityHint("Enter a path to navigate, or text to filter this directory")
+            browserMenu
+                .frame(width: 42, height: 42)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
@@ -165,17 +165,13 @@ struct SFTPBrowserScreen: View {
 
     @ViewBuilder private var statusView: some View {
         switch browser.status {
-        case .connecting: status("Connecting...")
-        case .verifyingHost: status("Waiting for host verification")
-        case .loading: status("Loading directory...")
         case .failed(let message):
             VStack(spacing: 8) {
                 status(message)
                 Button("Retry") { requestConnection() }.buttonStyle(.bordered)
             }
             .padding(.bottom, 10)
-        case .disconnected: EmptyView()
-        case .ready: EmptyView()
+        case .disconnected, .connecting, .verifyingHost, .loading, .ready: EmptyView()
         }
     }
 
@@ -249,7 +245,7 @@ struct SFTPBrowserScreen: View {
                 Task { await browser.disconnect(); dismiss() }
             }
         } label: {
-            Image(systemName: "ellipsis.circle")
+            Image(systemName: "ellipsis")
         }
         .accessibilityLabel("File browser menu")
     }

@@ -53,6 +53,7 @@ import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.HorizontalScrollView
 import android.widget.ImageView
+import android.widget.ImageButton
 import android.widget.LinearLayout
 import android.widget.PopupMenu
 import android.widget.ProgressBar
@@ -2681,7 +2682,7 @@ class MainActivity : Activity() {
 
     private fun showFileBrowser(browserId: String) {
         hostsVisible = false
-        setTerminalSystemBarsHidden(false)
+        setTerminalSystemBarsHidden(true)
         selectedBrowserId = browserId
         sftpService?.selectBrowser(browserId)
         browserVisible = true
@@ -2690,9 +2691,8 @@ class MainActivity : Activity() {
         trustedHostsVisible = false
         terminalView = null
         sftpService?.state(browserId)?.let(::renderFileBrowser) ?: run {
-            val root = vertical(24)
-            root.addView(label("Files", 28f, primary, Typeface.BOLD))
-            root.addView(label("Connecting…", 15f, secondary).margins(top = 8))
+            val root = FrameLayout(this).apply { setBackgroundColor(Color.rgb(29, 32, 51)) }
+            root.addView(ProgressBar(this), FrameLayout.LayoutParams(dp(48), dp(48), Gravity.CENTER))
             setContentView(root)
         }
     }
@@ -2739,22 +2739,11 @@ class MainActivity : Activity() {
             state.transfer?.status != SftpTransferStatus.RUNNING
         val sortMode = sftpSortModes[state.browserId] ?: SftpSortMode.NAME
         val descending = sftpSortDescending[state.browserId] == true
-        val header = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
+        val menuButton = ImageButton(this).apply {
+            setImageResource(R.drawable.ic_more_vert)
+            imageTintList = ColorStateList.valueOf(primary)
+            setPadding(dp(12), dp(12), dp(12), dp(12))
         }
-        header.addView(compactButton("Back") { showHosts(disconnect = false) }.apply {
-            contentDescription = "Back to hosts. File browser stays connected."
-            background = roundedBackground(browserControl, 14)
-        }, LinearLayout.LayoutParams(-2, dp(48)))
-        header.addView(vertical(0).apply {
-            addView(label(state.hostName, 18f, primary, Typeface.BOLD).apply {
-                maxLines = 1
-                ellipsize = android.text.TextUtils.TruncateAt.END
-            })
-            addView(label("Remote files", 12f, browserMuted))
-        }, LinearLayout.LayoutParams(0, -2, 1f).apply { marginStart = dp(12); marginEnd = dp(8) })
-        val menuButton = compactButton("Menu") {}
         menuButton.contentDescription = "File browser menu"
         menuButton.background = roundedBackground(browserControl, 14)
         menuButton.setOnClickListener { anchor ->
@@ -2840,18 +2829,10 @@ class MainActivity : Activity() {
                 show()
             }
         }
-        header.addView(menuButton, LinearLayout.LayoutParams(-2, dp(48)))
-        toolbar.addView(header)
         val navigationRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(0, dp(12), 0, 0)
         }
-        navigationRow.addView(compactButton("Up", remoteActionsEnabled && state.canNavigateBack) {
-            clearSftpSearch(state.browserId)
-            releaseSftpSearchFocus()
-            sftpService?.navigateBack(state.browserId)
-        }.apply { contentDescription = "Parent directory" }, LinearLayout.LayoutParams(-2, dp(48)))
         val currentPath = state.path.orEmpty()
         val activeQuery = sftpSearchQueries[state.browserId].orEmpty()
         val search = field(currentPath.ifEmpty { "Current directory or search" }, activeQuery.ifEmpty { currentPath }).apply {
@@ -2894,14 +2875,12 @@ class MainActivity : Activity() {
                 }
             })
         }.also { sftpSearchField = it }
-        navigationRow.addView(search, LinearLayout.LayoutParams(0, dp(48), 1f).apply {
+        navigationRow.addView(search, LinearLayout.LayoutParams(0, dp(48), 1f))
+        navigationRow.addView(menuButton, LinearLayout.LayoutParams(dp(48), dp(48)).apply {
             marginStart = dp(8)
         })
         toolbar.addView(navigationRow)
         val content = vertical(16).apply { setBackgroundColor(browserBackground) }
-        if (state.status != "Ready" && state.status != "Empty") {
-            content.addView(label(state.status, 13f, if (state.connected) accent else browserMuted))
-        }
         state.error?.takeUnless { it == state.transfer?.message }?.let {
             content.addView(label(it, 13f, Color.rgb(255, 145, 145)).margins(top = 5))
         }
@@ -4284,7 +4263,20 @@ class MainActivity : Activity() {
         else if (trustedHostsVisible) showKeyboardSettings()
         else if (identitiesVisible) showKeyboardSettings()
         else if (settingsVisible) showHosts(disconnect = false)
-        else if (browserVisible) showHosts(disconnect = false)
+        else if (browserVisible) {
+            val browserId = selectedBrowserId
+            val state = browserId?.let { sftpService?.state(it) }
+            if (state?.transfer?.status == SftpTransferStatus.RUNNING) {
+                toast("Cancel the transfer before leaving this directory.")
+            } else if (browserId != null && state?.canNavigateBack == true && state.connected) {
+                clearSftpSearch(browserId)
+                sftpKeepSearchFocused.remove(browserId)
+                releaseSftpSearchFocus()
+                sftpService?.navigateBack(browserId)
+            } else {
+                showHosts(disconnect = false)
+            }
+        }
         else if (terminalView?.dismissQuickNavigation() == true) Unit
         else if (terminalView?.isLocalSelectionMode == true) {
             terminalView?.setLocalSelectionMode(false)
@@ -4448,24 +4440,6 @@ class MainActivity : Activity() {
             search.setSelection(search.text.length)
             getSystemService(InputMethodManager::class.java).showSoftInput(search, InputMethodManager.SHOW_IMPLICIT)
         }
-    }
-
-    private fun browserParentRow(mutedColor: Int, action: () -> Unit): View = LinearLayout(this).apply {
-        orientation = LinearLayout.HORIZONTAL
-        gravity = Gravity.CENTER_VERTICAL
-        setPadding(dp(12), dp(5), dp(12), dp(5))
-        minimumHeight = dp(52)
-        addView(ImageView(this@MainActivity).apply {
-            setImageResource(R.drawable.ic_sftp_folder)
-            contentDescription = null
-        }, LinearLayout.LayoutParams(dp(36), dp(36)))
-        addView(vertical(0).apply {
-            setBackgroundColor(Color.TRANSPARENT)
-            addView(label("..", 16f, primary, Typeface.BOLD))
-            addView(label("Parent directory", 11f, mutedColor))
-        }, LinearLayout.LayoutParams(0, -2, 1f).apply { marginStart = dp(8) })
-        contentDescription = "Parent directory"
-        setOnClickListener { action() }
     }
 
     private fun browserEntryRow(
