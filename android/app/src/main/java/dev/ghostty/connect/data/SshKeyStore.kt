@@ -9,6 +9,7 @@ import java.nio.ByteOrder
 import java.security.MessageDigest
 import java.util.Base64
 import java.util.UUID
+import javax.crypto.Cipher
 
 class SshKeyStore(private val context: Context) {
     private val preferences = context.getSharedPreferences("ssh_keys", Context.MODE_PRIVATE)
@@ -55,12 +56,84 @@ class SshKeyStore(private val context: Context) {
         if (identities.none { it.id == canonicalId }) return@synchronized false
         saveIdentities(identities.filterNot { it.id == canonicalId })
         encryptedStore.delete(identityFileName(canonicalId))
+        BiometricIdentityStore(context).delete(canonicalId)
         true
     }
 
     fun read(identityId: String): ByteArray = synchronized(STORE_LOCK) {
-        require(loadOrMigrateIdentities().any { it.id == identityId }) { "SSH identity does not exist." }
+        val identity = loadOrMigrateIdentities().firstOrNull { it.id == identityId }
+            ?: error("SSH identity does not exist.")
+        require(!identity.requiresBiometric) { "Biometric unlock is required for this identity." }
         encryptedStore.read(identityFileName(canonicalIdentityId(identityId)))
+    }
+
+    fun biometricEncryptionCipher(identityId: String): Cipher = synchronized(STORE_LOCK) {
+        val identity = identity(identityId) ?: error("SSH identity does not exist.")
+        require(!identity.requiresBiometric) { "This identity already requires biometric unlock." }
+        BiometricIdentityStore(context).encryptionCipher(identity.id)
+    }
+
+    fun prepareBiometricEncryption(identityId: String) = synchronized(STORE_LOCK) {
+        val identity = identity(identityId) ?: error("SSH identity does not exist.")
+        require(!identity.requiresBiometric) { "This identity already requires biometric unlock." }
+        BiometricIdentityStore(context).prepareEncryption(identity.id)
+    }
+
+    fun enableBiometric(identityId: String, cipher: Cipher): SshIdentity = synchronized(STORE_LOCK) {
+        val identity = identity(identityId) ?: error("SSH identity does not exist.")
+        require(!identity.requiresBiometric) { "This identity already requires biometric unlock." }
+        val privateKey = encryptedStore.read(identityFileName(identity.id))
+        try {
+            BiometricIdentityStore(context).encrypt(identity.id, cipher, privateKey)
+            val protected = identity.copy(requiresBiometric = true)
+            saveIdentities(loadOrMigrateIdentities().map { if (it.id == identity.id) protected else it })
+            encryptedStore.delete(identityFileName(identity.id))
+            protected
+        } finally {
+            privateKey.fill(0)
+        }
+    }
+
+    fun biometricDecryptionCipher(identityId: String): Cipher = synchronized(STORE_LOCK) {
+        val identity = identity(identityId) ?: error("SSH identity does not exist.")
+        require(identity.requiresBiometric) { "This identity does not require biometric unlock." }
+        BiometricIdentityStore(context).decryptionCipher(identity.id)
+    }
+
+    fun biometricUsesAuthenticationWindow(identityId: String): Boolean = synchronized(STORE_LOCK) {
+        val identity = identity(identityId) ?: error("SSH identity does not exist.")
+        require(identity.requiresBiometric) { "This identity does not require biometric unlock." }
+        BiometricIdentityStore(context).usesAuthenticationWindow(identity.id)
+    }
+
+    fun readBiometric(identityId: String, cipher: Cipher): ByteArray = synchronized(STORE_LOCK) {
+        val identity = identity(identityId) ?: error("SSH identity does not exist.")
+        require(identity.requiresBiometric) { "This identity does not require biometric unlock." }
+        BiometricIdentityStore(context).decrypt(identity.id, cipher)
+    }
+
+    fun disableBiometric(identityId: String, cipher: Cipher): SshIdentity = synchronized(STORE_LOCK) {
+        val identity = identity(identityId) ?: error("SSH identity does not exist.")
+        require(identity.requiresBiometric) { "This identity does not require biometric unlock." }
+        val privateKey = BiometricIdentityStore(context).decrypt(identity.id, cipher)
+        try {
+            encryptedStore.write(identityFileName(identity.id), privateKey)
+            val unprotected = identity.copy(requiresBiometric = false)
+            try {
+                saveIdentities(loadOrMigrateIdentities().map { if (it.id == identity.id) unprotected else it })
+            } catch (error: Throwable) {
+                encryptedStore.delete(identityFileName(identity.id))
+                throw error
+            }
+            BiometricIdentityStore(context).delete(identity.id)
+            unprotected
+        } finally {
+            privateKey.fill(0)
+        }
+    }
+
+    fun cancelBiometricSetup(identityId: String) = synchronized(STORE_LOCK) {
+        if (identity(identityId)?.requiresBiometric != true) BiometricIdentityStore(context).deleteKey(identityId)
     }
 
     fun requiresPassphrase(identityId: String): Boolean = synchronized(STORE_LOCK) {
@@ -127,6 +200,7 @@ class SshKeyStore(private val context: Context) {
                         put("fingerprint", identity.fingerprint ?: JSONObject.NULL)
                         put("requiresPassphrase", identity.requiresPassphrase)
                         put("publicKey", identity.publicKey ?: JSONObject.NULL)
+                        put("requiresBiometric", identity.requiresBiometric)
                     })
                 }
             })
@@ -136,7 +210,8 @@ class SshKeyStore(private val context: Context) {
 
     private fun decodeIdentities(bytes: ByteArray): List<SshIdentity> {
         val root = JSONObject(bytes.toString(Charsets.UTF_8))
-        require(root.getInt("version") == IDENTITY_INDEX_VERSION) { "Unsupported SSH identity data version." }
+        val version = root.getInt("version")
+        require(version in 1..IDENTITY_INDEX_VERSION) { "Unsupported SSH identity data version." }
         val values = root.getJSONArray("identities")
         val identities = buildList {
             for (index in 0 until values.length()) {
@@ -148,8 +223,16 @@ class SshKeyStore(private val context: Context) {
                     fingerprint = value.optionalString("fingerprint"),
                     requiresPassphrase = value.getBoolean("requiresPassphrase"),
                     publicKey = value.optionalString("publicKey"),
+                    requiresBiometric = if (version >= 2) value.getBoolean("requiresBiometric") else false,
                 )
-                require(encryptedStore.exists(identityFileName(identity.id))) { "SSH identity key data is missing." }
+                if (!identity.requiresBiometric) {
+                    require(encryptedStore.exists(identityFileName(identity.id))) { "SSH identity key data is missing." }
+                } else {
+                    require(BiometricIdentityStore(context).exists(identity.id)) { "Biometric identity key data is missing." }
+                    // Reconcile an interrupted enable operation after the protected blob
+                    // and authoritative index were committed but before fallback deletion.
+                    encryptedStore.delete(identityFileName(identity.id))
+                }
                 add(identity)
             }
         }
@@ -171,7 +254,7 @@ class SshKeyStore(private val context: Context) {
     companion object {
         private const val IDENTITY_INDEX_FILE = "ssh-identity-index.enc"
         private const val LEGACY_INDEX_FILE = "ssh-key-index.enc"
-        private const val IDENTITY_INDEX_VERSION = 1
+        private const val IDENTITY_INDEX_VERSION = 2
         private val STORE_LOCK = Any()
     }
 }

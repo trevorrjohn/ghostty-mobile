@@ -20,6 +20,26 @@ enum class KeyboardBarItemType {
     LAST_USED_COMBINATION,
 }
 
+enum class HoldSwipeDirection { UP, RIGHT, DOWN, LEFT }
+
+object HoldSwipeActions {
+    const val SELECT_HERE = "quick-select-here"
+    const val PASTE = "quick-paste"
+    const val COPY_LATEST = "quick-copy-latest"
+    const val SEARCH = "quick-search"
+    const val NEXT_SESSION = "quick-next-session"
+    const val CHOOSE_SESSION = "quick-choose-session"
+
+    val builtIns = listOf(
+        SELECT_HERE to "Select here",
+        PASTE to "Paste",
+        COPY_LATEST to "Copy latest",
+        SEARCH to "Search",
+        NEXT_SESSION to "Next session",
+        CHOOSE_SESSION to "Choose session",
+    )
+}
+
 data class KeyboardBarItem(
     val id: String,
     val label: String,
@@ -38,6 +58,13 @@ data class KeyboardBarConfig(
     val combinations: List<KeyboardBarItem> = KeyboardBarCatalog.defaultCombinations,
     val volumeUpActionId: String = KeyboardBarCatalog.DEFAULT_VOLUME_UP_ACTION_ID,
     val volumeDownActionId: String = KeyboardBarCatalog.DEFAULT_VOLUME_DOWN_ACTION_ID,
+    val holdSwipeEnabled: Boolean = true,
+    val holdSwipeActions: Map<HoldSwipeDirection, String> = mapOf(
+        HoldSwipeDirection.UP to HoldSwipeActions.COPY_LATEST,
+        HoldSwipeDirection.RIGHT to HoldSwipeActions.PASTE,
+        HoldSwipeDirection.DOWN to "key-escape",
+        HoldSwipeDirection.LEFT to HoldSwipeActions.NEXT_SESSION,
+    ),
 )
 
 object KeyboardBarCatalog {
@@ -89,7 +116,6 @@ object KeyboardBarCatalog {
         type = KeyboardBarItemType.COMBINATION,
         key = "b",
         modifiers = setOf(KeyboardModifier.CONTROL),
-        titleContains = "tmux",
     )
 
     val defaultCombinations = listOf(controlB)

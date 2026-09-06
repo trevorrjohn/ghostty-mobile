@@ -35,8 +35,8 @@ class HostStore(context: Context, private val keyStore: SshKeyStore) {
 
     fun save(host: Host) = synchronized(STORE_LOCK) {
         when (host.authenticationType) {
-            AuthenticationType.PASSWORD -> require(host.identityId == null) {
-                "Password hosts cannot reference an SSH identity."
+            AuthenticationType.PASSWORD, AuthenticationType.TAILSCALE_SSH -> require(host.identityId == null) {
+                "Only SSH-key hosts can reference an SSH identity."
             }
             AuthenticationType.SSH_KEY -> require(
                 host.identityId != null && keyStore.identity(host.identityId) != null
@@ -99,7 +99,7 @@ class HostStore(context: Context, private val keyStore: SshKeyStore) {
                     null
                 }
                 if (storedIdentityId != identityId ||
-                    (authenticationType == AuthenticationType.PASSWORD && legacyKeyName != null)
+                    (authenticationType != AuthenticationType.SSH_KEY && legacyKeyName != null)
                 ) changed = true
                 add(Host(
                     id = value.getString("id"),

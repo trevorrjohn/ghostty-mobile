@@ -14,9 +14,9 @@ class KeyboardBarTest {
         assertEquals(KeyboardBarItemType.COMBINATION, controlB.type)
         assertEquals("b", controlB.key)
         assertEquals(setOf(KeyboardModifier.CONTROL), controlB.modifiers)
-        assertEquals("tmux", controlB.titleContains)
+        assertNull(controlB.titleContains)
         assertTrue(controlB.isVisibleForTerminalTitle("work — tmux"))
-        assertTrue(!controlB.isVisibleForTerminalTitle("work — shell"))
+        assertTrue(controlB.isVisibleForTerminalTitle("work — shell"))
         assertEquals(listOf(controlB), config.combinations)
     }
 
@@ -43,5 +43,15 @@ class KeyboardBarTest {
             ),
         )
         assertTrue(KeyboardBarCatalog.keys.map(KeyboardBarItem::id).toSet().size == KeyboardBarCatalog.keys.size)
+    }
+
+    @Test fun holdSwipeDefaultsFavorSafeFrequentActions() {
+        val config = KeyboardBarConfig()
+
+        assertTrue(config.holdSwipeEnabled)
+        assertEquals(HoldSwipeActions.COPY_LATEST, config.holdSwipeActions[HoldSwipeDirection.UP])
+        assertEquals(HoldSwipeActions.PASTE, config.holdSwipeActions[HoldSwipeDirection.RIGHT])
+        assertEquals("key-escape", config.holdSwipeActions[HoldSwipeDirection.DOWN])
+        assertEquals(HoldSwipeActions.NEXT_SESSION, config.holdSwipeActions[HoldSwipeDirection.LEFT])
     }
 }

@@ -1,0 +1,69 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+readonly script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly android_dir="$(cd "$script_dir/.." && pwd)"
+readonly fixture_dir="$android_dir/integration/openssh"
+readonly image="ghostty-mobile-openssh-test"
+readonly container="ghostty-mobile-openssh-test-$$"
+serial="${ANDROID_SERIAL:-}"
+host_port=""
+
+fail() {
+  printf 'Error: %s\n' "$1" >&2
+  exit 1
+}
+
+cleanup() {
+  if [[ -n "$host_port" && -n "$serial" ]]; then
+    adb -s "$serial" reverse --remove "tcp:$host_port" >/dev/null 2>&1 || true
+  fi
+  docker rm -f "$container" >/dev/null 2>&1 || true
+}
+trap cleanup EXIT
+
+command -v docker >/dev/null 2>&1 || fail "Docker is required to run the disposable OpenSSH fixture."
+command -v adb >/dev/null 2>&1 || fail "adb is required to route the fixture to an Android device."
+docker info >/dev/null 2>&1 || fail "The Docker daemon is not available."
+
+if [[ -z "$serial" ]]; then
+  mapfile -t devices < <(adb devices | while read -r candidate state _; do
+    if [[ "$state" == "device" ]]; then
+      printf '%s\n' "$candidate"
+    fi
+  done)
+  [[ ${#devices[@]} -gt 0 ]] || fail "No usable Android device or emulator is connected."
+  [[ ${#devices[@]} -eq 1 ]] || fail "More than one Android device is connected; set ANDROID_SERIAL."
+  serial="${devices[0]}"
+elif [[ "$(adb -s "$serial" get-state 2>/dev/null)" != "device" ]]; then
+  fail "ANDROID_SERIAL does not identify a usable device: $serial"
+fi
+
+docker build --tag "$image" "$fixture_dir"
+docker run --detach --rm --name "$container" --publish 127.0.0.1::22 "$image" >/dev/null
+host_port="$(docker inspect --format '{{(index (index .NetworkSettings.Ports "22/tcp") 0).HostPort}}' "$container")"
+[[ -n "$host_port" ]] || fail "Docker did not publish the fixture SSH port."
+
+ready=false
+for _ in {1..50}; do
+  if (exec 3<>"/dev/tcp/127.0.0.1/$host_port") 2>/dev/null; then
+    exec 3>&-
+    exec 3<&-
+    ready=true
+    break
+  fi
+  sleep 0.1
+done
+[[ "$ready" == true ]] || fail "The disposable OpenSSH server did not become ready."
+
+adb -s "$serial" reverse "tcp:$host_port" "tcp:$host_port" >/dev/null
+export ANDROID_SERIAL="$serial"
+
+"$android_dir/gradlew" \
+  --project-dir "$android_dir" \
+  :app:connectedDebugAndroidTest \
+  -Pandroid.testInstrumentationRunnerArguments.class=dev.ghostty.connect.integration.OpenSshIntegrationTest \
+  -Pandroid.testInstrumentationRunnerArguments.sshHost=127.0.0.1 \
+  -Pandroid.testInstrumentationRunnerArguments.sshPort="$host_port" \
+  -Pandroid.testInstrumentationRunnerArguments.sshUsername=ghostty \
+  -Pandroid.testInstrumentationRunnerArguments.sshPassword=ghostty-test-password

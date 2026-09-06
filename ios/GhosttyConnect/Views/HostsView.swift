@@ -24,15 +24,27 @@ struct HostsView: View {
                     } else {
                         LazyVStack(spacing: 12) {
                             ForEach(model.hosts) { host in
-                                NavigationLink(value: host) { HostCard(host: host) }
-                                    .buttonStyle(.plain)
-                                    .contextMenu {
-                                        Button("Edit") { editedHost = host }
-                                        Button("Duplicate", systemImage: "plus.square.on.square") {
-                                            editedHost = host.duplicated(existingNames: model.hosts.map(\.name))
+                                HStack(spacing: 8) {
+                                    NavigationLink(value: host) { HostCard(host: host) }
+                                        .buttonStyle(.plain)
+                                        .contextMenu {
+                                            Button("Edit") { editedHost = host }
+                                            Button("Duplicate", systemImage: "plus.square.on.square") {
+                                                editedHost = host.duplicated(existingNames: model.hosts.map(\.name))
+                                            }
+                                            Button("Delete", role: .destructive) { model.delete(host: host) }
                                         }
-                                        Button("Delete", role: .destructive) { model.delete(host: host) }
+                                    NavigationLink {
+                                        SFTPBrowserScreen(host: host)
+                                    } label: {
+                                        Image(systemName: "folder")
+                                            .font(.title3.weight(.semibold))
+                                            .foregroundStyle(Color.ghosttyAccent)
+                                            .frame(width: 48, height: 48)
+                                            .background(Color.ghosttyRaised, in: RoundedRectangle(cornerRadius: 14))
                                     }
+                                    .accessibilityLabel("Browse files on \(host.name)")
+                                }
                             }
                         }
                     }

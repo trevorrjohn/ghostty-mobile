@@ -103,6 +103,8 @@ class GhosttyTerminal(
 
     fun selectedText(): String = nativeSelectedText(handle)
 
+    fun plainText(): ByteArray = nativePlainText(handle)
+
     fun clearSelection() = nativeClearSelection(handle)
 
     fun selectLatestOutput(): Boolean = nativeSelectLatestOutput(handle)
@@ -396,6 +398,7 @@ class GhosttyTerminal(
     private external fun nativeSetSelectionEndpoint(handle: Long, start: Boolean, column: Int, row: Int): Boolean
     private external fun nativeSelectionEndpoints(handle: Long): IntArray
     private external fun nativeSelectedText(handle: Long): String
+    private external fun nativePlainText(handle: Long): ByteArray
     private external fun nativeClearSelection(handle: Long)
     private external fun nativeSelectLatestOutput(handle: Long): Boolean
     private external fun nativeSelectOutput(handle: Long, column: Int, row: Int): Boolean

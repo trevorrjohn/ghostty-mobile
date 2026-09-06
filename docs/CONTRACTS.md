@@ -11,11 +11,14 @@ A host profile has a stable ID, display name, hostname, port, username, authenti
 - Organization metadata never changes trust or identity matching.
 - Profiles never contain passwords, passphrases, OTPs, or challenge answers.
 
+An imported identity may require platform user authentication for every new connection attempt. This policy belongs to the identity so no host can bypass it. Protected identities do not permit unattended reconnect, and platform implementations must not retain unlocked private-key material between attempts.
+
 ## Ephemeral Credential
 
 An ephemeral credential is supplied to one connection attempt and may contain a password, private-key material, or key passphrase.
 
 - It is never persisted or included in logs, diagnostics, notifications, or saved UI state.
+- Credential-free SSH authentication is an explicit host mode. It supplies no fallback password or key and never bypasses SSH host-key verification; the platform VPN remains independently owned.
 - Mutable secret storage is cleared after transfer or use where the platform permits.
 - A credential is not silently reused for another host or ProxyJump hop.
 

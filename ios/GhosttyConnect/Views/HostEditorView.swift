@@ -38,6 +38,15 @@ struct HostEditorView: View {
                     permissionPicker("Clipboard", selection: $host.remoteClipboard)
                     permissionPicker("Notifications", selection: $host.remoteNotifications)
                 }
+                Section("Files") {
+                    Toggle("Allow remote deletion", isOn: Binding(
+                        get: { host.allowSftpDelete == true },
+                        set: { host.allowSftpDelete = $0 }
+                    ))
+                    Text("Deletion still requires confirmation for every file or empty directory.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             }
             .scrollContentBackground(.hidden)
             .background(Color.ghosttySurface)

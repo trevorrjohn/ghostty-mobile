@@ -68,6 +68,19 @@ internal fun automaticReconnectAvailability(
     else -> AutomaticReconnectAvailability.AVAILABLE
 }
 
+internal fun notificationReconnectAvailable(
+    manualRetryAvailable: Boolean,
+    credentialReusable: Boolean,
+    connected: Boolean,
+    attemptActive: Boolean,
+    waitingToReconnect: Boolean,
+    cleaningUp: Boolean,
+): Boolean = manualRetryAvailable && credentialReusable && !connected && !attemptActive &&
+    !waitingToReconnect && !cleaningUp
+
+internal fun identityCredentialReusable(requiresPassphrase: Boolean, requiresBiometric: Boolean): Boolean =
+    !requiresPassphrase && !requiresBiometric
+
 internal class ReconnectPolicy(
     private val enabled: Boolean = true,
     val maxAttempts: Int = DEFAULT_RETRY_ATTEMPTS,

@@ -136,6 +136,25 @@ final class KnownHostValidatorTests: XCTestCase {
         XCTAssertTrue(requests.values.isEmpty)
         XCTAssertTrue(results.values.single?.isFailure == true)
     }
+
+    func testApprovalCannotReplaceTrustChangedWhilePromptWasPending() throws {
+        let store = InMemoryKnownHostStore()
+        let requests = LockedValues<HostTrustRequest>()
+        let results = LockedValues<Result<Void, Error>>()
+        let validator = KeychainHostKeyValidator(
+            host: "example.com",
+            port: 22,
+            store: store,
+            requestApproval: { request in requests.append(request) }
+        )
+
+        validator.validate(presented: testKeyA) { result in results.append(result) }
+        try store.write(testKeyB, account: "known-host:example.com:22")
+        requests.values.single?.answer(accepted: true)
+
+        XCTAssertTrue(results.values.single?.isFailure == true)
+        XCTAssertEqual(try store.read(account: "known-host:example.com:22"), testKeyB)
+    }
 }
 
 private let testKeyA = "ssh-ed25519 AQIDBA=="

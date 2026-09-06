@@ -10,6 +10,7 @@ import net.schmizz.sshj.SSHClient
 import net.schmizz.sshj.common.SecurityUtils
 import net.schmizz.sshj.userauth.UserAuthException
 import net.schmizz.sshj.userauth.method.AuthKeyboardInteractive
+import net.schmizz.sshj.userauth.method.AuthNone
 import net.schmizz.sshj.userauth.method.AuthMethod
 import net.schmizz.sshj.userauth.method.AuthPassword
 import net.schmizz.sshj.userauth.method.AuthPublickey
@@ -18,15 +19,25 @@ import net.schmizz.sshj.userauth.password.PasswordUtils
 import net.schmizz.sshj.userauth.password.Resource
 import net.schmizz.sshj.transport.verification.HostKeyVerifier
 import org.bouncycastle.jce.provider.BouncyCastleProvider
-import java.io.File
+import com.hierynomus.sshj.userauth.keyprovider.OpenSSHKeyV1KeyFile
+import java.io.ByteArrayInputStream
+import java.io.InputStreamReader
 import java.net.InetAddress
 import java.security.PublicKey
 import java.security.Security
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
+import net.schmizz.sshj.userauth.keyprovider.BaseFileKeyProvider
+import net.schmizz.sshj.userauth.keyprovider.KeyFormat
+import net.schmizz.sshj.userauth.keyprovider.KeyProviderUtil
+import net.schmizz.sshj.userauth.keyprovider.OpenSSHKeyFile
+import net.schmizz.sshj.userauth.keyprovider.PKCS8KeyFile
+import net.schmizz.sshj.userauth.keyprovider.PuTTYKeyFile
 
 interface SshAuthenticationCallbacks {
     fun status(message: String)
+    fun authenticationBanner(message: String) = Unit
     fun verifyHostKey(request: HostKeyVerification, answer: (Boolean) -> Unit)
     fun challenge(challenge: AuthenticationChallenge, answer: (CharArray?) -> Unit): () -> Unit
 }
@@ -51,11 +62,13 @@ internal class AuthenticatedSshClient(
         resolvedAddress: InetAddress? = null,
         disconnectOnFailure: Boolean = true,
         clientReady: (SSHClient) -> Unit = {},
+        unlockedPrivateKey: ByteArray? = null,
     ): SSHClient {
-        var temporaryKey: File? = null
         var privateKeyBytes: ByteArray? = null
         val challengeResponses = mutableListOf<CharArray>()
         var challengeProvider: InteractiveChallengeProvider? = null
+        val monitorBanner = AtomicBoolean(false)
+        var bannerThread: Thread? = null
         val ssh = SSHClient()
         try {
             clientReady(ssh)
@@ -71,41 +84,71 @@ internal class AuthenticatedSshClient(
             }
             ssh.connection.keepAlive.keepAliveInterval = 30
             callbacks.status("Authenticating…")
-            if (host.authenticationType == AuthenticationType.SSH_KEY) {
-                challengeProvider = InteractiveChallengeProvider(callbacks, challengeResponses, null)
-                val keyboardInteractive = AuthKeyboardInteractive(challengeProvider)
-                val identityId = requireNotNull(host.identityId) { "No SSH identity is selected for this host" }
-                privateKeyBytes = keyStore.read(identityId)
-                temporaryKey = File.createTempFile("identity-", ".key", context.cacheDir).apply {
-                    writeBytes(privateKeyBytes)
-                    setReadable(false, false)
-                    setReadable(true, true)
+            when (host.authenticationType) {
+                AuthenticationType.SSH_KEY -> {
+                    challengeProvider = InteractiveChallengeProvider(callbacks, challengeResponses, null)
+                    val keyboardInteractive = AuthKeyboardInteractive(challengeProvider)
+                    val identityId = requireNotNull(host.identityId) { "No SSH identity is selected for this host" }
+                    val identity = keyStore.identity(identityId) ?: error("SSH identity does not exist.")
+                    require(identity.requiresBiometric == (unlockedPrivateKey != null)) {
+                        if (identity.requiresBiometric) "Biometric unlock is required for this identity."
+                        else "Unlocked key material does not match this identity."
+                    }
+                    privateKeyBytes = unlockedPrivateKey ?: keyStore.read(identityId)
+                    val provider = loadPrivateKey(privateKeyBytes, credential)
+                    ssh.auth(host.username, credentialThenChallenge(AuthPublickey(provider), keyboardInteractive, credential))
                 }
-                val provider = ssh.loadKeys(temporaryKey.absolutePath, credential)
-                ssh.auth(host.username, credentialThenChallenge(AuthPublickey(provider), keyboardInteractive, credential))
-            } else {
-                challengeProvider = InteractiveChallengeProvider(callbacks, challengeResponses, credential.copyOf())
-                val keyboardInteractive = AuthKeyboardInteractive(challengeProvider)
-                ssh.auth(
-                    host.username,
-                    credentialThenChallenge(
-                        AuthPassword(PasswordUtils.createOneOff(credential)),
-                        keyboardInteractive,
-                        credential,
-                    ),
-                )
+                AuthenticationType.PASSWORD -> {
+                    challengeProvider = InteractiveChallengeProvider(callbacks, challengeResponses, credential.copyOf())
+                    val keyboardInteractive = AuthKeyboardInteractive(challengeProvider)
+                    ssh.auth(host.username, credentialThenChallenge(
+                        AuthPassword(PasswordUtils.createOneOff(credential)), keyboardInteractive, credential,
+                    ))
+                }
+                AuthenticationType.TAILSCALE_SSH -> {
+                    monitorBanner.set(true)
+                    bannerThread = Thread({
+                        var previous = ""
+                        while (monitorBanner.get()) {
+                            val banner = runCatching { ssh.userAuth.banner.orEmpty() }.getOrDefault("")
+                            if (banner.isNotBlank() && banner != previous) {
+                                previous = banner
+                                callbacks.authenticationBanner(boundedAuthenticationBanner(banner))
+                            }
+                            runCatching { Thread.sleep(100) }
+                        }
+                    }, "tailscale-auth-banner").apply { isDaemon = true; start() }
+                    ssh.auth(host.username, AuthNone())
+                }
             }
             return ssh
         } catch (error: Exception) {
             if (disconnectOnFailure) runCatching { ssh.disconnect() }
             throw error
         } finally {
+            monitorBanner.set(false)
+            bannerThread?.interrupt()
+            runCatching { bannerThread?.join(500) }
             credential.fill('\u0000')
             privateKeyBytes?.fill(0)
+            unlockedPrivateKey?.fill(0)
             challengeProvider?.clear()
             challengeResponses.forEach { it.fill('\u0000') }
-            temporaryKey?.delete()
         }
+    }
+
+    private fun loadPrivateKey(bytes: ByteArray, passphrase: CharArray): BaseFileKeyProvider {
+        fun reader() = InputStreamReader(ByteArrayInputStream(bytes), Charsets.UTF_8)
+        val format = reader().use { KeyProviderUtil.detectKeyFileFormat(it, false) }
+        val provider = when (format) {
+            KeyFormat.PKCS8 -> PKCS8KeyFile()
+            KeyFormat.OpenSSH -> OpenSSHKeyFile()
+            KeyFormat.OpenSSHv1 -> OpenSSHKeyV1KeyFile()
+            KeyFormat.PuTTY -> PuTTYKeyFile()
+            else -> error("Unsupported SSH private key format.")
+        }
+        provider.init(reader(), PasswordUtils.createOneOff(passphrase))
+        return provider
     }
 
     private fun verifier(destination: SshDestination) = object : HostKeyVerifier {

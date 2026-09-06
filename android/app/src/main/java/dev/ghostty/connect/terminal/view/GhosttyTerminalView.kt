@@ -28,6 +28,7 @@ import android.view.ScaleGestureDetector
 import android.view.View
 import android.view.VelocityTracker
 import android.view.ViewConfiguration
+import android.view.HapticFeedbackConstants
 import android.os.SystemClock
 import android.os.Bundle
 import android.view.accessibility.AccessibilityEvent
@@ -46,6 +47,7 @@ import dev.ghostty.connect.terminal.bridge.TerminalCell
 import dev.ghostty.connect.terminal.bridge.TerminalSnapshot
 import dev.ghostty.connect.terminal.ContextualSelection
 import dev.ghostty.connect.terminal.ContextualSelectionKind
+import dev.ghostty.connect.model.HoldSwipeDirection
 import kotlin.math.floor
 import kotlin.math.max
 import kotlin.math.abs
@@ -70,12 +72,15 @@ class GhosttyTerminalView(
     var onContextSelection: (column: Int, row: Int) -> ContextualSelection? = { _, _ -> null }
     var onContextCopy: (String) -> Unit = {}
     var onOpenLink: (String) -> Unit = {}
+    var onTap: () -> Unit = {}
     var onLocalSelectionModeChanged: (Boolean) -> Unit = {}
     var onMetadataChanged: (title: String, pwd: String, atPrompt: Boolean, passwordInput: Boolean) -> Unit =
         { _, _, _, _ -> }
     var onResize: (columns: Int, rows: Int, pixelWidth: Int, pixelHeight: Int) -> Unit = { _, _, _, _ -> }
     var onScrollPositionChanged: (isAtBottom: Boolean) -> Unit = {}
     var onTextSizeChanged: (Float) -> Unit = {}
+    var holdSwipeLabels: Map<HoldSwipeDirection, String> = emptyMap()
+    var onHoldSwipe: (HoldSwipeDirection, column: Int, row: Int, anchorRow: String) -> Boolean = { _, _, _, _ -> false }
     private var terminalTextSizeSp = initialTextSizeSp.coerceIn(MIN_TEXT_SIZE_SP, MAX_TEXT_SIZE_SP)
     private var terminalTextSize = sp(terminalTextSizeSp)
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -103,6 +108,20 @@ class GhosttyTerminalView(
     private val doubleTapSlop = ViewConfiguration.get(context).scaledDoubleTapSlop
     private val minimumFlingVelocity = ViewConfiguration.get(context).scaledMinimumFlingVelocity
     private val maximumFlingVelocity = ViewConfiguration.get(context).scaledMaximumFlingVelocity
+    private val holdSwipe = HoldSwipeGesture(touchSlop.toFloat(), dp(42f))
+    private var holdSwipePinned = false
+    private var holdSwipeTapDirection: HoldSwipeDirection? = null
+    private var holdSwipeCancelPressed = false
+    private val holdSwipeCancelButton = RectF()
+    private var holdSwipeMenuCenterX = 0f
+    private var holdSwipeMenuCenterY = 0f
+    private var holdSwipeAnchorRow = ""
+    private val activateHoldSwipe = Runnable {
+        if (canActivateHoldSwipe(remotePressSent, isLocalSelectionMode, selectionVisible, isTouchExplorationEnabled()) &&
+            activateQuickNavigation()) {
+            performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+        }
+    }
     private var velocityTracker: VelocityTracker? = null
     private var lastTouchY = 0f
     private var downY = 0f
@@ -114,6 +133,8 @@ class GhosttyTerminalView(
     private var remoteTwoFingerGesture = false
     private var remoteDownX = 0f
     private var remoteDownY = 0f
+    private var remoteLastX = 0f
+    private var remoteLastY = 0f
     private var remoteWheelPixels = 0f
     private val remoteGenericButtons = RemoteButtonState()
     private var remoteGenericX = 0f
@@ -152,6 +173,7 @@ class GhosttyTerminalView(
     var isLocalSelectionMode = false
         private set
     private var passwordInput = false
+    private var activeInputBuffer: TerminalImeInputBuffer? = null
     private var accessibilityText: String? = null
     private var accessibilityUpdatePending = false
     private val accessibilityUpdate = Runnable {
@@ -232,6 +254,10 @@ class GhosttyTerminalView(
     }
 
     override fun onDetachedFromWindow() {
+        activeInputBuffer?.close()
+        activeInputBuffer = null
+        releaseRemotePointerInteraction()
+        resetTouchInteraction()
         setLocalSelectionMode(false)
         removeCallbacks(selectionAutoScroll)
         removeCallbacks(accessibilityUpdate)
@@ -248,16 +274,7 @@ class GhosttyTerminalView(
             return
         }
         if (enabled) {
-            if (remotePressSent) sendRemoteMouse(MOUSE_RELEASE, MOUSE_LEFT, remoteDownX, remoteDownY, false)
-            remoteGenericButtons.drain().forEach { button ->
-                sendRemoteMouse(
-                    MOUSE_RELEASE,
-                    button,
-                    remoteGenericX,
-                    remoteGenericY,
-                    remoteGenericButtons.anyPressed,
-                )
-            }
+            releaseRemotePointerInteraction()
             clearSelectionState()
             resetTouchInteraction()
             isLocalSelectionMode = true
@@ -269,6 +286,18 @@ class GhosttyTerminalView(
         lastTapUpTime = 0L
         runCatching(::refresh)
         onLocalSelectionModeChanged(enabled)
+    }
+
+    fun selectContextAt(column: Int, row: Int): Boolean {
+        setLocalSelectionMode(true)
+        contextualSelection = onContextSelection(column, row)
+        if (contextualSelection == null) {
+            setLocalSelectionMode(false)
+            return false
+        }
+        refresh()
+        showSelectionActions()
+        return true
     }
 
     private fun clearSelectionState() {
@@ -306,6 +335,7 @@ class GhosttyTerminalView(
         drawCursor(canvas, visibleColumns, visibleRows)
         drawScrollPosition(canvas)
         drawSelectionHandles(canvas)
+        drawHoldSwipeMenu(canvas)
         resetPaint()
     }
 
@@ -594,9 +624,16 @@ class GhosttyTerminalView(
     override fun onTouchEvent(event: MotionEvent): Boolean {
         if (!isEnabled) return false
         pointerMetaState = event.metaState
-        if (!remoteMouseGesture && !remoteTwoFingerGesture) scaleDetector.onTouchEvent(event)
+        if (!remoteMouseGesture && !remoteTwoFingerGesture && !holdSwipe.active) scaleDetector.onTouchEvent(event)
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
+                if (holdSwipePinned) {
+                    parent?.requestDisallowInterceptTouchEvent(true)
+                    holdSwipeTapDirection = holdSwipeDirectionAt(event.x, event.y)
+                    holdSwipeCancelPressed = holdSwipeCancelButton.contains(event.x, event.y)
+                    invalidate()
+                    return true
+                }
                 parent?.requestDisallowInterceptTouchEvent(true)
                 scroller.forceFinished(true)
                 velocityTracker?.recycle()
@@ -610,6 +647,8 @@ class GhosttyTerminalView(
                 remoteTwoFingerGesture = false
                 remoteDownX = event.x
                 remoteDownY = event.y
+                remoteLastX = event.x
+                remoteLastY = event.y
                 draggedHandle = selectionHandleAt(event.x, event.y)
                 if (draggedHandle != HANDLE_NONE) {
                     contextualSelection = null
@@ -618,9 +657,16 @@ class GhosttyTerminalView(
                     selectionDragY = event.y
                     return true
                 }
+                if (canActivateHoldSwipe(remotePressSent, isLocalSelectionMode, selectionVisible, isTouchExplorationEnabled()) &&
+                    !liveButton.contains(event.x, event.y)) {
+                    holdSwipe.start(event.x, event.y)
+                    postDelayed(activateHoldSwipe, ViewConfiguration.getLongPressTimeout().toLong())
+                }
                 return true
             }
             MotionEvent.ACTION_POINTER_DOWN -> {
+                if (holdSwipePinned) return true
+                cancelHoldSwipe()
                 if (remoteMouseGesture) {
                     if (remotePressSent) sendRemoteMouse(MOUSE_RELEASE, MOUSE_LEFT, event.x, event.y, false)
                     remoteMouseGesture = false
@@ -635,6 +681,19 @@ class GhosttyTerminalView(
                 return true
             }
             MotionEvent.ACTION_MOVE -> {
+                if (holdSwipePinned) {
+                    holdSwipeTapDirection = holdSwipeDirectionAt(event.x, event.y)
+                    holdSwipeCancelPressed = holdSwipeCancelButton.contains(event.x, event.y)
+                    invalidate()
+                    return true
+                }
+                if (holdSwipe.active) {
+                    holdSwipe.move(event.x, event.y)
+                    invalidate()
+                    return true
+                }
+                holdSwipe.move(event.x, event.y)
+                if (!holdSwipe.pending) removeCallbacks(activateHoldSwipe)
                 if (selectionActive) {
                     selectionDragX = event.x.coerceIn(0f, width.toFloat())
                     selectionDragY = event.y.coerceIn(0f, height.toFloat())
@@ -656,6 +715,8 @@ class GhosttyTerminalView(
                     return true
                 }
                 if (remoteMouseGesture) {
+                    remoteLastX = event.x
+                    remoteLastY = event.y
                     if (!remotePressSent && (abs(event.x - remoteDownX) > touchSlop || abs(event.y - remoteDownY) > touchSlop)) {
                         sendRemoteMouse(MOUSE_PRESS, MOUSE_LEFT, remoteDownX, remoteDownY, true)
                         remotePressSent = true
@@ -675,6 +736,33 @@ class GhosttyTerminalView(
                 return true
             }
             MotionEvent.ACTION_UP -> {
+                removeCallbacks(activateHoldSwipe)
+                if (holdSwipePinned) {
+                    val direction = holdSwipeDirectionAt(event.x, event.y)
+                        .takeIf { it == holdSwipeTapDirection }
+                    val cancel = holdSwipeCancelPressed && holdSwipeCancelButton.contains(event.x, event.y)
+                    val column = cellColumn(holdSwipe.originX)
+                    val row = cellRow(holdSwipe.originY)
+                    val anchorRow = holdSwipeAnchorRow
+                    holdSwipeTapDirection = null
+                    holdSwipeCancelPressed = false
+                    if (cancel) cancelHoldSwipe()
+                    else if (direction != null) {
+                        cancelHoldSwipe()
+                        onHoldSwipe(direction, column, row, anchorRow)
+                    } else invalidate()
+                    endTouch()
+                    return true
+                }
+                if (holdSwipe.active) {
+                    holdSwipe.move(event.x, event.y)
+                    holdSwipe.pin()
+                    holdSwipePinned = true
+                    invalidate()
+                    endTouch()
+                    return true
+                }
+                holdSwipe.cancel()
                 if (selectionActive) {
                     selectionActive = false
                     draggedHandle = HANDLE_NONE
@@ -741,11 +829,9 @@ class GhosttyTerminalView(
                 return true
             }
             MotionEvent.ACTION_CANCEL -> {
-                if (remoteMouseGesture && remotePressSent) {
-                    sendRemoteMouse(MOUSE_RELEASE, MOUSE_LEFT, event.x, event.y, false)
-                }
+                cancelHoldSwipe()
+                releaseRemotePointerInteraction()
                 remoteMouseGesture = false
-                remotePressSent = false
                 remoteTwoFingerGesture = false
                 selectionActive = false
                 draggedHandle = HANDLE_NONE
@@ -788,11 +874,7 @@ class GhosttyTerminalView(
                 }
             }
             MotionEvent.ACTION_BUTTON_PRESS, MotionEvent.ACTION_BUTTON_RELEASE -> {
-                val button = when (event.actionButton) {
-                    MotionEvent.BUTTON_SECONDARY, MotionEvent.BUTTON_STYLUS_PRIMARY -> MOUSE_RIGHT
-                    MotionEvent.BUTTON_TERTIARY, MotionEvent.BUTTON_STYLUS_SECONDARY -> MOUSE_MIDDLE
-                    else -> MOUSE_LEFT
-                }
+                val button = ghosttyMouseButton(event.actionButton)
                 val pressed = event.actionMasked == MotionEvent.ACTION_BUTTON_PRESS
                 remoteGenericX = event.x
                 remoteGenericY = event.y
@@ -930,9 +1012,37 @@ class GhosttyTerminalView(
         )
     }
 
+    private fun releaseRemotePointerInteraction() {
+        if (remotePressSent) {
+            sendRemoteMouse(MOUSE_RELEASE, MOUSE_LEFT, remoteLastX, remoteLastY, remoteGenericButtons.anyPressed)
+        }
+        remotePressSent = false
+        remoteGenericButtons.drain().forEach { release ->
+            sendRemoteMouse(MOUSE_RELEASE, release.button, remoteGenericX, remoteGenericY, release.anyPressed)
+        }
+    }
+
     override fun onWindowFocusChanged(hasWindowFocus: Boolean) {
         super.onWindowFocusChanged(hasWindowFocus)
+        if (!hasWindowFocus) {
+            releaseRemotePointerInteraction()
+            resetTouchInteraction()
+        }
         onTerminalFocusChanged(hasWindowFocus)
+    }
+
+    fun setInputEnabled(enabled: Boolean) {
+        if (isEnabled == enabled) return
+        if (!enabled) {
+            activeInputBuffer?.close()
+            activeInputBuffer = null
+            releaseRemotePointerInteraction()
+            resetTouchInteraction()
+        }
+        isEnabled = enabled
+        if (enabled && isAttachedToWindow) {
+            context.getSystemService(InputMethodManager::class.java)?.restartInput(this)
+        }
     }
 
     private fun pointerAverageY(event: MotionEvent): Float =
@@ -944,6 +1054,7 @@ class GhosttyTerminalView(
 
     override fun performClick(): Boolean {
         super.performClick()
+        onTap()
         if (!acceptsInput) return true
         requestFocus()
         context.getSystemService(InputMethodManager::class.java)
@@ -975,6 +1086,7 @@ class GhosttyTerminalView(
     }
 
     private fun resetTouchInteraction() {
+        cancelHoldSwipe()
         removeCallbacks(selectionAutoScroll)
         selectionEdgeDirection = 0
         scroller.forceFinished(true)
@@ -987,6 +1099,111 @@ class GhosttyTerminalView(
         dragging = false
         scaleGesture = false
         endTouch()
+    }
+
+    private fun cancelHoldSwipe() {
+        removeCallbacks(activateHoldSwipe)
+        if (holdSwipe.active) invalidate()
+        holdSwipe.cancel()
+        holdSwipePinned = false
+        holdSwipeTapDirection = null
+        holdSwipeCancelPressed = false
+        holdSwipeAnchorRow = ""
+    }
+
+    fun dismissQuickNavigation(): Boolean {
+        if (!holdSwipePinned) return false
+        cancelHoldSwipe()
+        return true
+    }
+
+    private fun activateQuickNavigation(): Boolean {
+        if (holdSwipeLabels.isEmpty() || !holdSwipe.activate()) return false
+        remoteMouseGesture = false
+        dragging = false
+        lastTapUpTime = 0L
+        val menuInset = dp(116f)
+        holdSwipeMenuCenterX = if (width >= menuInset * 2) {
+            holdSwipe.originX.coerceIn(menuInset, width - menuInset)
+        } else width / 2f
+        holdSwipeMenuCenterY = if (height >= menuInset * 2) {
+            holdSwipe.originY.coerceIn(menuInset, height - menuInset)
+        } else height / 2f
+        val row = cellRow(holdSwipe.originY)
+        val rowText = snapshot.cells.subList(row * snapshot.columns, (row + 1) * snapshot.columns)
+            .joinToString("") { it.text }
+        holdSwipeAnchorRow = "${snapshot.scrollTotal}:${snapshot.scrollOffset}:$rowText"
+        invalidate()
+        sendAccessibilityEvent(AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED)
+        return true
+    }
+
+    private fun isTouchExplorationEnabled(): Boolean =
+        context.getSystemService(AccessibilityManager::class.java)?.isTouchExplorationEnabled == true
+
+    private fun drawHoldSwipeMenu(canvas: Canvas) {
+        if (!holdSwipe.active) return
+        val radius = dp(76f)
+        val chipRadius = dp(28f)
+        paint.textAlign = Paint.Align.CENTER
+        paint.textSize = sp(12f)
+        paint.typeface = Typeface.DEFAULT_BOLD
+        holdSwipeLabels.forEach { (direction, label) ->
+            val x = holdSwipeMenuCenterX + when (direction) {
+                HoldSwipeDirection.LEFT -> -radius
+                HoldSwipeDirection.RIGHT -> radius
+                else -> 0f
+            }
+            val y = holdSwipeMenuCenterY + when (direction) {
+                HoldSwipeDirection.UP -> -radius
+                HoldSwipeDirection.DOWN -> radius
+                else -> 0f
+            }
+            val selected = if (holdSwipePinned) holdSwipeTapDirection else holdSwipe.direction
+            paint.color = if (selected == direction) 0xff5e8cff.toInt() else 0xee252a34.toInt()
+            canvas.drawCircle(x, y, chipRadius, paint)
+            paint.color = 0xffffffff.toInt()
+            canvas.drawText(label.take(12), x, y - (paint.ascent() + paint.descent()) / 2f, paint)
+        }
+        paint.color = 0xcc11141a.toInt()
+        canvas.drawCircle(holdSwipeMenuCenterX, holdSwipeMenuCenterY, dp(20f), paint)
+        val cancelWidth = dp(104f)
+        val cancelHeight = dp(44f)
+        val cancelCenterX = width / 2f
+        val cancelBottom = height - dp(20f)
+        holdSwipeCancelButton.set(
+            cancelCenterX - cancelWidth / 2f,
+            cancelBottom - cancelHeight,
+            cancelCenterX + cancelWidth / 2f,
+            cancelBottom,
+        )
+        paint.color = if (holdSwipeCancelPressed) 0xffb84d57.toInt() else 0xee252a34.toInt()
+        canvas.drawRoundRect(holdSwipeCancelButton, dp(18f), dp(18f), paint)
+        paint.color = 0xffffffff.toInt()
+        canvas.drawText(
+            "X  Cancel",
+            holdSwipeCancelButton.centerX(),
+            holdSwipeCancelButton.centerY() - (paint.ascent() + paint.descent()) / 2f,
+            paint,
+        )
+    }
+
+    private fun holdSwipeDirectionAt(x: Float, y: Float): HoldSwipeDirection? {
+        val radius = dp(76f)
+        val hitRadius = dp(36f)
+        return HoldSwipeDirection.entries.firstOrNull { direction ->
+            val centerX = holdSwipeMenuCenterX + when (direction) {
+                HoldSwipeDirection.LEFT -> -radius
+                HoldSwipeDirection.RIGHT -> radius
+                else -> 0f
+            }
+            val centerY = holdSwipeMenuCenterY + when (direction) {
+                HoldSwipeDirection.UP -> -radius
+                HoldSwipeDirection.DOWN -> radius
+                else -> 0f
+            }
+            Math.hypot((x - centerX).toDouble(), (y - centerY).toDouble()) <= hitRadius
+        }
     }
 
     private fun updateFontMetrics() {
@@ -1053,6 +1270,19 @@ class GhosttyTerminalView(
         info.addAction(AccessibilityNodeInfo.AccessibilityAction(ACTION_PREVIOUS_PROMPT, "Previous prompt"))
         info.addAction(AccessibilityNodeInfo.AccessibilityAction(ACTION_NEXT_PROMPT, "Next prompt"))
         info.addAction(AccessibilityNodeInfo.AccessibilityAction(ACTION_COPY_OUTPUT, "Copy latest command output"))
+        if (holdSwipeLabels.isNotEmpty()) {
+            if (holdSwipePinned) {
+                HoldSwipeDirection.entries.forEach { direction ->
+                    info.addAction(AccessibilityNodeInfo.AccessibilityAction(
+                        quickNavigationAction(direction),
+                        "Quick navigation ${direction.name.lowercase()}: ${holdSwipeLabels[direction].orEmpty()}",
+                    ))
+                }
+                info.addAction(AccessibilityNodeInfo.AccessibilityAction(ACTION_CLOSE_QUICK_NAVIGATION, "Close quick navigation"))
+            } else {
+                info.addAction(AccessibilityNodeInfo.AccessibilityAction(ACTION_OPEN_QUICK_NAVIGATION, "Open quick navigation"))
+            }
+        }
     }
 
     override fun onInitializeAccessibilityEvent(event: AccessibilityEvent) {
@@ -1086,6 +1316,22 @@ class GhosttyTerminalView(
                     ClipData.newPlainText("Latest command output", terminal.selectedText()),
                 )
             }
+            ACTION_OPEN_QUICK_NAVIGATION -> {
+                holdSwipe.start(width / 2f, height / 2f)
+                if (!activateQuickNavigation()) return false
+                holdSwipe.pin()
+                holdSwipePinned = true
+            }
+            ACTION_CLOSE_QUICK_NAVIGATION -> return dismissQuickNavigation()
+            in ACTION_QUICK_NAVIGATION_UP..ACTION_QUICK_NAVIGATION_LEFT -> {
+                if (!holdSwipePinned) return false
+                val direction = quickNavigationDirection(action) ?: return false
+                val column = cellColumn(holdSwipe.originX)
+                val row = cellRow(holdSwipe.originY)
+                val anchorRow = holdSwipeAnchorRow
+                cancelHoldSwipe()
+                return onHoldSwipe(direction, column, row, anchorRow)
+            }
             else -> return super.performAccessibilityAction(action, arguments)
         }
         refresh()
@@ -1108,6 +1354,9 @@ class GhosttyTerminalView(
 
     fun setPasswordInput(enabled: Boolean) {
         if (passwordInput == enabled) return
+        if (enabled) cancelHoldSwipe()
+        activeInputBuffer?.close()
+        activeInputBuffer = null
         passwordInput = enabled
         context.getSystemService(InputMethodManager::class.java)?.restartInput(this)
     }
@@ -1119,22 +1368,24 @@ class GhosttyTerminalView(
         } else {
             InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_NORMAL or InputType.TYPE_TEXT_FLAG_AUTO_CORRECT
         }
-        outAttrs.imeOptions = EditorInfo.IME_FLAG_NO_EXTRACT_UI or EditorInfo.IME_FLAG_NO_FULLSCREEN
+        outAttrs.imeOptions = EditorInfo.IME_FLAG_NO_EXTRACT_UI or EditorInfo.IME_FLAG_NO_FULLSCREEN or
+            EditorInfo.IME_FLAG_NO_PERSONALIZED_LEARNING
+        outAttrs.initialSelStart = 0
+        outAttrs.initialSelEnd = 0
+        activeInputBuffer?.close()
         return object : BaseInputConnection(this, false) {
             private val inputBuffer = TerminalImeInputBuffer(
                 sendInput = ::sendInput,
                 sendSpecialKey = { onSpecialKey(it) },
                 schedule = { action -> post(action) },
-            )
+            ).also { activeInputBuffer = it }
 
             override fun commitText(text: CharSequence?, newCursorPosition: Int): Boolean {
-                inputBuffer.commit(text)
-                return true
+                return inputBuffer.commit(text)
             }
 
             override fun setComposingText(text: CharSequence?, newCursorPosition: Int): Boolean {
-                inputBuffer.setComposing(text)
-                return true
+                return inputBuffer.setComposing(text, newCursorPosition)
             }
 
             override fun finishComposingText(): Boolean {
@@ -1143,16 +1394,37 @@ class GhosttyTerminalView(
             }
 
             override fun deleteSurroundingText(beforeLength: Int, afterLength: Int): Boolean {
-                inputBuffer.deleteSurrounding(beforeLength, afterLength)
-                return true
+                return inputBuffer.deleteSurrounding(beforeLength, afterLength, codePoints = false)
+            }
+
+            override fun deleteSurroundingTextInCodePoints(beforeLength: Int, afterLength: Int): Boolean {
+                return inputBuffer.deleteSurrounding(beforeLength, afterLength, codePoints = true)
+            }
+
+            override fun getTextBeforeCursor(length: Int, flags: Int): CharSequence = inputBuffer.textBeforeCursor(length)
+
+            override fun getTextAfterCursor(length: Int, flags: Int): CharSequence = inputBuffer.textAfterCursor(length)
+
+            override fun getSelectedText(flags: Int): CharSequence = ""
+
+            override fun setSelection(start: Int, end: Int): Boolean = inputBuffer.setSelection(start, end)
+
+            override fun setComposingRegion(start: Int, end: Int): Boolean = false
+
+            override fun closeConnection() {
+                inputBuffer.close()
+                if (activeInputBuffer === inputBuffer) activeInputBuffer = null
+                super.closeConnection()
             }
 
             override fun sendKeyEvent(event: KeyEvent): Boolean {
+                if (!inputBuffer.isOpen) return false
                 if (event.action == KeyEvent.ACTION_DOWN) inputBuffer.flush()
                 return onKeyEvent(event) || super.sendKeyEvent(event)
             }
 
             override fun performEditorAction(actionCode: Int): Boolean {
+                if (!inputBuffer.isOpen) return false
                 inputBuffer.flush()
                 onSpecialKey("ENTER")
                 return true
@@ -1165,6 +1437,7 @@ class GhosttyTerminalView(
     override fun onKeyUp(keyCode: Int, event: KeyEvent): Boolean = onKeyEvent(event) || super.onKeyUp(keyCode, event)
 
     private fun sendInput(text: String) {
+        if (!isEnabled || !acceptsInput || !isAttachedToWindow) return
         if (!snapshot.isAtBottom) {
             terminal.scrollToBottom()
             refresh()
@@ -1207,6 +1480,10 @@ class GhosttyTerminalView(
         TypedValue.COMPLEX_UNIT_SP, value, resources.displayMetrics,
     )
 
+    private fun dp(value: Float): Float = TypedValue.applyDimension(
+        TypedValue.COMPLEX_UNIT_DIP, value, resources.displayMetrics,
+    )
+
     companion object {
         private const val MIN_TEXT_SIZE_SP = 9f
         private const val MAX_TEXT_SIZE_SP = 30f
@@ -1214,8 +1491,8 @@ class GhosttyTerminalView(
         private const val MOUSE_RELEASE = 1
         private const val MOUSE_MOTION = 2
         private const val MOUSE_LEFT = 1
-        private const val MOUSE_MIDDLE = 2
-        private const val MOUSE_RIGHT = 3
+        private const val MOUSE_RIGHT = 2
+        private const val MOUSE_MIDDLE = 3
         private const val MOUSE_WHEEL_UP = 4
         private const val MOUSE_WHEEL_DOWN = 5
         private const val CURSOR_BLINK_INTERVAL_MS = 500L
@@ -1230,7 +1507,28 @@ class GhosttyTerminalView(
         private const val ACTION_PREVIOUS_PROMPT = 0x01020001
         private const val ACTION_NEXT_PROMPT = 0x01020002
         private const val ACTION_COPY_OUTPUT = 0x01020003
+        private const val ACTION_OPEN_QUICK_NAVIGATION = 0x01020004
+        private const val ACTION_CLOSE_QUICK_NAVIGATION = 0x01020005
+        private const val ACTION_QUICK_NAVIGATION_UP = 0x01020006
+        private const val ACTION_QUICK_NAVIGATION_RIGHT = 0x01020007
+        private const val ACTION_QUICK_NAVIGATION_DOWN = 0x01020008
+        private const val ACTION_QUICK_NAVIGATION_LEFT = 0x01020009
         private const val KITTY_BELOW_BACKGROUND = Int.MIN_VALUE / 2
+
+        private fun quickNavigationAction(direction: HoldSwipeDirection): Int = when (direction) {
+            HoldSwipeDirection.UP -> ACTION_QUICK_NAVIGATION_UP
+            HoldSwipeDirection.RIGHT -> ACTION_QUICK_NAVIGATION_RIGHT
+            HoldSwipeDirection.DOWN -> ACTION_QUICK_NAVIGATION_DOWN
+            HoldSwipeDirection.LEFT -> ACTION_QUICK_NAVIGATION_LEFT
+        }
+
+        private fun quickNavigationDirection(action: Int): HoldSwipeDirection? = when (action) {
+            ACTION_QUICK_NAVIGATION_UP -> HoldSwipeDirection.UP
+            ACTION_QUICK_NAVIGATION_RIGHT -> HoldSwipeDirection.RIGHT
+            ACTION_QUICK_NAVIGATION_DOWN -> HoldSwipeDirection.DOWN
+            ACTION_QUICK_NAVIGATION_LEFT -> HoldSwipeDirection.LEFT
+            else -> null
+        }
     }
 }
 
@@ -1240,48 +1538,122 @@ internal class TerminalImeInputBuffer(
     private val schedule: (() -> Unit) -> Unit,
 ) {
     private var composingText = ""
+    private var cursor = 0
     private var pendingText = ""
     private var pendingGeneration = 0
+    private var closed = false
+    val isOpen: Boolean get() = !closed
 
-    fun commit(text: CharSequence?) {
+    fun commit(text: CharSequence?): Boolean {
+        if (closed || text == null) return false
+        val value = text.toString()
+        if (value.length > MAX_STAGED_TEXT_LENGTH) return false
+        if (value.isEmpty()) {
+            if (composingText.isNotEmpty()) {
+                composingText = ""
+                cursor = 0
+            }
+            return true
+        }
         composingText = ""
+        cursor = 0
         discardPending()
-        text?.toString()?.takeIf(String::isNotEmpty)?.let(sendInput)
+        if (value == "\n" || value == "\r" || value == "\r\n") sendSpecialKey("ENTER") else sendInput(value)
+        return true
     }
 
-    fun setComposing(text: CharSequence?) {
-        flushPending()
-        composingText = text?.toString().orEmpty()
+    fun setComposing(text: CharSequence?, newCursorPosition: Int = 1): Boolean {
+        if (closed || text == null) return false
+        val value = text.toString()
+        if (value.length > MAX_STAGED_TEXT_LENGTH) return false
+        if (value.isEmpty()) {
+            if (pendingText.isEmpty()) {
+                composingText = ""
+                cursor = 0
+            }
+            return true
+        }
+        discardPending()
+        composingText = value
+        cursor = safeCursor(if (newCursorPosition > 0) value.length + newCursorPosition - 1 else newCursorPosition)
+        return true
     }
 
     fun finishComposing() {
-        if (composingText.isEmpty()) return
+        if (closed || composingText.isEmpty()) return
         pendingText = composingText
+        cursor = composingText.length
         composingText = ""
         val generation = ++pendingGeneration
         schedule {
-            if (generation == pendingGeneration) flushPending()
+            if (!closed && generation == pendingGeneration) flushPending()
         }
     }
 
-    fun deleteSurrounding(beforeLength: Int, afterLength: Int) {
+    fun deleteSurrounding(beforeLength: Int, afterLength: Int, codePoints: Boolean = false): Boolean {
+        if (closed || beforeLength < 0 || afterLength < 0 ||
+            beforeLength > MAX_DELETE_KEYS || afterLength > MAX_DELETE_KEYS
+        ) return false
         flushPending()
-        val before = beforeLength.coerceAtLeast(0)
-        val after = afterLength.coerceAtLeast(0)
         if (composingText.isNotEmpty()) {
-            composingText = composingText.dropLast(before.coerceAtMost(composingText.length))
+            val localBefore = if (codePoints) {
+                minOf(beforeLength, composingText.codePointCount(0, cursor))
+            } else minOf(beforeLength, cursor)
+            val localAfter = if (codePoints) {
+                minOf(afterLength, composingText.codePointCount(cursor, composingText.length))
+            } else minOf(afterLength, composingText.length - cursor)
+            var start = if (codePoints) composingText.offsetByCodePoints(cursor, -localBefore) else cursor - localBefore
+            var end = if (codePoints) composingText.offsetByCodePoints(cursor, localAfter) else cursor + localAfter
+            if (start in 1 until composingText.length && composingText[start].isLowSurrogate() &&
+                composingText[start - 1].isHighSurrogate()
+            ) start--
+            if (end in 1 until composingText.length && composingText[end].isLowSurrogate() &&
+                composingText[end - 1].isHighSurrogate()
+            ) end++
+            composingText = composingText.removeRange(start, end)
+            cursor = start
+            repeat(beforeLength - localBefore) { sendSpecialKey("BACKSPACE") }
+            repeat(afterLength - localAfter) { sendSpecialKey("DELETE") }
         } else {
-            repeat(before) { sendSpecialKey("BACKSPACE") }
+            repeat(beforeLength) { sendSpecialKey("BACKSPACE") }
+            repeat(afterLength) { sendSpecialKey("DELETE") }
         }
-        repeat(after) { sendSpecialKey("DELETE") }
+        return true
     }
 
     fun flush() {
+        if (closed) return
         flushPending()
         if (composingText.isNotEmpty()) {
             sendInput(composingText)
             composingText = ""
+            cursor = 0
         }
+    }
+
+    fun textBeforeCursor(length: Int): CharSequence {
+        val text = visibleText()
+        val position = if (composingText.isNotEmpty()) cursor else text.length
+        return text.substring((position - length.coerceAtLeast(0)).coerceAtLeast(0), position)
+    }
+
+    fun textAfterCursor(length: Int): CharSequence {
+        val text = visibleText()
+        val position = if (composingText.isNotEmpty()) cursor else text.length
+        return text.substring(position, (position + length.coerceAtLeast(0)).coerceAtMost(text.length))
+    }
+
+    fun setSelection(start: Int, end: Int): Boolean {
+        if (closed || start != end || composingText.isEmpty() || start !in 0..composingText.length) return false
+        cursor = safeCursor(start)
+        return true
+    }
+
+    fun close() {
+        closed = true
+        composingText = ""
+        cursor = 0
+        discardPending()
     }
 
     private fun flushPending() {
@@ -1294,5 +1666,20 @@ internal class TerminalImeInputBuffer(
     private fun discardPending() {
         pendingText = ""
         pendingGeneration++
+    }
+
+    private fun visibleText(): String = composingText.ifEmpty { pendingText }
+
+    private fun safeCursor(requested: Int): Int {
+        var position = requested.coerceIn(0, composingText.length)
+        if (position in 1 until composingText.length && composingText[position].isLowSurrogate() &&
+            composingText[position - 1].isHighSurrogate()
+        ) position++
+        return position
+    }
+
+    private companion object {
+        const val MAX_STAGED_TEXT_LENGTH = 16 * 1024
+        const val MAX_DELETE_KEYS = 1_024
     }
 }

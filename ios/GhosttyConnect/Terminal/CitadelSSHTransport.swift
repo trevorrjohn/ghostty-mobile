@@ -242,7 +242,7 @@ actor CitadelSSHTransport: SSHTransport {
         }
     }
 
-    private static func connectionError(_ error: Error, host: Host) -> Error {
+    static func connectionError(_ error: Error, host: Host) -> Error {
         switch error {
         case SSHClientError.unsupportedPasswordAuthentication:
             return SSHConnectionError.passwordNotSupported(host.destination)

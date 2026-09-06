@@ -6,6 +6,8 @@ import android.app.AlertDialog
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
+import android.hardware.biometrics.BiometricManager
+import android.hardware.biometrics.BiometricPrompt
 import android.annotation.SuppressLint
 import android.content.Intent
 import android.content.ComponentName
@@ -21,6 +23,7 @@ import android.graphics.Rect
 import android.graphics.Typeface
 import android.net.Uri
 import android.os.Bundle
+import android.os.CancellationSignal
 import android.os.Handler
 import android.os.IBinder
 import android.os.Build
@@ -45,23 +48,31 @@ import android.widget.ArrayAdapter
 import android.widget.AdapterView
 import android.widget.Button
 import android.widget.CheckBox
+import android.widget.Chronometer
 import android.widget.EditText
+import android.widget.FrameLayout
 import android.widget.HorizontalScrollView
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.PopupMenu
+import android.widget.ProgressBar
 import android.widget.ScrollView
 import android.widget.Spinner
 import android.widget.TextView
 import android.widget.Toast
 import dev.ghostty.connect.data.DogfoodFeedbackStore
+import dev.ghostty.connect.data.DiagnosticStage
+import dev.ghostty.connect.data.DiagnosticStore
 import dev.ghostty.connect.data.HostStore
 import dev.ghostty.connect.data.KeyboardBarStore
 import dev.ghostty.connect.data.KnownHostStore
 import dev.ghostty.connect.data.SshKeyStore
 import dev.ghostty.connect.data.SftpFavoriteStore
+import dev.ghostty.connect.data.SftpRecentFolderStore
 import dev.ghostty.connect.data.TerminalThemeStore
 import dev.ghostty.connect.data.TerminalStateStore
+import dev.ghostty.connect.data.TerminalArchive
+import dev.ghostty.connect.data.androidKeyStoreErrorCode
 import dev.ghostty.connect.model.AuthenticationType
 import dev.ghostty.connect.model.DogfoodFeedbackEntry
 import dev.ghostty.connect.model.DogfoodFeedbackDraft
@@ -75,6 +86,8 @@ import dev.ghostty.connect.model.KeyboardBarConfig
 import dev.ghostty.connect.model.KeyboardBarItem
 import dev.ghostty.connect.model.KeyboardBarItemType
 import dev.ghostty.connect.model.KeyboardModifier
+import dev.ghostty.connect.model.HoldSwipeActions
+import dev.ghostty.connect.model.HoldSwipeDirection
 import dev.ghostty.connect.model.isVisibleForTerminalTitle
 import dev.ghostty.connect.model.MAX_RETRY_ATTEMPTS
 import dev.ghostty.connect.model.MIN_RETRY_ATTEMPTS
@@ -100,8 +113,15 @@ import dev.ghostty.connect.terminal.ContextualSelection
 import dev.ghostty.connect.terminal.ContextualSelectionKind
 import dev.ghostty.connect.terminal.HostKeyVerification
 import dev.ghostty.connect.terminal.TerminalTokenMatcher
+import dev.ghostty.connect.terminal.androidKeyName
 import dev.ghostty.connect.terminal.ghosttyKeyAction
 import dev.ghostty.connect.terminal.HardwareKeyModifierState
+import dev.ghostty.connect.terminal.HardwareClipboardAction
+import dev.ghostty.connect.terminal.hardwareClipboardAction
+import dev.ghostty.connect.terminal.isModifierEligibleImeCommit
+import dev.ghostty.connect.terminal.sessionDisplayId
+import dev.ghostty.connect.terminal.nextSessionId
+import dev.ghostty.connect.terminal.tailscaleVerificationUrl
 import dev.ghostty.connect.terminal.bridge.GhosttyTerminal
 import dev.ghostty.connect.terminal.bridge.TerminalEffects
 import dev.ghostty.connect.terminal.view.GhosttyTerminalView
@@ -111,6 +131,8 @@ import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.io.ByteArrayOutputStream
 import java.util.UUID
+import java.util.concurrent.Executors
+import javax.crypto.Cipher
 
 class MainActivity : Activity() {
     private lateinit var hostStore: HostStore
@@ -119,14 +141,32 @@ class MainActivity : Activity() {
     private lateinit var terminalThemeStore: TerminalThemeStore
     private lateinit var terminalStateStore: TerminalStateStore
     private lateinit var feedbackStore: DogfoodFeedbackStore
+    private lateinit var diagnosticStore: DiagnosticStore
     private lateinit var knownHostStore: KnownHostStore
     private lateinit var sftpFavoriteStore: SftpFavoriteStore
+    private lateinit var sftpRecentFolderStore: SftpRecentFolderStore
     private var keyboardBarConfig = KeyboardBarConfig()
     private var sessionService: SshSessionService? = null
     private var sessionBound = false
+    private var sessionBinding = false
     private var shouldBindSession = false
-    private data class PendingConnection(val sessionId: String, val host: Host, val credential: CharArray)
-    private data class PendingBrowserConnection(val browserId: String, val host: Host, val credential: CharArray)
+    private var allowSingleSessionAutoOpen = false
+    private data class PendingConnection(
+        val sessionId: String,
+        val host: Host,
+        val credential: CharArray,
+        val unlockedPrivateKey: ByteArray?,
+    )
+    private data class PendingBrowserConnection(
+        val browserId: String,
+        val host: Host,
+        val credential: CharArray,
+        val unlockedPrivateKey: ByteArray?,
+    )
+    private data class RetainedConnections(
+        val terminal: PendingConnection?,
+        val browser: PendingBrowserConnection?,
+    )
     private data class PendingDownloadRequest(
         val browserId: String,
         val path: String,
@@ -145,6 +185,7 @@ class MainActivity : Activity() {
     private var pendingConnection: PendingConnection? = null
     private var sftpService: SftpBrowserService? = null
     private var sftpBound = false
+    private var sftpBinding = false
     private var shouldBindSftp = false
     private var pendingBrowserConnection: PendingBrowserConnection? = null
     private var selectedBrowserId: String? = null
@@ -154,6 +195,7 @@ class MainActivity : Activity() {
     private var pendingUploadRequest: PendingUploadRequest? = null
     private var pendingDownloadUri: Uri? = null
     private var pendingUploadUri: Uri? = null
+    private var pendingTerminalArchive: ByteArray? = null
     private val sftpSearchQueries = mutableMapOf<String, String>()
     private var sftpSearchField: EditText? = null
     private val sftpSortModes = mutableMapOf<String, SftpSortMode>()
@@ -166,13 +208,15 @@ class MainActivity : Activity() {
     private var pendingApkInstall: Pair<String, String>? = null
     private var selectedSessionId: String? = null
     private var terminalStatus: TextView? = null
-    private var terminalTitle: TextView? = null
+    private var terminalTitle = ""
     private var terminalRetryButton: Button? = null
-    private var terminalSelectButton: Button? = null
+    private var terminalChrome: View? = null
+    private var terminalChromeFadeRunnable: Runnable? = null
     private var terminalView: GhosttyTerminalView? = null
     private var shellIntegrationNotice: View? = null
     private var shellIntegrationNoticeRunnable: Runnable? = null
     private val mainHandler = Handler(Looper.getMainLooper())
+    private val diagnosticExecutor = Executors.newSingleThreadExecutor { task -> Thread(task, "diagnostic-store") }
     private var previewTerminal: GhosttyTerminal? = null
     private var editingHostId: String? = null
     private var editorKeySelection: Spinner? = null
@@ -183,6 +227,10 @@ class MainActivity : Activity() {
     private var modifierBarRow: LinearLayout? = null
     private var imeVisible = false
     private var terminalAtBottom = true
+    private var terminalMouseTracking = false
+    private var terminalImmersive = false
+    private var biometricCancellation: CancellationSignal? = null
+    private var biometricCleanup: (() -> Unit)? = null
     private var settingsVisible = false
     private var feedbackVisible = false
     private var trustedHostsVisible = false
@@ -209,31 +257,55 @@ class MainActivity : Activity() {
             if (sessionId != selectedSessionId) return
             val service = sessionService ?: return
             terminalStatus?.text = "$status · ${service.host(sessionId)?.destination.orEmpty()}"
+            terminalStatus?.visibility = if (status == "Connected") View.GONE else View.VISIBLE
             setTerminalEnabled(status == "Connected")
-            setTerminalNavigationHidden(status == "Connected")
+            setTerminalSystemBarsHidden(status == "Connected")
             terminalRetryButton?.visibility = if (
                 service.summaries().firstOrNull { it.sessionId == sessionId }?.canRetry == true
             ) View.VISIBLE else View.GONE
-            if (status == "Connected") scheduleShellIntegrationNotice(sessionId)
-            else cancelShellIntegrationNotice()
+            if (status == "Connected") {
+                scheduleShellIntegrationNotice(sessionId)
+                revealTerminalChrome(sessionId)
+            } else {
+                cancelShellIntegrationNotice()
+                revealTerminalChrome(sessionId, autoHide = false)
+            }
         }
 
         override fun onTerminalChanged(sessionId: String) {
             if (sessionId != selectedSessionId) return
-            terminalView?.refresh()
+            terminalView?.let { view ->
+                view.refresh()
+                val mouseTracking = view.isMouseTracking()
+                if (mouseTracking != terminalMouseTracking) {
+                    terminalMouseTracking = mouseTracking
+                    revealTerminalChrome(sessionId, autoHide = !mouseTracking)
+                }
+            }
         }
 
         override fun onTerminalEffects(sessionId: String, effects: TerminalEffects) {
             if (sessionId != selectedSessionId) return
             if (effects.bells > 0) terminalView?.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
             if (effects.progressState >= 0 && effects.progress >= 0) {
-                terminalStatus?.text = "${effects.progress}% · ${sessionService?.host(sessionId)?.destination.orEmpty()}"
+                if (effects.progressState == 0) {
+                    terminalStatus?.visibility = View.GONE
+                    revealTerminalChrome(sessionId)
+                } else {
+                    terminalStatus?.text = "${effects.progress}%"
+                    terminalStatus?.visibility = View.VISIBLE
+                    revealTerminalChrome(sessionId, autoHide = false)
+                }
             }
             if (effects.clipboard.isNotEmpty()) handleRemoteClipboard(effects.clipboard)
             if (effects.notificationTitle.isNotEmpty() || effects.notificationBody.isNotEmpty()) {
                 handleRemoteNotification(effects.notificationTitle, effects.notificationBody)
             }
-            if (effects.processingError) terminalStatus?.text = "Terminal processing warning"
+            if (effects.processingError) {
+                terminalStatus?.text = "Terminal processing warning"
+                terminalStatus?.visibility = View.VISIBLE
+                revealTerminalChrome(sessionId, autoHide = false)
+            }
         }
 
         override fun onHostKeyVerification(
@@ -262,7 +334,7 @@ class MainActivity : Activity() {
                 .joinToString("\n\n")
             AlertDialog.Builder(this@MainActivity)
                 .setTitle(challenge.title.ifBlank { "Authenticate with $hostName" })
-                .setMessage("$hostName · session ${sessionId.take(8)}" + if (message.isBlank()) "" else "\n\n$message")
+                .setMessage("$hostName · session ${sessionDisplayId(sessionId)}" + if (message.isBlank()) "" else "\n\n$message")
                 .setView(response)
                 .setNegativeButton("Cancel") { _, _ ->
                     response.text.clear()
@@ -280,11 +352,18 @@ class MainActivity : Activity() {
                 .show()
         }
 
+        override fun onAuthenticationBanner(sessionId: String, hostName: String, message: String) {
+            if (sessionId == selectedSessionId) showTailscaleVerification("$hostName · session ${sessionDisplayId(sessionId)}", message)
+        }
+
         override fun onSessionClosed(sessionId: String, error: String?) {
             if (refreshHostSessionRow(sessionId)) return
             if (sessionId != selectedSessionId) return
             val retryable = sessionService?.summaries()?.firstOrNull { it.sessionId == sessionId }?.canRetry == true
             if (!retryable) terminalStatus?.text = if (error == null) "Disconnected" else "Connection failed"
+            terminalStatus?.visibility = View.VISIBLE
+            setTerminalSystemBarsHidden(false)
+            revealTerminalChrome(sessionId, autoHide = false)
             setTerminalEnabled(false)
         }
     }
@@ -310,6 +389,10 @@ class MainActivity : Activity() {
             answer: (CharArray?) -> Unit,
         ) {
             showAuthenticationChallenge("$hostName · files ${browserId.take(8)}", challenge, answer)
+        }
+
+        override fun onAuthenticationBanner(browserId: String, hostName: String, message: String) {
+            if (browserId == selectedBrowserId) showTailscaleVerification("$hostName · files ${browserId.take(8)}", message)
         }
     }
 
@@ -347,25 +430,50 @@ class MainActivity : Activity() {
             .show()
     }
 
+    private fun showTailscaleVerification(owner: String, message: String) {
+        val url = tailscaleVerificationUrl(message)
+        AlertDialog.Builder(this)
+            .setTitle("Tailscale verification required")
+            .setMessage("$owner\n\n$message")
+            .setNegativeButton("Close", null)
+            .apply {
+                if (url != null) setPositiveButton("Open verification") { _, _ ->
+                    safeWebUri(url)?.let { startActivity(Intent(Intent.ACTION_VIEW, it)) }
+                }
+            }
+            .show()
+    }
+
     private val serviceConnection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
             val service = (binder as SshSessionService.LocalBinder).service
             sessionService = service
+            sessionBinding = false
             sessionBound = true
             service.attach(sessionListener, selectedSessionId)
             pendingConnection?.let { pending ->
                 pendingConnection = null
-                service.connect(pending.sessionId, pending.host, pending.credential)
+                service.connect(pending.sessionId, pending.host, pending.credential, pending.unlockedPrivateKey)
                 selectedSessionId = pending.sessionId
                 service.selectListenerSession(pending.sessionId)
             }
             if (feedbackVisible || trustedHostsVisible || identitiesVisible || settingsVisible || feedbackDraftViews != null) return
-            val requested = selectedSessionId?.takeIf { service.host(it) != null }
-            val sessionId = requested ?: service.summaries().singleOrNull()?.sessionId
-            if (sessionId != null) openSession(sessionId) else showHosts(disconnect = false)
+            val requestedId = selectedSessionId
+            val sessionId = liveSessionToOpen(
+                requestedId,
+                service.summaries().map { it.sessionId },
+                allowSingleSessionAutoOpen,
+            )
+            allowSingleSessionAutoOpen = false
+            if (sessionId != null) {
+                selectedSessionId = sessionId
+                if (requestedId == null) service.selectListenerSession(sessionId)
+                renderTerminal(service, sessionId)
+            } else showHosts(disconnect = false)
         }
 
         override fun onServiceDisconnected(name: ComponentName?) {
+            sessionBinding = false
             sessionBound = false
             sessionService = null
             setTerminalEnabled(false)
@@ -375,14 +483,16 @@ class MainActivity : Activity() {
         override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
             val service = (binder as SftpBrowserService.LocalBinder).service
             sftpService = service
+            sftpBinding = false
             sftpBound = true
             service.attach(sftpListener, selectedBrowserId)
+            val openBrowser = browserVisible || pendingBrowserConnection != null
             pendingBrowserConnection?.let { pending ->
                 pendingBrowserConnection = null
-                service.connect(pending.browserId, pending.host, pending.credential)
+                service.connect(pending.browserId, pending.host, pending.credential, pending.unlockedPrivateKey)
                 selectedBrowserId = pending.browserId
             }
-            selectedBrowserId?.let(service::state)?.let {
+            selectedBrowserId?.let(service::state)?.takeIf { openBrowser }?.let {
                 currentBrowserState = it
                 showFileBrowser(it.browserId)
             }
@@ -390,17 +500,31 @@ class MainActivity : Activity() {
         }
 
         override fun onServiceDisconnected(name: ComponentName?) {
+            sftpBinding = false
             sftpBound = false
             sftpService = null
         }
     }
 
+    @Suppress("DEPRECATION")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        if (Build.VERSION.SDK_INT >= 30) window.setDecorFitsSystemWindows(false)
         window.decorView.setOnApplyWindowInsetsListener { view, insets ->
             val bars = if (android.os.Build.VERSION.SDK_INT >= 30) {
                 imeVisible = insets.isVisible(WindowInsets.Type.ime())
-                insets.getInsets(WindowInsets.Type.systemBars() or WindowInsets.Type.ime())
+                val ime = insets.getInsets(WindowInsets.Type.ime())
+                if (terminalView != null && terminalImmersive) {
+                    android.graphics.Insets.of(0, 0, 0, ime.bottom)
+                } else {
+                    val system = insets.getInsets(WindowInsets.Type.systemBars())
+                    android.graphics.Insets.of(
+                        maxOf(system.left, ime.left),
+                        maxOf(system.top, ime.top),
+                        maxOf(system.right, ime.right),
+                        maxOf(system.bottom, ime.bottom),
+                    )
+                }
             } else {
                 @Suppress("DEPRECATION")
                 android.graphics.Insets.of(
@@ -428,15 +552,33 @@ class MainActivity : Activity() {
         terminalThemeStore = TerminalThemeStore(this)
         terminalStateStore = TerminalStateStore(this)
         feedbackStore = DogfoodFeedbackStore(this)
+        diagnosticStore = DiagnosticStore(this)
         knownHostStore = KnownHostStore(this)
         sftpFavoriteStore = SftpFavoriteStore(this)
+        sftpRecentFolderStore = SftpRecentFolderStore(this)
         if (savedInstanceState == null) SftpPreviewProvider.clearCache(this)
         keyboardBarConfig = keyboardBarStore.load()
-        selectedSessionId = intent?.getStringExtra(SshSessionService.EXTRA_SESSION_ID)
-        shouldBindSession = intent?.action == SshSessionService.ACTION_OPEN_SESSION || SshSessionService.active
+        val savedScreen = savedInstanceState?.getString(STATE_SCREEN)
+        val requestedSessionId = intent?.takeIf {
+            it.action == SshSessionService.ACTION_OPEN_SESSION &&
+                (savedInstanceState == null || savedScreen == SCREEN_TERMINAL)
+        }
+            ?.getStringExtra(SshSessionService.EXTRA_SESSION_ID)
+        selectedSessionId = restoredSessionId(
+            requestedSessionId,
+            savedInstanceState?.getString(STATE_SESSION_ID),
+            savedScreen == SCREEN_TERMINAL,
+            SshSessionService.active,
+            savedInstanceState == null,
+        )
+        shouldBindSession = requestedSessionId != null || SshSessionService.active
         selectedBrowserId = intent?.getStringExtra(SftpBrowserService.EXTRA_BROWSER_ID)
             ?: savedInstanceState?.getString(STATE_BROWSER_ID)
-        pendingBrowserConnection = lastNonConfigurationInstance as? PendingBrowserConnection
+        (lastNonConfigurationInstance as? RetainedConnections)?.let { retained ->
+            pendingConnection = retained.terminal
+            pendingBrowserConnection = retained.browser
+        }
+        if (pendingConnection != null) shouldBindSession = true
         pendingDownloadRequest = savedInstanceState?.getString(STATE_DOWNLOAD_BROWSER)?.let { browserId ->
             val type = savedInstanceState.getString(STATE_DOWNLOAD_TYPE)?.let(SftpEntryType::valueOf)
                 ?: return@let null
@@ -461,13 +603,18 @@ class MainActivity : Activity() {
         activeSftpPreviewBrowserId = savedInstanceState?.getString(STATE_ACTIVE_PREVIEW_BROWSER)
         shouldBindSftp = intent?.action == SftpBrowserService.ACTION_OPEN_BROWSER || SftpBrowserService.active
             || pendingBrowserConnection != null
-        when (savedInstanceState?.getString(STATE_SCREEN)) {
-            SCREEN_FEEDBACK -> showFeedbackLog()
-            SCREEN_TRUSTED_HOSTS -> showTrustedHosts()
-            SCREEN_IDENTITIES -> showSshIdentities()
-            SCREEN_SETTINGS -> showKeyboardSettings()
+        when {
+            selectedSessionId != null && shouldBindSession -> showRestoringSession()
+            savedScreen == SCREEN_BROWSER && selectedBrowserId != null && shouldBindSftp -> {
+                showFileBrowser(requireNotNull(selectedBrowserId))
+            }
+            savedScreen == SCREEN_FEEDBACK -> showFeedbackLog()
+            savedScreen == SCREEN_TRUSTED_HOSTS -> showTrustedHosts()
+            savedScreen == SCREEN_IDENTITIES -> showSshIdentities()
+            savedScreen == SCREEN_SETTINGS -> showKeyboardSettings()
             else -> showHosts(disconnect = false)
         }
+        allowSingleSessionAutoOpen = savedInstanceState == null && selectedSessionId == null
         runCatching { feedbackStore.loadDraft() }.getOrNull()?.let { draft ->
             showFeedbackDialog(
                 areaName = draft.area,
@@ -491,8 +638,8 @@ class MainActivity : Activity() {
 
     override fun onStart() {
         super.onStart()
-        if (shouldBindSession && !sessionBound) bindSessionService()
-        if (shouldBindSftp && !sftpBound) bindSftpService()
+        if (shouldBindSession && !sessionBound && !sessionBinding) bindSessionService()
+        if (shouldBindSftp && !sftpBound && !sftpBinding) bindSftpService()
     }
 
     override fun onResume() {
@@ -529,26 +676,29 @@ class MainActivity : Activity() {
     }
 
     override fun onStop() {
-        if (sessionBound) {
-            sessionService?.detach(sessionListener)
+        if (sessionBound || sessionBinding) {
+            if (sessionBound) sessionService?.detach(sessionListener)
             unbindService(serviceConnection)
             sessionBound = false
+            sessionBinding = false
             sessionService = null
         }
-        if (sftpBound) {
-            sftpService?.detach(sftpListener)
+        if (sftpBound || sftpBinding) {
+            if (sftpBound) sftpService?.detach(sftpListener)
             unbindService(sftpServiceConnection)
             sftpBound = false
+            sftpBinding = false
             sftpService = null
         }
         super.onStop()
     }
 
     private fun showHosts(disconnect: Boolean = false) {
+        allowSingleSessionAutoOpen = false
         hostsVisible = true
         hostSessionStatusViews.clear()
         hostSessionRetryButtons.clear()
-        setTerminalNavigationHidden(false)
+        setTerminalSystemBarsHidden(false)
         window.clearFlags(WindowManager.LayoutParams.FLAG_SECURE)
         editingHostId = null
         settingsVisible = false
@@ -562,9 +712,10 @@ class MainActivity : Activity() {
         selectedSessionId = null
         sessionService?.selectListenerSession(null)
         terminalStatus = null
-        terminalTitle = null
+        terminalTitle = ""
         terminalRetryButton = null
-        terminalSelectButton = null
+        cancelTerminalChromeFade()
+        terminalChrome = null
         terminalView?.setLocalSelectionMode(false)
         terminalView = null
         shellIntegrationNotice = null
@@ -575,6 +726,7 @@ class MainActivity : Activity() {
         editorIdentityIds = emptyList()
         modifierBar = null
         modifierBarRow = null
+        terminalMouseTracking = false
         previewTerminal?.close()
         previewTerminal = null
         val root = vertical(24)
@@ -582,12 +734,27 @@ class MainActivity : Activity() {
         root.addView(label("A fast, native SSH terminal", 15f, secondary).margins(bottom = 28))
         val activeSessions = sessionService?.summaries().orEmpty()
         if (activeSessions.isNotEmpty()) {
+            val sessionsPerHost = activeSessions.groupingBy { it.hostId }.eachCount()
             root.addView(label("Active sessions", 20f, primary, Typeface.BOLD).margins(bottom = 10))
             activeSessions.forEach { session ->
+                val duplicateHostSession = sessionsPerHost.getValue(session.hostId) > 1
                 val row = vertical(12).apply { setBackgroundColor(raised) }
-                row.addView(label(session.hostName, 17f, primary, Typeface.BOLD))
+                row.addView(label(
+                    if (duplicateHostSession) "${session.hostName} · ${session.shortId}" else session.hostName,
+                    17f,
+                    primary,
+                    Typeface.BOLD,
+                ))
                 row.addView(label("${session.status} · ${session.destination}", 13f, secondary).also {
                     hostSessionStatusViews[session.sessionId] = it
+                })
+                row.addView(Chronometer(this).apply {
+                    base = session.startedAtElapsedRealtime
+                    format = if (duplicateHostSession) "Session ${session.shortId} · %s" else "Active · %s"
+                    textSize = 12f
+                    setTextColor(accent)
+                    contentDescription = "Session ${session.shortId} duration"
+                    start()
                 })
                 val actions = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
                 actions.addView(compactButton("Open") { openSession(session.sessionId) })
@@ -644,6 +811,7 @@ class MainActivity : Activity() {
             card.addView(label(when (host.authenticationType) {
                 AuthenticationType.PASSWORD -> "Password"
                 AuthenticationType.SSH_KEY -> identity?.let { "SSH key · ${it.name}" } ?: "SSH key unavailable"
+                AuthenticationType.TAILSCALE_SSH -> "Tailscale SSH"
             }, 14f, if (host.authenticationType == AuthenticationType.SSH_KEY && identity == null) Color.RED else accent).margins(top = 8))
             card.addView(button("Terminal") {
                 if (host.authenticationType == AuthenticationType.SSH_KEY && identity == null) {
@@ -685,6 +853,14 @@ class MainActivity : Activity() {
         setContentView(scroll(root))
     }
 
+    private fun showRestoringSession() {
+        hostsVisible = false
+        val root = vertical(24)
+        root.addView(label("Restoring session…", 18f, primary, Typeface.BOLD))
+        root.addView(label("Checking the live session owner", 13f, secondary).margins(top = 8))
+        setContentView(root)
+    }
+
     private fun refreshHostSessionRow(sessionId: String): Boolean {
         if (!hostsVisible) return false
         val summary = sessionService?.summaries()?.firstOrNull { it.sessionId == sessionId }
@@ -716,13 +892,20 @@ class MainActivity : Activity() {
         listOf(alias, hostname, username, port).forEach { root.addView(it.margins(bottom = 12)) }
 
         root.addView(label("Authentication", 14f, secondary).margins(top = 6, bottom = 6))
-        val authenticationChoices = listOf("Password", "SSH key")
+        val authenticationTypes = AuthenticationType.entries
+        val authenticationChoices = listOf("Password", "SSH key", "Tailscale SSH")
         val authentication = Spinner(this).apply {
             adapter = ArrayAdapter(this@MainActivity, android.R.layout.simple_spinner_dropdown_item, authenticationChoices)
             setBackgroundColor(raised)
-            setSelection(if (existing?.authenticationType == AuthenticationType.SSH_KEY) 1 else 0)
+            setSelection(authenticationTypes.indexOf(existing?.authenticationType ?: AuthenticationType.PASSWORD))
         }.also { editorAuthentication = it }
         root.addView(authentication.margins(bottom = 10))
+        val tailscaleNotice = label(
+            "Tailscale SSH uses your active tailnet identity, requires port 22, and still verifies the SSH host key. No password or imported key is sent.",
+            12f,
+            secondary,
+        )
+        root.addView(tailscaleNotice.margins(bottom = 10))
 
         val identities = keyStore.identities().also { editorIdentities = it }
         val missingIdentity = existing?.identityId?.takeIf { identityId ->
@@ -748,6 +931,7 @@ class MainActivity : Activity() {
             val visible = if (authentication.selectedItemPosition == 1) View.VISIBLE else View.GONE
             keySelection.visibility = visible
             addKey.visibility = visible
+            tailscaleNotice.visibility = if (authentication.selectedItemPosition == 2) View.VISIBLE else View.GONE
         }
         authentication.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
             override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) = updateKeyControls()
@@ -846,10 +1030,10 @@ class MainActivity : Activity() {
                 toast(it.message ?: "Enter a valid SSH hostname.")
                 return@button
             }
-            val authenticationType = if (authentication.selectedItemPosition == 1) {
-                AuthenticationType.SSH_KEY
-            } else {
-                AuthenticationType.PASSWORD
+            val authenticationType = authenticationTypes[authentication.selectedItemPosition]
+            if (authenticationType == AuthenticationType.TAILSCALE_SSH && destination.port != 22) {
+                toast("Tailscale SSH uses port 22.")
+                return@button
             }
             val identityId = editorIdentityIds.getOrNull(keySelection.selectedItemPosition)
             if (authenticationType == AuthenticationType.SSH_KEY && identityId == null) {
@@ -881,7 +1065,11 @@ class MainActivity : Activity() {
         root.addView(button("Paste a private key", secondary) { showPasteKeyDialog() }.margins(top = 8))
         existing?.takeUnless { isDuplicate }?.let { host ->
             root.addView(button("Delete host", secondary) {
-                hostStore.delete(host.id)
+                val deleted = runCatching {
+                    sftpRecentFolderStore.clear(host.id)
+                    hostStore.delete(host.id)
+                }.onFailure { toast(it.message ?: "Could not delete host data.") }.isSuccess
+                if (!deleted) return@button
                 editingHostId = null
                 showHosts()
             }.margins(top = 8))
@@ -979,9 +1167,21 @@ class MainActivity : Activity() {
         if (resultCode != RESULT_OK) {
             if (requestCode == CREATE_DOWNLOAD_DOCUMENT) pendingDownloadRequest = null
             if (requestCode == OPEN_UPLOAD_DOCUMENT) pendingUploadRequest = null
+            if (requestCode == CREATE_TERMINAL_ARCHIVE) pendingTerminalArchive = null
             return
         }
         val uri = data?.data ?: return
+        if (requestCode == CREATE_TERMINAL_ARCHIVE) {
+            val archive = pendingTerminalArchive
+            pendingTerminalArchive = null
+            runCatching {
+                requireNotNull(archive) { "Archive export expired" }
+                contentResolver.openOutputStream(uri, "w")?.use { it.write(archive) }
+                    ?: error("Could not open destination")
+            }.onSuccess { toast("Encrypted terminal archive exported") }
+                .onFailure { toast(it.message ?: "Could not export terminal archive") }
+            return
+        }
         if (requestCode == CREATE_DOWNLOAD_DOCUMENT) {
             pendingDownloadUri = uri
             dispatchPendingDocumentResults()
@@ -1018,8 +1218,8 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun requestCredentialAndConnect(host: Host) = requestCredential(host) { credential ->
-        startSession(host, credential)
+    private fun requestCredentialAndConnect(host: Host) = requestCredential(host) { credential, privateKey ->
+        startSession(host, credential, privateKey)
     }
 
     private fun showQuickConnect() {
@@ -1043,20 +1243,84 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun requestCredentialAndBrowse(host: Host) = requestCredential(host) { credential ->
-        startFileBrowser(host, credential)
+    private fun requestCredentialAndBrowse(host: Host) = requestCredential(host) { credential, privateKey ->
+        startFileBrowser(host, credential, privateKey)
     }
 
-    private fun requestCredential(host: Host, connect: (CharArray) -> Unit) {
+    private fun requestCredential(host: Host, connect: (CharArray, ByteArray?) -> Unit) {
         if (Build.VERSION.SDK_INT >= 33 &&
             checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), NOTIFICATION_PERMISSION)
         }
+        if (host.authenticationType == AuthenticationType.TAILSCALE_SSH) {
+            connect(CharArray(0), null)
+            return
+        }
         if (host.authenticationType == AuthenticationType.SSH_KEY) {
             val identityId = requireNotNull(host.identityId)
             val identity = keyStore.identity(identityId) ?: error("SSH identity is unavailable")
+            fun finish(passphrase: CharArray) {
+                if (!identity.requiresBiometric) {
+                    connect(passphrase, null)
+                    return
+                }
+                if (runCatching { keyStore.biometricUsesAuthenticationWindow(identity.id) }.getOrDefault(false)) {
+                    showBiometricConfirmation(
+                        title = "Unlock ${identity.name}",
+                        subtitle = "Authenticate to use this SSH identity for one new connection.",
+                        cleanup = { passphrase.fill('\u0000') },
+                    ) {
+                        val cipher = runCatching { keyStore.biometricDecryptionCipher(identity.id) }.getOrElse {
+                            recordDiagnostic(
+                                DiagnosticStage.BIOMETRIC_CIPHER_PREPARATION_FAILED,
+                                resultCode = androidKeyStoreErrorCode(it),
+                                error = it,
+                            )
+                            passphrase.fill('\u0000')
+                            toast(it.message ?: "Biometric protection is unavailable.")
+                            return@showBiometricConfirmation
+                        }
+                        val privateKey = runCatching { keyStore.readBiometric(identity.id, cipher) }.getOrElse {
+                            recordDiagnostic(
+                                DiagnosticStage.BIOMETRIC_IDENTITY_DECRYPTION_FAILED,
+                                resultCode = androidKeyStoreErrorCode(it),
+                                error = it,
+                            )
+                            passphrase.fill('\u0000')
+                            toast(it.message ?: "Could not unlock SSH identity.")
+                            return@showBiometricConfirmation
+                        }
+                        connect(passphrase, privateKey)
+                    }
+                    return
+                }
+                val cipher = runCatching { keyStore.biometricDecryptionCipher(identity.id) }.getOrElse {
+                    recordDiagnostic(DiagnosticStage.BIOMETRIC_CIPHER_PREPARATION_FAILED, error = it)
+                    passphrase.fill('\u0000')
+                    toast(it.message ?: "Biometric unlock is unavailable.")
+                    return
+                }
+                showBiometricPrompt(
+                    title = "Unlock ${identity.name}",
+                    subtitle = "Authenticate to use this SSH identity for one new connection.",
+                    cipher = cipher,
+                    cleanup = { passphrase.fill('\u0000') },
+                ) { authenticatedCipher ->
+                    val privateKey = runCatching { keyStore.readBiometric(identity.id, authenticatedCipher) }.getOrElse {
+                    recordDiagnostic(
+                        DiagnosticStage.BIOMETRIC_IDENTITY_DECRYPTION_FAILED,
+                        resultCode = androidKeyStoreErrorCode(it),
+                        error = it,
+                    )
+                        passphrase.fill('\u0000')
+                        toast(it.message ?: "Could not unlock SSH identity.")
+                        return@showBiometricPrompt
+                    }
+                    connect(passphrase, privateKey)
+                }
+            }
             if (!identity.requiresPassphrase) {
-                connect(CharArray(0))
+                finish(CharArray(0))
                 return
             }
             val passphrase = field(
@@ -1078,7 +1342,7 @@ class MainActivity : Activity() {
                         dialog.dismiss()
                         val value = passphrase.text.toString().toCharArray()
                         passphrase.text.clear()
-                        connect(value)
+                        finish(value)
                     }
                 }
             }
@@ -1094,7 +1358,7 @@ class MainActivity : Activity() {
             .setPositiveButton("Connect") { _, _ ->
                 val value = credential.text.toString().toCharArray()
                 credential.text.clear()
-                connect(value)
+                connect(value, null)
             }
             .setOnCancelListener { credential.text.clear() }
             .show()
@@ -1132,8 +1396,8 @@ class MainActivity : Activity() {
     private fun reauthenticate(sessionId: String) {
         val service = sessionService ?: return
         val host = service.host(sessionId) ?: return
-        requestCredential(host) { credential ->
-            service.retry(sessionId, credential)
+        requestCredential(host) { credential, privateKey ->
+            service.retry(sessionId, credential, privateKey)
             openSession(sessionId)
         }
     }
@@ -1205,7 +1469,13 @@ class MainActivity : Activity() {
             secondary,
         ).margins(bottom = 10))
         root.addView(button("SSH identities", secondary) { showSshIdentities() }.margins(bottom = 8))
-        root.addView(button("Trusted hosts", secondary) { showTrustedHosts() }.margins(bottom = 20))
+        root.addView(button("Trusted hosts", secondary) { showTrustedHosts() }.margins(bottom = 8))
+        root.addView(button("Export diagnostics", secondary) { exportDiagnostics() }.margins(bottom = 8))
+        root.addView(button("Clear diagnostics", secondary) {
+            runCatching { diagnosticStore.clear() }
+                .onSuccess { toast("Diagnostics cleared.") }
+                .onFailure { toast("Could not clear diagnostics.") }
+        }.margins(bottom = 20))
 
         root.addView(label("Hardware volume buttons", 18f, primary, Typeface.BOLD))
         root.addView(label(
@@ -1245,6 +1515,46 @@ class MainActivity : Activity() {
         }
         volumeActionSpinner("Volume Down", keyboardBarConfig.volumeDownActionId) { actionId ->
             saveKeyboardBarConfig(keyboardBarConfig.copy(volumeDownActionId = actionId), refreshSettings = false)
+        }
+
+        root.addView(label("Quick navigation", 18f, primary, Typeface.BOLD).margins(top = 12))
+        root.addView(label(
+            "Hold the terminal until it vibrates, then lift your finger and tap an action. Use X Cancel to close it. A drag before the vibration is sent normally to mouse-aware apps such as tmux.",
+            14f,
+            secondary,
+        ).margins(bottom = 8))
+        root.addView(CheckBox(this).apply {
+            text = "Enable quick navigation"
+            setTextColor(primary)
+            isChecked = keyboardBarConfig.holdSwipeEnabled
+            setOnCheckedChangeListener { _, checked ->
+                saveKeyboardBarConfig(keyboardBarConfig.copy(holdSwipeEnabled = checked), refreshSettings = false)
+            }
+        }.margins(bottom = 8))
+        val quickItems = HoldSwipeActions.builtIns +
+            (KeyboardBarCatalog.keys + keyboardBarConfig.combinations).map { it.id to it.label }
+        HoldSwipeDirection.entries.forEach { direction ->
+            val ids = quickItems.map { it.first }
+            val current = keyboardBarConfig.holdSwipeActions[direction]
+            root.addView(label(direction.name.lowercase().replaceFirstChar(Char::uppercase), 14f, secondary))
+            root.addView(Spinner(this).apply {
+                adapter = ArrayAdapter(this@MainActivity, android.R.layout.simple_spinner_dropdown_item,
+                    quickItems.map(Pair<String, String>::second))
+                setBackgroundColor(raised)
+                setSelection(ids.indexOf(current).coerceAtLeast(0))
+                var selectedId = current
+                onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+                    override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
+                        val value = ids[position]
+                        if (value == selectedId) return
+                        selectedId = value
+                        saveKeyboardBarConfig(keyboardBarConfig.copy(
+                            holdSwipeActions = keyboardBarConfig.holdSwipeActions + (direction to value),
+                        ), refreshSettings = false)
+                    }
+                    override fun onNothingSelected(parent: AdapterView<*>?) = Unit
+                }
+            }.margins(bottom = 8))
         }
 
         root.addView(label("Keyboard bar", 18f, primary, Typeface.BOLD))
@@ -1396,6 +1706,15 @@ class MainActivity : Activity() {
                         13f,
                         secondary,
                     ).margins(top = 4))
+                    addView(label(
+                        if (identity.requiresBiometric) {
+                            "Biometric unlock is required for every new connection. Automatic reconnect is unavailable."
+                        } else {
+                            "Standard app encryption; no biometric prompt"
+                        },
+                        13f,
+                        secondary,
+                    ).margins(top = 4))
                     identity.fingerprint?.let { fingerprint ->
                         addView(label("Public-key fingerprint", 12f, secondary).margins(top = 10, bottom = 4))
                         addView(label(fingerprint, 13f, primary).apply {
@@ -1410,6 +1729,10 @@ class MainActivity : Activity() {
                         if (affectedHosts.isEmpty()) secondary else accent,
                     ).margins(top = 10))
                     addView(button("Rename", secondary) { showRenameIdentity(identity) }.margins(top = 12))
+                    addView(button(
+                        if (identity.requiresBiometric) "Remove biometric requirement" else "Require biometric unlock",
+                        secondary,
+                    ) { changeBiometricProtection(identity) }.margins(top = 8))
                     if (identity.publicKey != null) {
                         addView(button("Copy public key", secondary) { copyPublicKey(identity) }.margins(top = 8))
                         addView(button("Share public key", secondary) { sharePublicKey(identity) }.margins(top = 8))
@@ -1450,6 +1773,248 @@ class MainActivity : Activity() {
         }
         dialog.show()
         name.requestFocus()
+    }
+
+    private fun changeBiometricProtection(identity: SshIdentity) {
+        if (identityDeletionBlockMessage(identity) != null) {
+            toast("Disconnect active terminal and file-browser uses before changing identity protection.")
+            return
+        }
+        val manager = getSystemService(BiometricManager::class.java)
+        val available = if (Build.VERSION.SDK_INT >= 30) {
+            manager.canAuthenticate(BiometricManager.Authenticators.BIOMETRIC_STRONG)
+        } else {
+            @Suppress("DEPRECATION")
+            manager.canAuthenticate()
+        }
+        if (available != BiometricManager.BIOMETRIC_SUCCESS) {
+            recordDiagnostic(DiagnosticStage.BIOMETRIC_CAPABILITY_REJECTED, resultCode = available)
+            toast("Enroll a strong biometric in Android Settings before protecting this identity.")
+            return
+        }
+        val usesAuthenticationWindow = runCatching {
+            if (identity.requiresBiometric) keyStore.biometricUsesAuthenticationWindow(identity.id)
+            else {
+                keyStore.prepareBiometricEncryption(identity.id)
+                true
+            }
+        }.getOrElse {
+            recordDiagnostic(DiagnosticStage.BIOMETRIC_CIPHER_PREPARATION_FAILED, error = it)
+            toast(it.message ?: "Biometric protection is unavailable.")
+            return
+        }
+        val commit: (Cipher) -> Unit = { authenticatedCipher ->
+            if (identityDeletionBlockMessage(identity) != null) {
+                recordDiagnostic(DiagnosticStage.BIOMETRIC_OPERATION_REJECTED)
+                if (!identity.requiresBiometric) runCatching { keyStore.cancelBiometricSetup(identity.id) }
+                toast("Disconnect active uses before changing identity protection.")
+            } else {
+                runCatching {
+                    if (identity.requiresBiometric) keyStore.disableBiometric(identity.id, authenticatedCipher)
+                    else keyStore.enableBiometric(identity.id, authenticatedCipher)
+                }.onSuccess {
+                    toast(if (it.requiresBiometric) {
+                        "Biometric unlock is now required for each new connection."
+                    } else {
+                        "Biometric requirement removed."
+                    })
+                    showSshIdentities()
+                }.onFailure {
+                    recordDiagnostic(
+                        DiagnosticStage.BIOMETRIC_PROTECTION_COMMIT_FAILED,
+                        resultCode = androidKeyStoreErrorCode(it),
+                        error = it,
+                    )
+                    if (!identity.requiresBiometric) runCatching { keyStore.cancelBiometricSetup(identity.id) }
+                    toast(it.message ?: "Could not change biometric protection.")
+                }
+            }
+        }
+        val title = if (identity.requiresBiometric) "Remove biometric requirement?" else "Protect ${identity.name}"
+        val subtitle = if (identity.requiresBiometric) {
+            "Authenticate before returning this key to standard app encryption."
+        } else {
+            "Each new terminal or file-browser connection will require biometric unlock."
+        }
+        if (usesAuthenticationWindow) {
+            showBiometricConfirmation(title, subtitle, cleanup = {
+                if (!identity.requiresBiometric) runCatching { keyStore.cancelBiometricSetup(identity.id) }
+            }) {
+                val cipher = runCatching {
+                    if (identity.requiresBiometric) keyStore.biometricDecryptionCipher(identity.id)
+                    else keyStore.biometricEncryptionCipher(identity.id)
+                }.getOrElse {
+                    recordDiagnostic(
+                        DiagnosticStage.BIOMETRIC_CIPHER_PREPARATION_FAILED,
+                        resultCode = androidKeyStoreErrorCode(it),
+                        error = it,
+                    )
+                    if (!identity.requiresBiometric) runCatching { keyStore.cancelBiometricSetup(identity.id) }
+                    toast(it.message ?: "Biometric protection is unavailable.")
+                    return@showBiometricConfirmation
+                }
+                commit(cipher)
+            }
+            return
+        }
+        val cipher = runCatching { keyStore.biometricDecryptionCipher(identity.id) }.getOrElse {
+            recordDiagnostic(DiagnosticStage.BIOMETRIC_CIPHER_PREPARATION_FAILED, error = it)
+            toast(it.message ?: "Biometric protection is unavailable.")
+            return
+        }
+        showBiometricPrompt(
+            title = title,
+            subtitle = subtitle,
+            cipher = cipher,
+            cleanup = {
+                if (!identity.requiresBiometric) runCatching { keyStore.cancelBiometricSetup(identity.id) }
+            },
+        ) { commit(it) }
+    }
+
+    private fun showBiometricPrompt(
+        title: String,
+        subtitle: String,
+        cipher: Cipher,
+        cleanup: () -> Unit,
+        authenticated: (Cipher) -> Unit,
+    ) {
+        cancelBiometricPrompt()
+        val cancellation = CancellationSignal()
+        biometricCancellation = cancellation
+        biometricCleanup = cleanup
+        recordDiagnostic(DiagnosticStage.BIOMETRIC_PROMPT_STARTED)
+        val prompt = BiometricPrompt.Builder(this)
+            .setTitle(title)
+            .setSubtitle(subtitle)
+            .setNegativeButton("Cancel", mainExecutor) { _, _ -> cancelBiometricPrompt() }
+            .apply {
+                if (Build.VERSION.SDK_INT >= 30) {
+                    setAllowedAuthenticators(BiometricManager.Authenticators.BIOMETRIC_STRONG)
+                }
+            }
+            .build()
+        prompt.authenticate(
+            BiometricPrompt.CryptoObject(cipher),
+            cancellation,
+            mainExecutor,
+            object : BiometricPrompt.AuthenticationCallback() {
+                override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
+                    if (biometricCancellation !== cancellation) return
+                    biometricCancellation = null
+                    biometricCleanup = null
+                    recordDiagnostic(DiagnosticStage.BIOMETRIC_PROMPT_SUCCEEDED)
+                    val authenticatedCipher = result.cryptoObject?.cipher
+                    if (authenticatedCipher == null) {
+                        recordDiagnostic(DiagnosticStage.BIOMETRIC_CRYPTO_OBJECT_MISSING)
+                        cleanup()
+                        toast("Biometric authentication did not unlock the identity.")
+                    } else authenticated(authenticatedCipher)
+                }
+
+                override fun onAuthenticationError(errorCode: Int, errString: CharSequence) {
+                    if (biometricCancellation !== cancellation) return
+                    biometricCancellation = null
+                    biometricCleanup = null
+                    recordDiagnostic(DiagnosticStage.BIOMETRIC_PROMPT_ERROR, resultCode = errorCode)
+                    cleanup()
+                    if (errorCode != BiometricPrompt.BIOMETRIC_ERROR_CANCELED &&
+                        errorCode != BiometricPrompt.BIOMETRIC_ERROR_USER_CANCELED
+                    ) toast(errString.toString())
+                }
+            },
+        )
+    }
+
+    private fun showBiometricConfirmation(
+        title: String,
+        subtitle: String,
+        cleanup: () -> Unit,
+        authenticated: () -> Unit,
+    ) {
+        cancelBiometricPrompt()
+        val cancellation = CancellationSignal()
+        biometricCancellation = cancellation
+        biometricCleanup = cleanup
+        recordDiagnostic(DiagnosticStage.BIOMETRIC_PROMPT_STARTED)
+        val prompt = BiometricPrompt.Builder(this)
+            .setTitle(title)
+            .setSubtitle(subtitle)
+            .setNegativeButton("Cancel", mainExecutor) { _, _ -> cancelBiometricPrompt() }
+            .apply {
+                if (Build.VERSION.SDK_INT >= 30) {
+                    setAllowedAuthenticators(BiometricManager.Authenticators.BIOMETRIC_STRONG)
+                }
+            }
+            .build()
+        prompt.authenticate(
+            cancellation,
+            mainExecutor,
+            object : BiometricPrompt.AuthenticationCallback() {
+                override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
+                    if (biometricCancellation !== cancellation) return
+                    biometricCancellation = null
+                    biometricCleanup = null
+                    recordDiagnostic(DiagnosticStage.BIOMETRIC_PROMPT_SUCCEEDED)
+                    authenticated()
+                }
+
+                override fun onAuthenticationError(errorCode: Int, errString: CharSequence) {
+                    if (biometricCancellation !== cancellation) return
+                    biometricCancellation = null
+                    biometricCleanup = null
+                    recordDiagnostic(DiagnosticStage.BIOMETRIC_PROMPT_ERROR, resultCode = errorCode)
+                    cleanup()
+                    if (errorCode != BiometricPrompt.BIOMETRIC_ERROR_CANCELED &&
+                        errorCode != BiometricPrompt.BIOMETRIC_ERROR_USER_CANCELED
+                    ) toast(errString.toString())
+                }
+            },
+        )
+    }
+
+    private fun cancelBiometricPrompt() {
+        val cleanup = biometricCleanup
+        biometricCleanup = null
+        val cancellation = biometricCancellation
+        biometricCancellation = null
+        cleanup?.invoke()
+        cancellation?.cancel()
+    }
+
+    private fun recordDiagnostic(stage: DiagnosticStage, resultCode: Int? = null, error: Throwable? = null) {
+        runCatching {
+            diagnosticExecutor.execute { runCatching { diagnosticStore.record(stage, resultCode, error) } }
+        }
+    }
+
+    private fun exportDiagnostics() {
+        val events = runCatching { diagnosticStore.loadAll() }.getOrElse {
+            toast("Could not read diagnostics.")
+            return
+        }
+        if (events.isEmpty()) {
+            toast("No diagnostics have been recorded yet.")
+            return
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Export diagnostics?")
+            .setMessage(
+                "The plaintext export contains timestamps, allowlisted app stages and result codes, exception class names, app version, Android API, and device model. It excludes host, identity, path, credential, key, and terminal data.",
+            )
+            .setNegativeButton("Cancel", null)
+            .setPositiveButton("Export") { _, _ ->
+                val report = runCatching { diagnosticStore.formatForExport() }.getOrElse {
+                    toast("Could not format diagnostics.")
+                    return@setPositiveButton
+                }
+                startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).apply {
+                    type = "text/plain"
+                    putExtra(Intent.EXTRA_SUBJECT, "Ghostty Connect diagnostics")
+                    putExtra(Intent.EXTRA_TEXT, report)
+                }, "Export diagnostics"))
+            }
+            .show()
     }
 
     private fun copyPublicKey(identity: SshIdentity) {
@@ -1505,6 +2070,9 @@ class MainActivity : Activity() {
     }
 
     private fun identityDeletionBlockMessage(identity: SshIdentity): String? {
+        if (pendingConnection?.host?.identityId == identity.id || pendingBrowserConnection?.host?.identityId == identity.id) {
+            return "A connection being prepared uses ${identity.name}. Wait for it to finish or cancel it first."
+        }
         if (SshSessionService.active && sessionService == null) {
             return "Session state is still loading. Try again in a moment."
         }
@@ -2030,45 +2598,90 @@ class MainActivity : Activity() {
         setContentView(root)
     }
 
-    private fun startSession(host: Host, credential: CharArray) {
+    private fun startSession(host: Host, credential: CharArray, unlockedPrivateKey: ByteArray? = null) {
+        if (pendingConnection != null) {
+            credential.fill('\u0000')
+            unlockedPrivateKey?.fill(0)
+            toast("Wait for the pending SSH connection to start.")
+            return
+        }
         val sessionId = SshSessionService.newSessionId()
         selectedSessionId = sessionId
-        pendingConnection = PendingConnection(sessionId, host, credential)
+        pendingConnection = PendingConnection(sessionId, host, credential, unlockedPrivateKey)
         shouldBindSession = true
-        startForegroundService(Intent(this, SshSessionService::class.java))
-        if (!sessionBound) bindSessionService() else {
+        if (runCatching { startForegroundService(Intent(this, SshSessionService::class.java)) }.isFailure) {
+            pendingConnection = null
+            credential.fill('\u0000')
+            unlockedPrivateKey?.fill(0)
+            toast("Could not start the SSH session service.")
+            return
+        }
+        if (!sessionBound && !sessionBinding) bindSessionService() else if (sessionBound) {
             pendingConnection = null
             val service = sessionService
-            if (service == null) credential.fill('\u0000') else {
-                service.connect(sessionId, host, credential)
+            if (service == null) {
+                credential.fill('\u0000')
+                unlockedPrivateKey?.fill(0)
+            } else {
+                service.connect(sessionId, host, credential, unlockedPrivateKey)
                 openSession(sessionId)
             }
         }
     }
 
-    private fun startFileBrowser(host: Host, credential: CharArray) {
+    private fun startFileBrowser(host: Host, credential: CharArray, unlockedPrivateKey: ByteArray? = null) {
+        if (pendingBrowserConnection != null) {
+            credential.fill('\u0000')
+            unlockedPrivateKey?.fill(0)
+            toast("Wait for the pending file browser to start.")
+            return
+        }
         val browserId = SftpBrowserService.newBrowserId()
         selectedBrowserId = browserId
-        pendingBrowserConnection = PendingBrowserConnection(browserId, host, credential)
+        pendingBrowserConnection = PendingBrowserConnection(browserId, host, credential, unlockedPrivateKey)
         shouldBindSftp = true
-        startService(Intent(this, SftpBrowserService::class.java))
-        if (!sftpBound) bindSftpService() else {
+        if (runCatching {
+            startForegroundService(Intent(this, SftpBrowserService::class.java)
+                .setAction(SftpBrowserService.ACTION_PREPARE_BROWSER)
+                .putExtra(SftpBrowserService.EXTRA_BROWSER_ID, browserId))
+        }.isFailure) {
+            pendingBrowserConnection = null
+            credential.fill('\u0000')
+            unlockedPrivateKey?.fill(0)
+            toast("Could not start the file-browser service.")
+            return
+        }
+        if (!sftpBound && !sftpBinding) bindSftpService() else if (sftpBound) {
             pendingBrowserConnection = null
             val service = sftpService
-            if (service == null) credential.fill('\u0000') else {
-                service.connect(browserId, host, credential)
+            if (service == null) {
+                credential.fill('\u0000')
+                unlockedPrivateKey?.fill(0)
+            } else {
+                service.connect(browserId, host, credential, unlockedPrivateKey)
                 showFileBrowser(browserId)
             }
         }
     }
 
     private fun bindSftpService() {
-        bindService(Intent(this, SftpBrowserService::class.java), sftpServiceConnection, Context.BIND_AUTO_CREATE)
+        sftpBinding = bindService(
+            Intent(this, SftpBrowserService::class.java),
+            sftpServiceConnection,
+            Context.BIND_AUTO_CREATE,
+        )
+        if (!sftpBinding) {
+            pendingBrowserConnection?.credential?.fill('\u0000')
+            pendingBrowserConnection?.unlockedPrivateKey?.fill(0)
+            pendingBrowserConnection = null
+            stopService(Intent(this, SftpBrowserService::class.java))
+            toast("Could not connect to the file-browser service.")
+        }
     }
 
     private fun showFileBrowser(browserId: String) {
         hostsVisible = false
-        setTerminalNavigationHidden(false)
+        setTerminalSystemBarsHidden(false)
         selectedBrowserId = browserId
         sftpService?.selectBrowser(browserId)
         browserVisible = true
@@ -2090,6 +2703,9 @@ class MainActivity : Activity() {
         currentBrowserState = state
         val hostId = sftpService?.host(state.browserId)?.id
         val favorites = hostId?.let { runCatching { sftpFavoriteStore.load(it) }.getOrElse { emptyList() } }.orEmpty()
+        val recentFolders = hostId?.let {
+            runCatching { sftpRecentFolderStore.load(it) }.getOrElse { emptyList() }
+        }.orEmpty()
         val browserBackground = Color.rgb(29, 32, 51)
         val browserPanel = Color.rgb(42, 45, 66)
         val browserControl = Color.rgb(48, 51, 73)
@@ -2119,187 +2735,199 @@ class MainActivity : Activity() {
         }
         val root = vertical(0).apply { setBackgroundColor(browserBackground) }
         val toolbar = vertical(16).apply { setBackgroundColor(browserBackground) }
-        val locationRow = LinearLayout(this).apply {
+        val remoteActionsEnabled = state.connected && state.status in setOf("Ready", "Empty") &&
+            state.transfer?.status != SftpTransferStatus.RUNNING
+        val sortMode = sftpSortModes[state.browserId] ?: SftpSortMode.NAME
+        val descending = sftpSortDescending[state.browserId] == true
+        val header = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
         }
-        locationRow.addView(compactButton("<") { showHosts(disconnect = false) }.apply {
-            contentDescription = "Back to hosts"
+        header.addView(compactButton("Back") { showHosts(disconnect = false) }.apply {
+            contentDescription = "Back to hosts. File browser stays connected."
             background = roundedBackground(browserControl, 14)
-            minHeight = dp(48)
-        }, LinearLayout.LayoutParams(dp(52), dp(48)))
-        val path = field("Remote path", state.path.orEmpty()).apply {
+        }, LinearLayout.LayoutParams(-2, dp(48)))
+        header.addView(vertical(0).apply {
+            addView(label(state.hostName, 18f, primary, Typeface.BOLD).apply {
+                maxLines = 1
+                ellipsize = android.text.TextUtils.TruncateAt.END
+            })
+            addView(label("Remote files", 12f, browserMuted))
+        }, LinearLayout.LayoutParams(0, -2, 1f).apply { marginStart = dp(12); marginEnd = dp(8) })
+        val menuButton = compactButton("Menu") {}
+        menuButton.contentDescription = "File browser menu"
+        menuButton.background = roundedBackground(browserControl, 14)
+        menuButton.setOnClickListener { anchor ->
+            val uploadId = 1
+            val newFolderId = 2
+            val locationsId = 3
+            val refreshId = 4
+            val hiddenId = 5
+            val openTerminalId = 6
+            val closeId = 7
+            val sortNameAscendingId = 10
+            val sortNameDescendingId = 11
+            val sortUpdatedDescendingId = 12
+            val sortUpdatedAscendingId = 13
+            val sortAccessedDescendingId = 14
+            val sortAccessedAscendingId = 15
+            val sortSizeDescendingId = 16
+            val sortSizeAscendingId = 17
+            PopupMenu(this, anchor).apply {
+                menu.add(0, uploadId, 0, "Upload document").isEnabled = remoteActionsEnabled
+                menu.add(0, newFolderId, 1, "New folder").isEnabled = remoteActionsEnabled
+                menu.add(0, locationsId, 2, "Locations").isEnabled = hostId != null
+                menu.add(0, refreshId, 3, "Refresh").isEnabled = remoteActionsEnabled
+                menu.add(0, hiddenId, 4, if (state.browserId in sftpShowHidden) "Hide hidden files" else "Show hidden files")
+                menu.addSubMenu("Sort").apply {
+                    add(0, sortNameAscendingId, 0, "Name: A to Z").isChecked = sortMode == SftpSortMode.NAME && !descending
+                    add(0, sortNameDescendingId, 1, "Name: Z to A").isChecked = sortMode == SftpSortMode.NAME && descending
+                    add(0, sortUpdatedDescendingId, 2, "Updated: newest first").isChecked =
+                        sortMode == SftpSortMode.UPDATED && descending
+                    add(0, sortUpdatedAscendingId, 3, "Updated: oldest first").isChecked =
+                        sortMode == SftpSortMode.UPDATED && !descending
+                    add(0, sortAccessedDescendingId, 4, "Accessed: newest first").isChecked =
+                        sortMode == SftpSortMode.ACCESSED && descending
+                    add(0, sortAccessedAscendingId, 5, "Accessed: oldest first").isChecked =
+                        sortMode == SftpSortMode.ACCESSED && !descending
+                    add(0, sortSizeDescendingId, 6, "Size: largest first").isChecked =
+                        sortMode == SftpSortMode.SIZE && descending
+                    add(0, sortSizeAscendingId, 7, "Size: smallest first").isChecked =
+                        sortMode == SftpSortMode.SIZE && !descending
+                    setGroupCheckable(0, true, true)
+                }
+                menu.add(0, openTerminalId, 7, "Open terminal")
+                menu.add(0, closeId, 8, "Disconnect file browser")
+                setOnMenuItemClickListener { item ->
+                    if (item.itemId in setOf(uploadId, newFolderId, refreshId)) {
+                        val current = sftpService?.state(state.browserId)
+                        val available = current?.connected == true && current.status in setOf("Ready", "Empty") &&
+                            current.transfer?.status != SftpTransferStatus.RUNNING
+                        if (!available) {
+                            toast("Wait for the file browser to become ready.")
+                            return@setOnMenuItemClickListener true
+                        }
+                    }
+                    when (item.itemId) {
+                        uploadId -> openUploadPicker()
+                        newFolderId -> showNewFolderDialog(state.browserId)
+                        locationsId -> if (hostId != null) {
+                            showSftpLocations(state, hostId, favorites, recentFolders)
+                        } else Unit
+                        refreshId -> sftpService?.refresh(state.browserId)
+                        hiddenId -> {
+                            if (state.browserId in sftpShowHidden) sftpShowHidden -= state.browserId
+                            else sftpShowHidden += state.browserId
+                            renderFileBrowser(state)
+                        }
+                        openTerminalId -> {
+                            val host = sftpService?.host(state.browserId)
+                            if (host == null) toast("The saved host is unavailable.")
+                            else requestCredentialAndConnect(host)
+                        }
+                        closeId -> closeFileBrowser(state)
+                        sortNameAscendingId -> setSftpSort(state, SftpSortMode.NAME, descending = false)
+                        sortNameDescendingId -> setSftpSort(state, SftpSortMode.NAME, descending = true)
+                        sortUpdatedDescendingId -> setSftpSort(state, SftpSortMode.UPDATED, descending = true)
+                        sortUpdatedAscendingId -> setSftpSort(state, SftpSortMode.UPDATED, descending = false)
+                        sortAccessedDescendingId -> setSftpSort(state, SftpSortMode.ACCESSED, descending = true)
+                        sortAccessedAscendingId -> setSftpSort(state, SftpSortMode.ACCESSED, descending = false)
+                        sortSizeDescendingId -> setSftpSort(state, SftpSortMode.SIZE, descending = true)
+                        sortSizeAscendingId -> setSftpSort(state, SftpSortMode.SIZE, descending = false)
+                    }
+                    true
+                }
+                show()
+            }
+        }
+        header.addView(menuButton, LinearLayout.LayoutParams(-2, dp(48)))
+        toolbar.addView(header)
+        val navigationRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, dp(12), 0, 0)
+        }
+        navigationRow.addView(compactButton("Up", remoteActionsEnabled && state.canNavigateBack) {
+            clearSftpSearch(state.browserId)
+            releaseSftpSearchFocus()
+            sftpService?.navigateBack(state.browserId)
+        }.apply { contentDescription = "Parent directory" }, LinearLayout.LayoutParams(-2, dp(48)))
+        val currentPath = state.path.orEmpty()
+        val activeQuery = sftpSearchQueries[state.browserId].orEmpty()
+        val search = field(currentPath.ifEmpty { "Current directory or search" }, activeQuery.ifEmpty { currentPath }).apply {
             typeface = Typeface.MONOSPACE
             background = roundedBackground(browserControl, 14)
             setPadding(dp(14), 0, dp(14), 0)
             imeOptions = android.view.inputmethod.EditorInfo.IME_ACTION_GO
+            contentDescription = "Current directory or search. Enter a path to navigate, or text to filter files."
+            setOnFocusChangeListener { _, focused ->
+                if (focused && text.toString() == currentPath) selectAll()
+            }
             setOnEditorActionListener { _, actionId, event ->
                 val submitted = actionId == android.view.inputmethod.EditorInfo.IME_ACTION_GO ||
                     actionId == android.view.inputmethod.EditorInfo.IME_ACTION_DONE ||
                     event?.let { it.keyCode == KeyEvent.KEYCODE_ENTER && it.action == KeyEvent.ACTION_UP } == true
-                if (submitted && state.connected) {
-                    sftpService?.openPath(state.browserId, text.toString())
-                    clearFocus()
-                    true
-                } else false
-            }
-        }
-        locationRow.addView(path, LinearLayout.LayoutParams(0, dp(48), 1f).apply {
-            marginStart = dp(10)
-        })
-        locationRow.addView(compactButton("Go", state.connected) {
-            sftpService?.openPath(state.browserId, path.text.toString())
-        }.apply { background = roundedBackground(browserControl, 14) }, LinearLayout.LayoutParams(dp(56), dp(48)).apply {
-            marginStart = dp(8)
-        })
-        locationRow.addView(compactButton("X") { closeFileBrowser(state) }.apply {
-            contentDescription = "Close file browser"
-            background = roundedBackground(browserControl, 14)
-        }, LinearLayout.LayoutParams(dp(48), dp(48)).apply { marginStart = dp(8) })
-        toolbar.addView(locationRow)
-
-        val actionRow = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            setPadding(0, dp(14), 0, 0)
-        }
-        actionRow.addView(compactButton("Up", state.canNavigateBack) {
-            sftpService?.navigateBack(state.browserId)
-        }.apply { contentDescription = "Parent directory" })
-        actionRow.addView(label(state.path?.substringAfterLast('/')?.ifBlank { "/" } ?: "Files", 16f, primary, Typeface.BOLD),
-            LinearLayout.LayoutParams(0, -2, 1f).apply { marginStart = dp(10) })
-        actionRow.addView(compactButton("Upload", state.connected) { openUploadPicker() })
-        val sortMode = sftpSortModes[state.browserId] ?: SftpSortMode.NAME
-        val descending = sftpSortDescending[state.browserId] == true
-        val sortLabel = when (sortMode) {
-            SftpSortMode.NAME -> "Name"
-            SftpSortMode.UPDATED -> "Updated"
-            SftpSortMode.ACCESSED -> "Accessed"
-            SftpSortMode.SIZE -> "Size"
-        }
-        val sort = compactButton("$sortLabel ${if (descending) "v" else "^"}") {}
-        sort.contentDescription = "Sort files"
-        sort.setOnClickListener { anchor ->
-            PopupMenu(this, anchor).apply {
-                menu.add("Sort by name")
-                menu.add("Sort by last updated")
-                menu.add("Sort by last accessed")
-                menu.add("Sort by size")
-                val reverseLabel = when (sortMode) {
-                    SftpSortMode.NAME -> if (descending) "A to Z" else "Z to A"
-                    SftpSortMode.UPDATED, SftpSortMode.ACCESSED -> if (descending) "Oldest first" else "Newest first"
-                    SftpSortMode.SIZE -> if (descending) "Smallest first" else "Largest first"
+                if (!submitted) return@setOnEditorActionListener false
+                val value = text.toString().trim()
+                val pathInput = value.startsWith('/') || value.startsWith("./") || value.startsWith("../") ||
+                    value == "." || value == ".." || '/' in value
+                if (pathInput) {
+                    if (!remoteActionsEnabled) return@setOnEditorActionListener false
+                    sftpSearchQueries.remove(state.browserId)
+                    sftpService?.openPath(state.browserId, value)
                 }
-                menu.add(reverseLabel)
-                setOnMenuItemClickListener { item ->
-                    when (item.title) {
-                        "Sort by name" -> {
-                            sftpSortModes[state.browserId] = SftpSortMode.NAME
-                            sftpSortDescending[state.browserId] = false
-                        }
-                        "Sort by last updated" -> {
-                            sftpSortModes[state.browserId] = SftpSortMode.UPDATED
-                            sftpSortDescending[state.browserId] = true
-                        }
-                        "Sort by last accessed" -> {
-                            sftpSortModes[state.browserId] = SftpSortMode.ACCESSED
-                            sftpSortDescending[state.browserId] = true
-                        }
-                        "Sort by size" -> {
-                            sftpSortModes[state.browserId] = SftpSortMode.SIZE
-                            sftpSortDescending[state.browserId] = true
-                        }
-                        reverseLabel -> sftpSortDescending[state.browserId] = !descending
-                    }
-                    renderFileBrowser(state)
-                    true
-                }
-                show()
+                clearFocus()
+                getSystemService(InputMethodManager::class.java).hideSoftInputFromWindow(windowToken, 0)
+                true
             }
-        }
-        actionRow.addView(sort)
-        val more = compactButton("...", true) {}
-        more.contentDescription = "More file browser actions"
-        more.setOnClickListener { anchor ->
-            PopupMenu(this, anchor).apply {
-                menu.add("New folder")
-                menu.add(if (state.path in favorites) "Remove current favorite" else "Favorite current folder")
-                menu.add("Refresh")
-                menu.add(if (state.browserId in sftpShowHidden) "Hide hidden files" else "Show hidden files")
-                menu.add("Open terminal")
-                setOnMenuItemClickListener { item ->
-                    when (item.title) {
-                        "New folder" -> showNewFolderDialog(state.browserId)
-                        "Favorite current folder" -> if (hostId != null && state.path != null) {
-                            updateFavorite(state, hostId, state.path, add = true)
-                        } else Unit
-                        "Remove current favorite" -> if (hostId != null && state.path != null) {
-                            updateFavorite(state, hostId, state.path, add = false)
-                        } else Unit
-                        "Refresh" -> sftpService?.refresh(state.browserId)
-                        "Show hidden files" -> {
-                            sftpShowHidden += state.browserId
-                            renderFileBrowser(state)
-                        }
-                        "Hide hidden files" -> {
-                            sftpShowHidden -= state.browserId
-                            renderFileBrowser(state)
-                        }
-                        "Open terminal" -> {
-                            val host = sftpService?.host(state.browserId)
-                            if (host == null) toast("The saved host is unavailable.") else requestCredentialAndConnect(host)
-                        }
-                    }
-                    true
-                }
-                show()
-            }
-        }
-        actionRow.addView(more)
-        toolbar.addView(actionRow)
-        val search = field("Search this folder", sftpSearchQueries[state.browserId].orEmpty()).apply {
-            background = roundedBackground(browserControl, 14)
-            setPadding(dp(14), 0, dp(14), 0)
-            imeOptions = android.view.inputmethod.EditorInfo.IME_ACTION_DONE
             addTextChangedListener(object : TextWatcher {
                 override fun beforeTextChanged(value: CharSequence?, start: Int, count: Int, after: Int) = Unit
                 override fun onTextChanged(value: CharSequence?, start: Int, before: Int, count: Int) = Unit
                 override fun afterTextChanged(value: Editable?) {
-                    sftpSearchQueries[state.browserId] = value?.toString().orEmpty()
+                    val input = value?.toString().orEmpty()
+                    sftpSearchQueries[state.browserId] = when {
+                        input == currentPath || input.startsWith('/') || input.startsWith("./") ||
+                            input.startsWith("../") || input == "." || input == ".." || '/' in input -> ""
+                        else -> input
+                    }
                     updateDirectoryList()
                 }
             })
         }.also { sftpSearchField = it }
-        toolbar.addView(search, LinearLayout.LayoutParams(-1, dp(44)).apply { topMargin = dp(10) })
-        toolbar.addView(label(state.status, 13f, if (state.connected) accent else browserMuted).margins(top = 8))
-        state.error?.let { toolbar.addView(label(it, 13f, Color.rgb(255, 145, 145)).margins(top = 5)) }
-
-        if (favorites.isNotEmpty()) {
-            val favoriteRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-            favorites.forEach { favoritePath ->
-                favoriteRow.addView(compactButton(favoritePath.substringAfterLast('/').ifBlank { "/" }) {
-                    sftpService?.openPath(state.browserId, favoritePath)
-                }.apply {
-                    background = roundedBackground(browserControl, 12)
-                    contentDescription = "Favorite folder $favoritePath. Tap to open. Long press to remove."
-                    setOnLongClickListener {
-                        if (hostId != null) confirmRemoveFavorite(state, hostId, favoritePath)
-                        true
-                    }
-                }, LinearLayout.LayoutParams(-2, dp(42)).apply { marginEnd = dp(8) })
-            }
-            toolbar.addView(HorizontalScrollView(this).apply {
-                isHorizontalScrollBarEnabled = false
-                addView(favoriteRow)
-            }.margins(top = 12))
-        }
-        root.addView(toolbar)
-
+        navigationRow.addView(search, LinearLayout.LayoutParams(0, dp(48), 1f).apply {
+            marginStart = dp(8)
+        })
+        toolbar.addView(navigationRow)
         val content = vertical(16).apply { setBackgroundColor(browserBackground) }
+        if (state.status != "Ready" && state.status != "Empty") {
+            content.addView(label(state.status, 13f, if (state.connected) accent else browserMuted))
+        }
+        state.error?.takeUnless { it == state.transfer?.message }?.let {
+            content.addView(label(it, 13f, Color.rgb(255, 145, 145)).margins(top = 5))
+        }
+        if (!state.connected) {
+            content.addView(button("Reconnect") {
+                sftpService?.host(state.browserId)?.let { host ->
+                    requestCredential(host) { credential, privateKey ->
+                        val service = sftpService
+                        if (service == null) {
+                            credential.fill('\u0000')
+                            privateKey?.fill(0)
+                        } else service.retry(state.browserId, credential, privateKey)
+                    }
+                }
+            }.margins(top = 10, bottom = 4))
+        }
         state.transfer?.let { transfer ->
             val transferCard = vertical(14).apply { background = roundedBackground(browserPanel, 18) }
+            val transferTitle = when (transfer.status) {
+                SftpTransferStatus.RUNNING -> if (transfer.direction.name == "UPLOAD") "Uploading" else "Downloading"
+                SftpTransferStatus.COMPLETED -> if (transfer.direction.name == "UPLOAD") "Upload complete" else "Download complete"
+                SftpTransferStatus.CANCELED -> "Transfer canceled"
+                SftpTransferStatus.FAILED -> "Transfer failed"
+            }
             transferCard.addView(label(
-                if (transfer.direction.name == "UPLOAD") "Uploading" else "Downloading",
+                transferTitle,
                 16f,
                 primary,
                 Typeface.BOLD,
@@ -2311,6 +2939,15 @@ class MainActivity : Activity() {
                 "${formatBytes(transfer.transferred)} / ${formatBytes(transfer.total)}"
             }
             transferCard.addView(label(amount, 14f, accent).margins(top = 4))
+            transferCard.addView(ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
+                max = 100
+                val total = transfer.total
+                isIndeterminate = total == null || total <= 0
+                progress = if (total != null && total > 0) {
+                    ((transfer.transferred * 100) / total).toInt().coerceIn(0, 100)
+                } else 0
+                contentDescription = if (isIndeterminate) "Transfer in progress" else "$progress percent"
+            }.margins(top = 8))
             transfer.message?.let { transferCard.addView(label(it, 13f, secondary).margins(top = 6)) }
             if (transfer.status == SftpTransferStatus.RUNNING) {
                 transferCard.addView(button("Cancel transfer", secondary) {
@@ -2330,13 +2967,7 @@ class MainActivity : Activity() {
         }
         updateDirectoryList()
         content.addView(list)
-        if (!state.connected) {
-            content.addView(button("Reconnect") {
-                sftpService?.host(state.browserId)?.let { host ->
-                    requestCredential(host) { credential -> sftpService?.retry(state.browserId, credential) }
-                }
-            }.margins(top = 12))
-        }
+        root.addView(toolbar)
         root.addView(ScrollView(this).apply {
             setBackgroundColor(browserBackground)
             addView(content, ViewGroup.LayoutParams(-1, -2))
@@ -2354,43 +2985,76 @@ class MainActivity : Activity() {
         } else null
         val folderFavorite = hostId != null && folderPath != null &&
             runCatching { folderPath in sftpFavoriteStore.load(hostId) }.getOrDefault(false)
-        val actions = buildList {
-            if (entry.type == SftpEntryType.DIRECTORY) add("Open")
-            if (folderPath != null) add(if (folderFavorite) "Remove favorite" else "Favorite folder")
-            if (entry.type == SftpEntryType.FILE) {
-                add("Open")
-                add("Download")
-            }
-            add("Rename")
-            if (host?.allowSftpDelete == true) {
-                add(if (entry.type == SftpEntryType.SYMLINK) "Delete link" else "Delete")
-            }
+        val type = when (entry.type) {
+            SftpEntryType.FILE -> "File"
+            SftpEntryType.DIRECTORY -> "Directory"
+            SftpEntryType.SYMLINK -> "Symbolic link"
+            SftpEntryType.UNSUPPORTED -> "Unsupported entry"
         }
-        AlertDialog.Builder(this)
-            .setTitle(entry.name)
-            .setItems(actions.toTypedArray()) { _, index ->
-                when (actions[index]) {
-                    "Open" -> {
-                        clearSftpSearch(browserId)
-                        if (entry.type == SftpEntryType.DIRECTORY) {
-                            sftpService?.enter(browserId, entry)
-                        } else {
-                            openRemoteFile(browserId, entry)
-                        }
-                    }
-                    "Favorite folder" -> if (hostId != null && folderPath != null && state != null) {
-                        updateFavorite(state, hostId, folderPath, add = true)
-                    } else Unit
-                    "Remove favorite" -> if (hostId != null && folderPath != null && state != null) {
-                        updateFavorite(state, hostId, folderPath, add = false)
-                    } else Unit
-                    "Download" -> openDownloadPicker(browserId, entry)
-                    "Rename" -> showRenameDialog(browserId, entry)
-                    "Delete", "Delete link" -> confirmDelete(browserId, entry)
+        val content = vertical(16)
+        content.addView(label(entry.name, 17f, primary, Typeface.BOLD).apply {
+            setTextIsSelectable(true)
+        })
+        val details = buildList {
+            add("Type" to type)
+            entry.size?.let { add("Size" to "${formatBytes(it)} ($it bytes)") }
+            entry.modifiedAtSeconds?.let { add("Updated" to formatRemoteTime(it)) }
+            entry.accessedAtSeconds?.let { add("Accessed" to formatRemoteTime(it)) }
+            entry.permissions?.let { add("Permissions" to it) }
+            if (!entry.supported) add("Availability" to "This entry type is not supported")
+        }
+        details.forEach { (name, value) ->
+            content.addView(label(name, 12f, secondary, Typeface.BOLD).margins(top = 12))
+            content.addView(label(value, 14f, primary).apply {
+                if (name == "Permissions") typeface = Typeface.MONOSPACE
+                setTextIsSelectable(true)
+            }.margins(top = 2))
+        }
+        lateinit var dialog: AlertDialog
+        val initiallyAvailable = entry.supported && state?.connected == true &&
+            state.status in setOf("Ready", "Empty") && state.transfer?.status != SftpTransferStatus.RUNNING
+        fun remoteActionAvailable(): Boolean {
+            val current = sftpService?.state(browserId)
+            val available = entry.supported && current?.connected == true &&
+                current.status in setOf("Ready", "Empty") && current.transfer?.status != SftpTransferStatus.RUNNING
+            if (!available) toast("Wait for the file browser to become ready.")
+            return available
+        }
+        fun addAction(text: String, requiresRemote: Boolean = true, action: () -> Unit) {
+            content.addView(compactButton(text, entry.supported && (!requiresRemote || initiallyAvailable)) {
+                if (requiresRemote && !remoteActionAvailable()) return@compactButton
+                dialog.dismiss()
+                action()
+            }, LinearLayout.LayoutParams(-1, dp(48)).apply { topMargin = dp(8) })
+        }
+        if (entry.supported) {
+            content.addView(label("Actions", 13f, secondary, Typeface.BOLD).margins(top = 18))
+            if (entry.type == SftpEntryType.DIRECTORY || entry.type == SftpEntryType.FILE) {
+                addAction("Open") {
+                    clearSftpSearch(browserId)
+                    if (entry.type == SftpEntryType.DIRECTORY) sftpService?.enter(browserId, entry)
+                    else openRemoteFile(browserId, entry)
                 }
             }
-            .setNegativeButton("Cancel", null)
-            .show()
+            if (folderPath != null && hostId != null && state != null) {
+                addAction(if (folderFavorite) "Remove favorite" else "Favorite folder", requiresRemote = false) {
+                    updateFavorite(state, hostId, folderPath, add = !folderFavorite)
+                }
+            }
+            if (entry.type == SftpEntryType.FILE) addAction("Download") { openDownloadPicker(browserId, entry) }
+            addAction("Rename") { showRenameDialog(browserId, entry) }
+            if (host?.allowSftpDelete == true) {
+                addAction(if (entry.type == SftpEntryType.SYMLINK) "Delete link" else "Delete") {
+                    confirmDelete(browserId, entry)
+                }
+            }
+        }
+        dialog = AlertDialog.Builder(this)
+            .setTitle("Details")
+            .setView(scroll(content))
+            .setNegativeButton("Close", null)
+            .create()
+        dialog.show()
     }
 
     private fun openRemoteFile(browserId: String, entry: SftpEntry) {
@@ -2468,6 +3132,101 @@ class MainActivity : Activity() {
             .setNegativeButton("Cancel", null)
             .setPositiveButton("Remove") { _, _ -> updateFavorite(state, hostId, path, add = false) }
             .show()
+    }
+
+    private fun showRecentFolders(state: SftpBrowserState, hostId: String, paths: List<String>) {
+        AlertDialog.Builder(this)
+            .setTitle("Recent folders")
+            .setItems(paths.toTypedArray()) { _, index ->
+                if (sftpService?.state(state.browserId)?.connected == true) {
+                    clearSftpSearch(state.browserId)
+                    releaseSftpSearchFocus()
+                    sftpService?.openPath(state.browserId, paths[index])
+                } else toast("Reconnect to open a recent folder.")
+            }
+            .setNegativeButton("Cancel", null)
+            .setNeutralButton("Clear") { _, _ ->
+                runCatching { sftpRecentFolderStore.clear(hostId) }
+                    .onSuccess {
+                        toast("Recent folders cleared.")
+                        renderFileBrowser(state)
+                    }
+                    .onFailure { toast(it.message ?: "Could not clear recent folders.") }
+            }
+            .show()
+    }
+
+    private fun showSftpLocations(
+        state: SftpBrowserState,
+        hostId: String,
+        favorites: List<String>,
+        recentFolders: List<String>,
+    ) {
+        lateinit var dialog: AlertDialog
+        fun canNavigate(): Boolean {
+            val current = sftpService?.state(state.browserId)
+            val available = current?.connected == true && current.status in setOf("Ready", "Empty") &&
+                current.transfer?.status != SftpTransferStatus.RUNNING
+            if (!available) toast("Wait for the file browser to become ready.")
+            return available
+        }
+        val content = vertical(16)
+        state.path?.let { current ->
+            content.addView(label("Current folder", 13f, secondary, Typeface.BOLD))
+            content.addView(label(current, 13f, primary).apply { typeface = Typeface.MONOSPACE }.margins(top = 4))
+            content.addView(compactButton(
+                if (current in favorites) "Remove current favorite" else "Favorite current folder",
+            ) {
+                dialog.dismiss()
+                updateFavorite(state, hostId, current, current !in favorites)
+            }.margins(top = 6, bottom = 12))
+        }
+        if (favorites.isNotEmpty()) {
+            content.addView(label("Favorites", 15f, primary, Typeface.BOLD).margins(bottom = 4))
+            favorites.forEach { favorite ->
+                val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+                row.addView(compactButton(favorite) {
+                    if (!canNavigate()) return@compactButton
+                    dialog.dismiss()
+                    clearSftpSearch(state.browserId)
+                    releaseSftpSearchFocus()
+                    sftpService?.openPath(state.browserId, favorite)
+                }, LinearLayout.LayoutParams(0, dp(44), 1f))
+                row.addView(compactButton("Remove") {
+                    dialog.dismiss()
+                    confirmRemoveFavorite(state, hostId, favorite)
+                },
+                    LinearLayout.LayoutParams(-2, dp(44)).apply { marginStart = dp(6) })
+                content.addView(row.margins(bottom = 4))
+            }
+        }
+        val recent = recentFolders.filterNot { it == state.path }
+        if (recent.isNotEmpty()) {
+            content.addView(label("Recent", 15f, primary, Typeface.BOLD).margins(top = 10, bottom = 4))
+            recent.forEach { path ->
+                content.addView(compactButton(path, state.connected) {
+                    if (!canNavigate()) return@compactButton
+                    dialog.dismiss()
+                    clearSftpSearch(state.browserId)
+                    releaseSftpSearchFocus()
+                    sftpService?.openPath(state.browserId, path)
+                }.margins(bottom = 4))
+            }
+            content.addView(compactButton("Clear recent folders") {
+                runCatching { sftpRecentFolderStore.clear(hostId) }
+                    .onSuccess { dialog.dismiss(); toast("Recent folders cleared.") }
+                    .onFailure { toast(it.message ?: "Could not clear recent folders.") }
+            }.margins(top = 6))
+        }
+        if (favorites.isEmpty() && recent.isEmpty()) {
+            content.addView(label("No saved or recent folders yet.", 14f, secondary))
+        }
+        dialog = AlertDialog.Builder(this)
+            .setTitle("Locations")
+            .setView(scroll(content))
+            .setNegativeButton("Close", null)
+            .create()
+        dialog.show()
     }
 
     private fun openDownloadPicker(browserId: String, entry: SftpEntry) {
@@ -2666,11 +3425,17 @@ class MainActivity : Activity() {
     }
 
     private fun bindSessionService() {
-        bindService(Intent(this, SshSessionService::class.java), serviceConnection, Context.BIND_AUTO_CREATE)
+        sessionBinding = bindService(Intent(this, SshSessionService::class.java), serviceConnection, Context.BIND_AUTO_CREATE)
+        if (!sessionBinding) {
+            pendingConnection?.credential?.fill('\u0000')
+            pendingConnection?.unlockedPrivateKey?.fill(0)
+            pendingConnection = null
+        }
     }
 
     private fun openSession(sessionId: String) {
         val service = sessionService ?: return
+        if (service.host(sessionId) == null || service.terminal(sessionId) == null) return
         selectedSessionId = sessionId
         service.selectListenerSession(sessionId)
         renderTerminal(service, sessionId)
@@ -2678,62 +3443,43 @@ class MainActivity : Activity() {
 
     private fun renderTerminal(service: SshSessionService, sessionId: String) {
         hostsVisible = false
-        setTerminalNavigationHidden(false)
+        setTerminalSystemBarsHidden(false)
+        cancelTerminalChromeFade()
+        terminalChrome = null
         val host = service.host(sessionId) ?: return
         val terminal = service.terminal(sessionId) ?: return
         activeModifiers.clear()
         lockedModifiers.clear()
         hardwareKeyModifiers.clear()
         terminalAtBottom = true
+        terminalMouseTracking = false
         settingsVisible = false
         feedbackVisible = false
         trustedHostsVisible = false
         browserVisible = false
         val root = vertical(0)
+        terminalTitle = host.name
         val status = label("Connecting…", 11f, accent).also { terminalStatus = it }
-        val toolbar = vertical(8).apply { setBackgroundColor(raised) }
-        val titleRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
-        titleRow.addView(
-            label(host.name, 16f, primary, Typeface.BOLD).also { terminalTitle = it },
-            LinearLayout.LayoutParams(0, -2, 1f),
-        )
-        lateinit var selectButton: Button
-        fun updateSelectButton(active: Boolean) {
-            selectButton.text = if (active) "Done" else "Select"
-            selectButton.setTextColor(if (active) Color.rgb(8, 15, 12) else primary)
-            selectButton.background = pressableBackground(
-                if (active) accent else raised,
-                Color.rgb(180, 255, 210),
-                10,
-                accent,
-            )
-            selectButton.isSelected = active
-            selectButton.contentDescription = if (active) {
-                "Exit local selection; remote mouse input is paused"
-            } else {
-                "Select terminal text locally"
-            }
-        }
-        selectButton = barButton("Select") {
-            terminalView?.let {
-                val enabled = !it.isLocalSelectionMode
-                it.setLocalSelectionMode(enabled)
-                if (enabled) toast("Local selection on. Double-tap text to select it, then drag the handles to adjust.")
-            }
-        }
-        selectButton.isEnabled = false
-        terminalSelectButton = selectButton
-        updateSelectButton(false)
-        titleRow.addView(selectButton, LinearLayout.LayoutParams(-2, dp(36)))
-        val overflow = label("…", 22f, primary).apply {
-            contentDescription = "More options"
+        val toolbar = vertical(6).apply { setBackgroundColor(Color.TRANSPARENT) }
+        val titleRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER }
+        val hostname = label(host.hostname, 13f, primary, Typeface.BOLD).apply {
+            contentDescription = "${host.hostname}. Terminal controls"
             gravity = Gravity.CENTER
-            setPadding(dp(12), dp(4), dp(12), dp(4))
+            maxLines = 1
+            ellipsize = android.text.TextUtils.TruncateAt.END
+            setPadding(dp(12), dp(6), dp(12), dp(6))
+            background = roundedBackground(Color.argb(230, 26, 29, 36), 14)
+            elevation = dp(6).toFloat()
             setOnClickListener { anchor ->
+                revealTerminalChrome(sessionId, autoHide = false)
                 PopupMenu(this@MainActivity, anchor).apply {
+                    menu.add(if (terminalView?.isLocalSelectionMode == true) "Done selecting" else "Select text").apply {
+                        isEnabled = terminalView?.isEnabled == true
+                    }
                     menu.add("Sessions")
                     menu.add("Duplicate session")
                     menu.add("Browse files")
+                    menu.add("Export encrypted archive")
                     menu.add("Disconnect")
                     menu.add("Paste")
                     menu.add("Copy latest output")
@@ -2746,6 +3492,16 @@ class MainActivity : Activity() {
                     menu.add("Send terminate signal")
                     setOnMenuItemClickListener { item ->
                         when (item.title) {
+                            "Select text", "Done selecting" -> {
+                                terminalView?.let { view ->
+                                    val enabled = !view.isLocalSelectionMode
+                                    view.setLocalSelectionMode(enabled)
+                                    if (enabled) {
+                                        toast("Local selection on. Double-tap text, then drag the handles to adjust.")
+                                    }
+                                }
+                                true
+                            }
                             "Sessions" -> {
                                 showHosts(disconnect = false)
                                 true
@@ -2765,6 +3521,10 @@ class MainActivity : Activity() {
                                 } else {
                                     requestCredentialAndBrowse(savedHost)
                                 }
+                                true
+                            }
+                            "Export encrypted archive" -> {
+                                showTerminalArchiveDialog(sessionId)
                                 true
                             }
                             "Disconnect" -> {
@@ -2817,11 +3577,14 @@ class MainActivity : Activity() {
                             else -> false
                         }
                     }
+                    setOnDismissListener {
+                        revealTerminalChrome(sessionId, autoHide = terminalView?.isLocalSelectionMode != true)
+                    }
                     show()
                 }
             }
         }
-        titleRow.addView(overflow, LinearLayout.LayoutParams(dp(40), dp(36)))
+        titleRow.addView(hostname, LinearLayout.LayoutParams(-2, dp(36)))
         toolbar.addView(titleRow)
         toolbar.addView(status)
         toolbar.addView(vertical(10).apply {
@@ -2834,6 +3597,7 @@ class MainActivity : Activity() {
                 addView(compactButton("Not now") {
                     service.dismissShellIntegrationNotice(sessionId)
                     shellIntegrationNotice?.visibility = View.GONE
+                    revealTerminalChrome(sessionId)
                 })
             }.margins(top = 6))
             visibility = View.GONE
@@ -2846,16 +3610,32 @@ class MainActivity : Activity() {
             }
             terminalRetryButton = this
         }.margins(top = 8))
-        root.addView(toolbar)
 
         val view = GhosttyTerminalView(this, terminal, terminalThemeStore.loadFontSize()).apply {
             isEnabled = false
+            onTap = { revealTerminalChrome(sessionId) }
+            if (keyboardBarConfig.holdSwipeEnabled) {
+                holdSwipeLabels = HoldSwipeDirection.entries.associateWith { direction ->
+                    quickActionLabel(keyboardBarConfig.holdSwipeActions[direction].orEmpty())
+                }
+                onHoldSwipe = { direction, column, row, anchorRow ->
+                    performHoldSwipeAction(
+                        sessionId,
+                        keyboardBarConfig.holdSwipeActions[direction].orEmpty(),
+                        column,
+                        row,
+                        anchorRow,
+                    )
+                }
+            }
             onInput = { input ->
-                val key = input.singleOrNull()?.let { character ->
+                val modifierEligible = isModifierEligibleImeCommit(input)
+                val key = input.singleOrNull()?.takeIf { modifierEligible }?.let { character ->
                     if (character.isLetterOrDigit()) character.uppercase() else "UNIDENTIFIED"
                 } ?: "UNIDENTIFIED"
-                sessionService?.send(sessionId, terminal.encodeKey(key, input, ghosttyModifierBits(activeModifiers)))
-                consumeOneShotModifiers()
+                val modifiers = if (modifierEligible) ghosttyModifierBits(activeModifiers) else 0
+                sessionService?.send(sessionId, terminal.encodeKey(key, input, modifiers))
+                if (modifierEligible) consumeOneShotModifiers()
             }
             onSpecialKey = { key -> sendBarKey(key, activeModifiers) }
             onKeyEvent = { event -> sendHardwareKey(terminal, event) }
@@ -2892,18 +3672,22 @@ class MainActivity : Activity() {
                 writeClipboard(text)
                 toast("Link copied")
             }
-            onLocalSelectionModeChanged = ::updateSelectButton
+            onLocalSelectionModeChanged = { active ->
+                revealTerminalChrome(sessionId, autoHide = !active)
+            }
             onMetadataChanged = { title, pwd, atPrompt, passwordInput ->
                 val displayedTitle = title.ifBlank { host.name }
-                if (terminalTitle?.text?.toString() != displayedTitle) {
-                    terminalTitle?.text = displayedTitle
+                if (terminalTitle != displayedTitle) {
+                    terminalTitle = displayedTitle
                     renderModifierBarItems()
                 }
                 if (pwd.isNotBlank()) terminalStatus?.text = displayRemotePwd(pwd)
                 if (atPrompt) {
                     service.markShellIntegrationDetected(sessionId)
+                    val noticeWasVisible = shellIntegrationNotice?.visibility == View.VISIBLE
                     shellIntegrationNotice?.visibility = View.GONE
                     cancelShellIntegrationNotice()
+                    if (noticeWasVisible) revealTerminalChrome(sessionId)
                 }
                 setPasswordInput(passwordInput)
                 if (passwordInput) window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
@@ -2921,7 +3705,11 @@ class MainActivity : Activity() {
             }
             onTextSizeChanged = terminalThemeStore::saveFontSize
         }.also { terminalView = it }
-        root.addView(view, LinearLayout.LayoutParams(-1, 0, 1f))
+        root.addView(FrameLayout(this).apply {
+            setBackgroundColor(surface)
+            addView(view, FrameLayout.LayoutParams(-1, -1))
+            addView(toolbar.also { terminalChrome = it }, FrameLayout.LayoutParams(-1, -2, Gravity.TOP))
+        }, LinearLayout.LayoutParams(-1, 0, 1f))
         root.addView(createModifierBar().also { modifierBar = it })
         setContentView(root)
         view.refresh()
@@ -2929,28 +3717,63 @@ class MainActivity : Activity() {
         service.status(sessionId)?.let { sessionListener.onSessionStatus(sessionId, it) }
     }
 
-    private fun setTerminalNavigationHidden(hidden: Boolean) {
+    private fun revealTerminalChrome(sessionId: String, autoHide: Boolean = true) {
+        val chrome = terminalChrome ?: return
+        cancelTerminalChromeFade()
+        chrome.alpha = 1f
+        chrome.visibility = View.VISIBLE
+        if (!autoHide) return
+        terminalChromeFadeRunnable = Runnable {
+            if (selectedSessionId != sessionId || terminalChrome !== chrome) return@Runnable
+            if (terminalStatus?.visibility == View.VISIBLE || terminalRetryButton?.visibility == View.VISIBLE ||
+                shellIntegrationNotice?.visibility == View.VISIBLE || terminalMouseTracking
+            ) return@Runnable
+            chrome.animate()
+                .alpha(0f)
+                .setDuration(TERMINAL_CHROME_FADE_DURATION_MS)
+                .withEndAction {
+                    if (selectedSessionId == sessionId && terminalChrome === chrome && chrome.alpha == 0f) {
+                        chrome.visibility = View.GONE
+                    }
+                }
+                .start()
+        }.also { mainHandler.postDelayed(it, TERMINAL_CHROME_VISIBLE_MS) }
+    }
+
+    private fun cancelTerminalChromeFade() {
+        terminalChromeFadeRunnable?.let(mainHandler::removeCallbacks)
+        terminalChromeFadeRunnable = null
+        terminalChrome?.animate()?.cancel()
+    }
+
+    private fun setTerminalSystemBarsHidden(hidden: Boolean) {
+        terminalImmersive = hidden
         if (Build.VERSION.SDK_INT >= 30) {
             window.insetsController?.let { controller ->
                 if (hidden) {
                     controller.systemBarsBehavior =
                         android.view.WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
-                    controller.hide(WindowInsets.Type.navigationBars())
+                    controller.hide(WindowInsets.Type.systemBars())
                 } else {
-                    controller.show(WindowInsets.Type.navigationBars())
+                    controller.show(WindowInsets.Type.systemBars())
                 }
             }
         } else {
             @Suppress("DEPRECATION")
             window.decorView.systemUiVisibility = if (hidden) {
                 View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY or
+                    View.SYSTEM_UI_FLAG_FULLSCREEN or
                     View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or
                     View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION or
+                    View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN or
                     View.SYSTEM_UI_FLAG_LAYOUT_STABLE
             } else {
-                View.SYSTEM_UI_FLAG_VISIBLE
+                View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION or
+                    View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN or
+                View.SYSTEM_UI_FLAG_LAYOUT_STABLE
             }
         }
+        window.decorView.requestApplyInsets()
     }
 
     private fun scheduleShellIntegrationNotice(sessionId: String) {
@@ -2962,6 +3785,7 @@ class MainActivity : Activity() {
                 !service.shellIntegrationDetected(sessionId) && !service.shellIntegrationNoticeDismissed(sessionId)
             ) {
                 shellIntegrationNotice?.visibility = View.VISIBLE
+                revealTerminalChrome(sessionId, autoHide = false)
             }
         }.also { mainHandler.postDelayed(it, SHELL_INTEGRATION_NOTICE_DELAY_MS) }
     }
@@ -3034,8 +3858,7 @@ class MainActivity : Activity() {
     private fun renderModifierBarItems() {
         val row = modifierBarRow ?: return
         row.removeAllViews()
-        val title = terminalTitle?.text?.toString().orEmpty()
-        keyboardBarConfig.items.filter { it.isVisibleForTerminalTitle(title) }.forEach { item ->
+        keyboardBarConfig.items.filter(::isKeyboardBarItemVisible).forEach { item ->
             row.addView(modifierBarButton(item), keyboardBarLayoutParams())
         }
         row.addView(barButton("More") { showAllKeyboardKeys() }, keyboardBarLayoutParams(endMargin = 0))
@@ -3095,6 +3918,86 @@ class MainActivity : Activity() {
         }
     }
 
+    private fun quickActionLabel(actionId: String): String =
+        HoldSwipeActions.builtIns.firstOrNull { it.first == actionId }?.second
+            ?: (KeyboardBarCatalog.keys + keyboardBarConfig.combinations).firstOrNull { it.id == actionId }?.label
+            ?: "Unavailable"
+
+    private fun performHoldSwipeAction(
+        sourceSessionId: String,
+        actionId: String,
+        column: Int,
+        row: Int,
+        anchorRow: String,
+    ): Boolean {
+        if (sourceSessionId != selectedSessionId || sessionService?.terminal(sourceSessionId) == null) return false
+        val terminal = sessionService?.terminal(sourceSessionId) ?: return false
+        when (actionId) {
+            HoldSwipeActions.SELECT_HERE -> {
+                val current = terminal.snapshot()
+                if (row !in 0 until current.rows || column !in 0 until current.columns) {
+                    toast("Terminal layout changed. Hold again to select here.")
+                    return false
+                }
+                val currentRow = current.cells.subList(row * current.columns, (row + 1) * current.columns)
+                    .joinToString("") { it.text }
+                val currentAnchor = "${current.scrollTotal}:${current.scrollOffset}:$currentRow"
+                if (currentAnchor != anchorRow) {
+                    toast("Terminal content changed. Hold again to select here.")
+                    return false
+                }
+                return terminalView?.selectContextAt(column, row) == true
+            }
+            HoldSwipeActions.PASTE -> sessionService?.let(::pasteFromClipboard)
+            HoldSwipeActions.COPY_LATEST -> {
+                if (!terminal.selectLatestOutput()) return false
+                val text = terminal.selectedText()
+                terminal.clearSelection()
+                if (text.isEmpty()) return false
+                writeClipboard(text)
+                toast("Latest output copied")
+            }
+            HoldSwipeActions.SEARCH -> showScrollbackSearch(terminal)
+            HoldSwipeActions.NEXT_SESSION -> return switchToNextSession(sourceSessionId)
+            HoldSwipeActions.CHOOSE_SESSION -> return showSessionChooser(sourceSessionId)
+            else -> {
+                val item = (KeyboardBarCatalog.keys + keyboardBarConfig.combinations)
+                    .firstOrNull { it.id == actionId } ?: return false
+                activateBarItem(item)
+            }
+        }
+        return true
+    }
+
+    private fun switchToNextSession(sourceSessionId: String): Boolean {
+        if (sourceSessionId != selectedSessionId) return false
+        val sessions = sessionService?.summaries().orEmpty()
+        val nextId = nextSessionId(sourceSessionId, sessions)
+        if (nextId == null) {
+            toast("No other session is active")
+            return false
+        }
+        val next = sessions.first { it.sessionId == nextId }
+        openSession(next.sessionId)
+        toast("Switched to ${next.hostName} · ${next.shortId}")
+        return true
+    }
+
+    private fun showSessionChooser(sourceSessionId: String): Boolean {
+        if (sourceSessionId != selectedSessionId) return false
+        val sessions = sessionService?.summaries().orEmpty()
+        if (sessions.isEmpty()) return false
+        val repeatedHosts = sessions.groupingBy { it.hostId }.eachCount()
+        AlertDialog.Builder(this)
+            .setTitle("Choose session")
+            .setItems(sessions.map {
+                if (repeatedHosts[it.hostId]!! > 1) "${it.hostName} · ${it.shortId}\n${it.status}" else "${it.hostName}\n${it.status}"
+            }.toTypedArray()) { _, index -> openSession(sessions[index].sessionId) }
+            .setNegativeButton("Cancel", null)
+            .show()
+        return true
+    }
+
     private fun sendBarKey(key: String, modifiers: Set<KeyboardModifier>) {
         val text = key.takeUnless { candidate -> KeyboardBarCatalog.keys.any { it.key == candidate } }.orEmpty()
         val sessionId = selectedSessionId ?: return
@@ -3108,6 +4011,19 @@ class MainActivity : Activity() {
     }
 
     private fun sendHardwareKey(terminal: GhosttyTerminal, event: KeyEvent, logicalKey: String? = null): Boolean {
+        if (logicalKey == null) hardwareClipboardAction(event.keyCode)?.let { clipboardAction ->
+            if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0) {
+                when (clipboardAction) {
+                    HardwareClipboardAction.COPY -> terminal.selectedText().takeIf(String::isNotEmpty)?.let { text ->
+                        writeClipboard(text)
+                        terminal.clearSelection()
+                        terminalView?.refresh()
+                    }
+                    HardwareClipboardAction.PASTE -> sessionService?.let(::pasteFromClipboard)
+                }
+            }
+            return event.action == KeyEvent.ACTION_DOWN || event.action == KeyEvent.ACTION_UP
+        }
         val action = ghosttyKeyAction(event.action, event.repeatCount) ?: return false
         val key = logicalKey ?: androidKeyName(event.keyCode) ?: return false
         val codepoint = event.unicodeChar
@@ -3144,47 +4060,6 @@ class MainActivity : Activity() {
         val action = KeyboardBarCatalog.volumeAction(actionId) ?: return super.dispatchKeyEvent(event)
         val terminal = service.terminal(sessionId) ?: return super.dispatchKeyEvent(event)
         return sendHardwareKey(terminal, event, action.key) || super.dispatchKeyEvent(event)
-    }
-
-    private fun androidKeyName(keyCode: Int): String? = when (keyCode) {
-        in KeyEvent.KEYCODE_A..KeyEvent.KEYCODE_Z -> ('A'.code + keyCode - KeyEvent.KEYCODE_A).toChar().toString()
-        in KeyEvent.KEYCODE_0..KeyEvent.KEYCODE_9 -> (keyCode - KeyEvent.KEYCODE_0).toString()
-        KeyEvent.KEYCODE_ESCAPE -> "ESCAPE"
-        KeyEvent.KEYCODE_TAB -> "TAB"
-        KeyEvent.KEYCODE_ENTER, KeyEvent.KEYCODE_NUMPAD_ENTER -> "ENTER"
-        KeyEvent.KEYCODE_DEL -> "BACKSPACE"
-        KeyEvent.KEYCODE_FORWARD_DEL -> "DELETE"
-        KeyEvent.KEYCODE_INSERT -> "INSERT"
-        KeyEvent.KEYCODE_MOVE_HOME -> "HOME"
-        KeyEvent.KEYCODE_MOVE_END -> "END"
-        KeyEvent.KEYCODE_PAGE_UP -> "PAGE_UP"
-        KeyEvent.KEYCODE_PAGE_DOWN -> "PAGE_DOWN"
-        KeyEvent.KEYCODE_DPAD_UP -> "ARROW_UP"
-        KeyEvent.KEYCODE_DPAD_DOWN -> "ARROW_DOWN"
-        KeyEvent.KEYCODE_DPAD_LEFT -> "ARROW_LEFT"
-        KeyEvent.KEYCODE_DPAD_RIGHT -> "ARROW_RIGHT"
-        in KeyEvent.KEYCODE_F1..KeyEvent.KEYCODE_F12 -> "F${keyCode - KeyEvent.KEYCODE_F1 + 1}"
-        KeyEvent.KEYCODE_SPACE -> "SPACE"
-        KeyEvent.KEYCODE_GRAVE -> "BACKQUOTE"
-        KeyEvent.KEYCODE_BACKSLASH -> "BACKSLASH"
-        KeyEvent.KEYCODE_LEFT_BRACKET -> "BRACKET_LEFT"
-        KeyEvent.KEYCODE_RIGHT_BRACKET -> "BRACKET_RIGHT"
-        KeyEvent.KEYCODE_COMMA -> "COMMA"
-        KeyEvent.KEYCODE_EQUALS -> "EQUAL"
-        KeyEvent.KEYCODE_MINUS -> "MINUS"
-        KeyEvent.KEYCODE_PERIOD -> "PERIOD"
-        KeyEvent.KEYCODE_APOSTROPHE -> "QUOTE"
-        KeyEvent.KEYCODE_SEMICOLON -> "SEMICOLON"
-        KeyEvent.KEYCODE_SLASH -> "SLASH"
-        KeyEvent.KEYCODE_SHIFT_LEFT -> "SHIFT_LEFT"
-        KeyEvent.KEYCODE_SHIFT_RIGHT -> "SHIFT_RIGHT"
-        KeyEvent.KEYCODE_CTRL_LEFT -> "CONTROL_LEFT"
-        KeyEvent.KEYCODE_CTRL_RIGHT -> "CONTROL_RIGHT"
-        KeyEvent.KEYCODE_ALT_LEFT -> "ALT_LEFT"
-        KeyEvent.KEYCODE_ALT_RIGHT -> "ALT_RIGHT"
-        KeyEvent.KEYCODE_META_LEFT -> "META_LEFT"
-        KeyEvent.KEYCODE_META_RIGHT -> "META_RIGHT"
-        else -> null
     }
 
     private fun ghosttyModifierBits(modifiers: Set<KeyboardModifier>): Int =
@@ -3310,6 +4185,7 @@ class MainActivity : Activity() {
             Intent(this, MainActivity::class.java)
                 .setAction(SshSessionService.ACTION_OPEN_SESSION)
                 .setData(Uri.parse("ghostty-connect://session/${selectedSessionId.orEmpty()}/open"))
+                .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
                 .putExtra(SshSessionService.EXTRA_SESSION_ID, selectedSessionId),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
@@ -3322,6 +4198,9 @@ class MainActivity : Activity() {
                 .setStyle(android.app.Notification.BigTextStyle().bigText(body))
                 .setContentIntent(open)
                 .setAutoCancel(true)
+                .setVisibility(android.app.Notification.VISIBILITY_PRIVATE)
+                .setLocalOnly(true)
+                .setOnlyAlertOnce(true)
                 .build(),
         )
     }
@@ -3350,7 +4229,7 @@ class MainActivity : Activity() {
             it.type != KeyboardBarItemType.LAST_USED_MODIFIER &&
                 it.type != KeyboardBarItemType.LAST_USED_COMBINATION
         } + keyboardBarConfig.combinations.filter {
-            it.isVisibleForTerminalTitle(terminalTitle?.text?.toString().orEmpty())
+            isKeyboardBarItemVisible(it)
         }
         AlertDialog.Builder(this)
             .setTitle("Keyboard keys")
@@ -3364,10 +4243,12 @@ class MainActivity : Activity() {
             terminalView?.setLocalSelectionMode(false)
             hardwareKeyModifiers.clear()
         }
-        terminalView?.isEnabled = enabled
-        terminalSelectButton?.isEnabled = enabled
+        terminalView?.setInputEnabled(enabled)
         if (enabled) terminalView?.requestFocus()
     }
+
+    private fun isKeyboardBarItemVisible(item: KeyboardBarItem): Boolean =
+        item.id == KeyboardBarCatalog.controlB.id || item.isVisibleForTerminalTitle(terminalTitle)
 
     private fun displayRemotePwd(value: String): String = runCatching {
         val uri = Uri.parse(value)
@@ -3403,8 +4284,12 @@ class MainActivity : Activity() {
         else if (trustedHostsVisible) showKeyboardSettings()
         else if (identitiesVisible) showKeyboardSettings()
         else if (settingsVisible) showHosts(disconnect = false)
-        else if (browserVisible) currentBrowserState?.let(::closeFileBrowser) ?: showHosts(disconnect = false)
-        else if (terminalView?.isLocalSelectionMode == true) terminalView?.setLocalSelectionMode(false)
+        else if (browserVisible) showHosts(disconnect = false)
+        else if (terminalView?.dismissQuickNavigation() == true) Unit
+        else if (terminalView?.isLocalSelectionMode == true) {
+            terminalView?.setLocalSelectionMode(false)
+            selectedSessionId?.let(::revealTerminalChrome)
+        }
         else if (terminalView != null || previewTerminal != null) showHosts()
         else finish()
     }
@@ -3419,8 +4304,11 @@ class MainActivity : Activity() {
             trustedHostsVisible -> SCREEN_TRUSTED_HOSTS
             identitiesVisible -> SCREEN_IDENTITIES
             settingsVisible -> SCREEN_SETTINGS
+            browserVisible -> SCREEN_BROWSER
+            terminalView != null -> SCREEN_TERMINAL
             else -> SCREEN_OTHER
         })
+        selectedSessionId?.let { outState.putString(STATE_SESSION_ID, it) }
         selectedBrowserId?.let { outState.putString(STATE_BROWSER_ID, it) }
         pendingDownloadRequest?.let { request ->
             outState.putString(STATE_DOWNLOAD_BROWSER, request.browserId)
@@ -3457,18 +4345,23 @@ class MainActivity : Activity() {
 
     override fun onDestroy() {
         cancelShellIntegrationNotice()
-        pendingConnection?.credential?.fill('\u0000')
-        pendingConnection = null
+        cancelTerminalChromeFade()
+        cancelBiometricPrompt()
         if (!isChangingConfigurations) {
+            pendingConnection?.credential?.fill('\u0000')
+            pendingConnection?.unlockedPrivateKey?.fill(0)
+            pendingConnection = null
             pendingBrowserConnection?.credential?.fill('\u0000')
+            pendingBrowserConnection?.unlockedPrivateKey?.fill(0)
             pendingBrowserConnection = null
         }
         previewTerminal?.close()
+        diagnosticExecutor.shutdown()
         super.onDestroy()
     }
 
-    @Deprecated("Retains only a transient credential handoff across configuration changes")
-    override fun onRetainNonConfigurationInstance(): Any? = pendingBrowserConnection
+    @Deprecated("Retains only transient credential handoffs across configuration changes")
+    override fun onRetainNonConfigurationInstance(): Any? = RetainedConnections(pendingConnection, pendingBrowserConnection)
 
     private fun renderBrowserEntries(
         list: LinearLayout,
@@ -3480,9 +4373,6 @@ class MainActivity : Activity() {
         showHidden: Boolean,
     ) {
         list.removeAllViews()
-        if (query.isBlank() && state.canNavigateBack) list.addView(browserParentRow(mutedColor) {
-            sftpService?.navigateBack(state.browserId)
-        })
         val entries = filterAndSortSftpEntries(state.entries, query, sortMode, descending, showHidden)
         if (entries.isEmpty() && state.connected) {
             list.addView(label(
@@ -3492,53 +4382,55 @@ class MainActivity : Activity() {
             ).apply { setPadding(dp(16), dp(24), dp(16), dp(24)) })
         }
         entries.forEach { entry ->
-            val type = when (entry.type) {
-                SftpEntryType.FILE -> "File"
-                SftpEntryType.DIRECTORY -> "Directory"
-                SftpEntryType.SYMLINK -> "Symbolic link"
-                SftpEntryType.UNSUPPORTED -> "Unsupported entry"
-            }
-            val metadata = entry.permissions ?: type
-            val trailing = buildList {
-                entry.size?.let { add(formatBytes(it)) }
-                when (sortMode) {
-                    SftpSortMode.ACCESSED -> entry.accessedAtSeconds?.let { add("Accessed ${formatRemoteTime(it)}") }
-                    else -> entry.modifiedAtSeconds?.let { add("Updated ${formatRemoteTime(it)}") }
-                }
-            }.joinToString("\n")
-            val row = browserEntryRow(entry, metadata, trailing, mutedColor)
-            if (entry.supported) {
+            val row = browserEntryRow(entry)
+            val actionable = entry.supported && state.connected && state.status in setOf("Ready", "Empty") &&
+                state.transfer?.status != SftpTransferStatus.RUNNING
+            if (actionable) {
                 if (entry.type == SftpEntryType.DIRECTORY) {
                     row.setOnClickListener {
                         if (!clearSftpSearch(state.browserId)) releaseSftpSearchFocus()
                         sftpService?.enter(state.browserId, entry)
                     }
-                }
-                row.isLongClickable = true
-                row.setOnLongClickListener {
-                    showEntryActions(state.browserId, entry)
-                    true
-                }
-                row.contentDescription = "$metadata. ${entry.name}. " + if (entry.type == SftpEntryType.DIRECTORY) {
-                    "Tap to open. Long press for actions."
-                } else {
-                    "Long press for actions."
-                }
+                } else if (entry.type == SftpEntryType.FILE) row.setOnClickListener {
+                    releaseSftpSearchFocus()
+                    openRemoteFile(state.browserId, entry)
+                } else row.setOnClickListener { showEntryActions(state.browserId, entry) }
             }
+            row.isLongClickable = true
+            row.setOnLongClickListener {
+                showEntryActions(state.browserId, entry)
+                true
+            }
+            val typeDescription = when (entry.type) {
+                SftpEntryType.FILE -> "File"
+                SftpEntryType.DIRECTORY -> "Directory"
+                SftpEntryType.SYMLINK -> "Symbolic link"
+                SftpEntryType.UNSUPPORTED -> "Unsupported entry"
+            }
+            val primaryAction = if (actionable && entry.type in setOf(SftpEntryType.FILE, SftpEntryType.DIRECTORY)) {
+                " Tap to open."
+            } else ""
+            row.contentDescription = "$typeDescription, ${entry.name}.$primaryAction Long press for details and actions."
             list.addView(row)
         }
     }
 
     private fun clearSftpSearch(browserId: String): Boolean {
         val search = sftpSearchField?.takeIf { selectedBrowserId == browserId }
-        val hadQuery = !sftpSearchQueries[browserId].isNullOrBlank() || search?.text?.isNotBlank() == true
+        val hadQuery = !sftpSearchQueries[browserId].isNullOrBlank()
         sftpSearchQueries.remove(browserId)
         if (hadQuery) sftpKeepSearchFocused += browserId
         search?.let {
-            if (search.text.isNotEmpty()) search.text.clear()
+            if (hadQuery) search.setText(currentBrowserState?.path.orEmpty())
             if (hadQuery) focusSftpSearch(search)
         }
         return hadQuery
+    }
+
+    private fun setSftpSort(state: SftpBrowserState, mode: SftpSortMode, descending: Boolean) {
+        sftpSortModes[state.browserId] = mode
+        sftpSortDescending[state.browserId] = descending
+        renderFileBrowser(state)
     }
 
     private fun releaseSftpSearchFocus() {
@@ -3578,9 +4470,6 @@ class MainActivity : Activity() {
 
     private fun browserEntryRow(
         entry: SftpEntry,
-        metadata: String,
-        trailing: String,
-        mutedColor: Int,
     ): LinearLayout = LinearLayout(this).apply {
         orientation = LinearLayout.HORIZONTAL
         gravity = Gravity.CENTER_VERTICAL
@@ -3595,21 +4484,11 @@ class MainActivity : Activity() {
             alpha = if (entry.supported) 1f else 0.45f
             contentDescription = null
         }, LinearLayout.LayoutParams(dp(36), dp(36)))
-        addView(vertical(0).apply {
-            setBackgroundColor(Color.TRANSPARENT)
-            addView(label(entry.name, 15f, primary, Typeface.BOLD).apply {
-                maxLines = 1
-                ellipsize = android.text.TextUtils.TruncateAt.END
-            })
-            addView(label(if (entry.supported) metadata else "Unsupported entry", 11f, mutedColor).apply {
-                typeface = Typeface.MONOSPACE
-            })
+        addView(label(entry.name, 15f, primary, Typeface.BOLD).apply {
+            maxLines = Int.MAX_VALUE
+            ellipsize = null
+            setHorizontallyScrolling(false)
         }, LinearLayout.LayoutParams(0, -2, 1f).apply { marginStart = dp(8) })
-        if (trailing.isNotBlank()) addView(label(trailing, 10f, mutedColor).apply {
-            gravity = Gravity.END
-            typeface = Typeface.MONOSPACE
-            maxLines = 2
-        }, LinearLayout.LayoutParams(-2, -2).apply { marginStart = dp(8) })
     }
 
     private fun roundedBackground(color: Int, radius: Int) = GradientDrawable().apply {
@@ -3694,6 +4573,61 @@ class MainActivity : Activity() {
         layoutParams = LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(top); bottomMargin = dp(bottom) }
     }
     private fun toast(message: String) = Toast.makeText(this, message, Toast.LENGTH_LONG).show()
+
+    private fun showTerminalArchiveDialog(sessionId: String) {
+        val passphrase = field("Passphrase (10+ characters)", "",
+            InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD)
+        val confirm = field("Confirm passphrase", "",
+            InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD)
+        val fields = vertical(12).apply { addView(passphrase); addView(confirm) }
+        val dialog = AlertDialog.Builder(this)
+            .setTitle("Export encrypted archive?")
+            .setMessage("Terminal history may contain passwords and private data. The export is a read-only plain-text capture, not a resumable session. Losing the passphrase makes it unrecoverable.")
+            .setView(fields)
+            .setNegativeButton("Cancel", null)
+            .setPositiveButton("Encrypt", null)
+            .create()
+        dialog.setOnShowListener {
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                val first = passphrase.text.toString().toCharArray()
+                val second = confirm.text.toString().toCharArray()
+                passphrase.text.clear()
+                confirm.text.clear()
+                if (first.size < 10 || !first.contentEquals(second)) {
+                    first.fill('\u0000'); second.fill('\u0000')
+                    toast("Passphrases must match and contain at least 10 characters.")
+                    return@setOnClickListener
+                }
+                second.fill('\u0000')
+                dialog.dismiss()
+                val terminal = sessionService?.terminal(sessionId)
+                if (terminal == null) {
+                    first.fill('\u0000')
+                    toast("Session is no longer available.")
+                    return@setOnClickListener
+                }
+                diagnosticExecutor.execute {
+                    runCatching {
+                        val text = terminal.plainText()
+                        try { TerminalArchive.encrypt(text, first) } finally { text.fill(0); first.fill('\u0000') }
+                    }.onSuccess { archive ->
+                        mainHandler.post {
+                            pendingTerminalArchive = archive
+                            startActivityForResult(Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
+                                addCategory(Intent.CATEGORY_OPENABLE)
+                                type = "application/octet-stream"
+                                putExtra(Intent.EXTRA_TITLE, "ghostty-terminal.gta")
+                            }, CREATE_TERMINAL_ARCHIVE)
+                        }
+                    }.onFailure { error ->
+                        first.fill('\u0000')
+                        mainHandler.post { toast(error.message ?: "Could not encrypt terminal archive") }
+                    }
+                }
+            }
+        }
+        dialog.show()
+    }
     private fun dp(value: Int) = (value * resources.displayMetrics.density).toInt()
 
     companion object {
@@ -3703,6 +4637,7 @@ class MainActivity : Activity() {
         const val CREATE_DOWNLOAD_DOCUMENT = 1003
         const val OPEN_UPLOAD_DOCUMENT = 1004
         const val REQUEST_APK_INSTALL_PERMISSION = 1005
+        const val CREATE_TERMINAL_ARCHIVE = 1006
         const val GHOSTTY_MOD_SHIFT = 1 shl 0
         const val GHOSTTY_MOD_CTRL = 1 shl 1
         const val GHOSTTY_MOD_ALT = 1 shl 2
@@ -3711,9 +4646,12 @@ class MainActivity : Activity() {
         const val GHOSTTY_MOD_NUM_LOCK = 1 shl 5
         const val REMOTE_NOTIFICATION_CHANNEL = "remote_terminal"
         private const val SHELL_INTEGRATION_NOTICE_DELAY_MS = 15_000L
+        private const val TERMINAL_CHROME_VISIBLE_MS = 2_000L
+        private const val TERMINAL_CHROME_FADE_DURATION_MS = 300L
         private const val MAX_PRIVATE_KEY_BYTES = 1024 * 1024
         private const val MAX_OPEN_FILE_BYTES = 25L * 1024 * 1024
         private const val STATE_SCREEN = "screen"
+        private const val STATE_SESSION_ID = "session_id"
         private const val STATE_BROWSER_ID = "browser_id"
         private const val STATE_DOWNLOAD_BROWSER = "download_browser"
         private const val STATE_DOWNLOAD_PATH = "download_path"
@@ -3728,10 +4666,12 @@ class MainActivity : Activity() {
         private const val STATE_ACTIVE_PREVIEW_URI = "active_preview_uri"
         private const val STATE_ACTIVE_PREVIEW_BROWSER = "active_preview_browser"
         private const val SCREEN_OTHER = "other"
+        private const val SCREEN_TERMINAL = "terminal"
         private const val SCREEN_SETTINGS = "settings"
         private const val SCREEN_FEEDBACK = "feedback"
         private const val SCREEN_TRUSTED_HOSTS = "trusted_hosts"
         private const val SCREEN_IDENTITIES = "identities"
+        private const val SCREEN_BROWSER = "browser"
         private val REMOTE_TIME_FORMAT: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm")
     }
 }

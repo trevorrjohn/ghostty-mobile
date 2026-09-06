@@ -61,4 +61,28 @@ class HostTest {
     fun retryAttemptLimitIsBounded() {
         Host(id = "host", hostname = "example.com", username = "ghost", retryMaxAttempts = 11)
     }
+
+    @Test
+    fun tailscaleSshUsesPort22WithoutIdentity() {
+        val host = Host(
+            id = "tailnet",
+            hostname = "workstation",
+            username = "ghost",
+            authenticationType = AuthenticationType.TAILSCALE_SSH,
+        )
+
+        assertEquals(22, host.port)
+        assertEquals(null, host.identityId)
+    }
+
+    @Test(expected = IllegalArgumentException::class)
+    fun tailscaleSshRejectsOtherPorts() {
+        Host(
+            id = "tailnet",
+            hostname = "workstation",
+            port = 2222,
+            username = "ghost",
+            authenticationType = AuthenticationType.TAILSCALE_SSH,
+        )
+    }
 }

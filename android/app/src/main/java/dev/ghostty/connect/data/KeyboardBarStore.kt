@@ -6,6 +6,8 @@ import dev.ghostty.connect.model.KeyboardBarCatalog
 import dev.ghostty.connect.model.KeyboardBarItem
 import dev.ghostty.connect.model.KeyboardBarItemType
 import dev.ghostty.connect.model.KeyboardModifier
+import dev.ghostty.connect.model.HoldSwipeDirection
+import dev.ghostty.connect.model.HoldSwipeActions
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -17,6 +19,11 @@ class KeyboardBarStore(context: Context) {
         val root = JSONObject(encryptedStore.read(FILE_NAME).toString(Charsets.UTF_8))
         val items = decodeItems(root.getJSONArray("items"))
         val combinations = decodeItems(root.optJSONArray("combinations") ?: JSONArray())
+        val defaults = KeyboardBarConfig()
+        val validHoldSwipeActions = HoldSwipeActions.builtIns.mapTo(mutableSetOf()) { it.first }.apply {
+            addAll(KeyboardBarCatalog.keys.map(KeyboardBarItem::id))
+            addAll(combinations.map(KeyboardBarItem::id))
+        }
         return KeyboardBarConfig(
             enabled = root.optBoolean("enabled", true),
             items = items,
@@ -29,17 +36,28 @@ class KeyboardBarStore(context: Context) {
                 root.optString("volumeDownActionId").takeIf(String::isNotBlank),
                 KeyboardBarCatalog.DEFAULT_VOLUME_DOWN_ACTION_ID,
             ),
+            holdSwipeEnabled = root.optBoolean("holdSwipeEnabled", true),
+            holdSwipeActions = HoldSwipeDirection.entries.associateWith { direction ->
+                root.optJSONObject("holdSwipeActions")?.optString(direction.name)
+                    ?.takeIf(validHoldSwipeActions::contains) ?: defaults.holdSwipeActions.getValue(direction)
+            },
         )
     }
 
     fun save(config: KeyboardBarConfig) {
         val root = JSONObject().apply {
-            put("version", 2)
+            put("version", 3)
             put("enabled", config.enabled)
             put("items", encodeItems(config.items))
             put("combinations", encodeItems(config.combinations))
             put("volumeUpActionId", config.volumeUpActionId)
             put("volumeDownActionId", config.volumeDownActionId)
+            put("holdSwipeEnabled", config.holdSwipeEnabled)
+            put("holdSwipeActions", JSONObject().apply {
+                HoldSwipeDirection.entries.forEach { direction ->
+                    put(direction.name, config.holdSwipeActions[direction] ?: JSONObject.NULL)
+                }
+            })
         }
         encryptedStore.write(FILE_NAME, root.toString().toByteArray())
     }

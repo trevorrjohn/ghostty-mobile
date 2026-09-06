@@ -56,6 +56,34 @@ struct KeychainKnownHostStore: KnownHostStore {
         }
     }
 
+    func replace(expected: String?, with key: String, account: String) throws -> Bool {
+        try Self.withLock {
+            _ = try parseKnownHostAccount(account)
+            _ = try SSHHostKeyDetails.inspect(openSSHKey: key)
+            let current: String?
+            if let data = try persistence.read(account: account) {
+                current = try JSONDecoder().decode(String.self, from: data)
+            } else {
+                current = nil
+            }
+            guard current == expected else { return false }
+            try persistence.write(JSONEncoder().encode(key), account: account)
+            return true
+        }
+    }
+
+    func matches(_ expected: String?, account: String) throws -> Bool {
+        try Self.withLock {
+            let current: String?
+            if let data = try persistence.read(account: account) {
+                current = try JSONDecoder().decode(String.self, from: data)
+            } else {
+                current = nil
+            }
+            return current == expected
+        }
+    }
+
     func records() throws -> [TrustedHost] {
         try Self.withLock {
             try persistence.accounts(prefix: Self.accountPrefix).map { account in

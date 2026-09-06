@@ -7,4 +7,5 @@ data class SshIdentity(
     val fingerprint: String?,
     val requiresPassphrase: Boolean,
     val publicKey: String?,
+    val requiresBiometric: Boolean = false,
 )

@@ -21,11 +21,11 @@ import java.util.concurrent.Executor
 import kotlin.concurrent.thread
 
 internal fun interface SshConnector {
-    fun connect(host: Host, credential: CharArray, ownClient: (SSHClient) -> Unit): SSHClient
+    fun connect(host: Host, credential: CharArray, unlockedPrivateKey: ByteArray?, ownClient: (SSHClient) -> Unit): SSHClient
 }
 
 internal class AndroidHostResolver(context: Context) {
-    private val network = context.getSystemService(ConnectivityManager::class.java).activeNetwork
+    private val connectivityManager = context.getSystemService(ConnectivityManager::class.java)
 
     fun resolve(hostname: String): InetAddress {
         val completed = CountDownLatch(1)
@@ -33,7 +33,7 @@ internal class AndroidHostResolver(context: Context) {
         var addresses: List<InetAddress>? = null
         var failure: DnsResolver.DnsException? = null
         DnsResolver.getInstance().query(
-            network,
+            connectivityManager.activeNetwork,
             hostname,
             DnsResolver.FLAG_EMPTY,
             Executor(Runnable::run),
@@ -69,7 +69,7 @@ class SshConnection internal constructor(
 ) {
     constructor(context: Context, keyStore: SshKeyStore, callbacks: Callbacks) : this(
         callbacks,
-        SshConnector { host, credential, ownClient ->
+        SshConnector { host, credential, unlockedPrivateKey, ownClient ->
             val address = AndroidHostResolver(context).resolve(host.hostname)
             AuthenticatedSshClient(context, keyStore, callbacks).connect(
                 host,
@@ -77,6 +77,7 @@ class SshConnection internal constructor(
                 resolvedAddress = address,
                 disconnectOnFailure = false,
                 clientReady = ownClient,
+                unlockedPrivateKey = unlockedPrivateKey,
             )
         },
     )
@@ -106,10 +107,10 @@ class SshConnection internal constructor(
     @Volatile private var pixelHeight = 0
     private val closureReported = AtomicBoolean(false)
 
-    fun connect(host: Host, passwordOrPassphrase: CharArray) {
+    fun connect(host: Host, passwordOrPassphrase: CharArray, unlockedPrivateKey: ByteArray? = null) {
         val worker = thread(name = "ssh-${host.hostname}", start = false) {
             try {
-                val ssh = connector.connect(host, passwordOrPassphrase, ::ownClient)
+                val ssh = connector.connect(host, passwordOrPassphrase, unlockedPrivateKey, ::ownClient)
                 val activeSession = ownSession(ssh.startSession())
                 setOptionalEnvironment(activeSession, "COLORTERM", "truecolor")
                 setOptionalEnvironment(activeSession, "TERM_PROGRAM", "ghostty")
@@ -138,6 +139,7 @@ class SshConnection internal constructor(
                 if (!stopping) reportClosed(error)
             } finally {
                 passwordOrPassphrase.fill('\u0000')
+                unlockedPrivateKey?.fill(0)
                 closeResources()
                 finish()
             }
@@ -152,6 +154,7 @@ class SshConnection internal constructor(
             worker.start()
         } else {
             passwordOrPassphrase.fill('\u0000')
+            unlockedPrivateKey?.fill(0)
             finish()
         }
     }

@@ -28,6 +28,7 @@ struct Host: Codable, Identifiable, Hashable {
     var keyName: String?
     var remoteClipboard = RemotePermission.ask
     var remoteNotifications = RemotePermission.ask
+    var allowSftpDelete: Bool?
 
     var name: String { alias.trimmingCharacters(in: .whitespaces).isEmpty ? hostname : alias }
     var destination: String { "\(username)@\(hostname):\(port)" }

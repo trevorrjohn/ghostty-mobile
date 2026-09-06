@@ -14,6 +14,9 @@ Architecture decision records capture durable choices that affect both applicati
 | [0006](0006-treat-remote-effects-as-bounded-untrusted-input.md) | Accepted | Treat remote effects as bounded untrusted input |
 | [0007](0007-keep-dogfooding-feedback-local-and-user-controlled.md) | Accepted | Keep dogfooding feedback local and user-controlled |
 | [0008](0008-use-stable-ids-for-ssh-identities.md) | Accepted | Use stable IDs for SSH identities |
+| [0009](0009-use-per-identity-biometric-unlock.md) | Accepted | Use per-identity biometric unlock |
+| [0010](0010-keep-diagnostics-bounded-and-redacted.md) | Accepted | Keep diagnostics bounded and redacted |
+| [0011](0011-export-terminal-archives-as-encrypted-text.md) | Accepted | Export terminal archives as encrypted portable text |
 
 ## Process
 

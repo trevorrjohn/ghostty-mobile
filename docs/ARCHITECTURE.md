@@ -138,6 +138,7 @@ Host trust and authentication are session-scoped side channels, never terminal b
 | Product state | Models and encrypted stores | `AppModel`, models, `SecureStore` |
 | Session coordinator | `SshSessionService` session records | `TerminalSessionModel`; registry planned |
 | SSH transport | `SshConnection` using SSHJ | `SSHTransport`, `CitadelSSHTransport` |
+| SFTP transport | `SftpBrowserService`, `SftpConnection` | `SFTPBrowserModel`, `CitadelSFTPTransport` |
 | Terminal adapter | Kotlin `GhosttyTerminal` plus JNI | `GhosttyTerminalEngine` plus XCFramework |
 | Renderer/input | `GhosttyTerminalView` | `TerminalGridView`, `TerminalKeyboardCapture` |
 | Secure storage | Keystore-backed encrypted files | Device-only Keychain |

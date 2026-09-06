@@ -110,6 +110,25 @@ class ReconnectPolicyTest {
     }
 
     @Test
+    fun notificationReconnectRequiresIdleManualRetryWithReusableCredential() {
+        assertTrue(notificationReconnectAvailable(true, true, false, false, false, false))
+        assertFalse(notificationReconnectAvailable(false, true, false, false, false, false))
+        assertFalse(notificationReconnectAvailable(true, false, false, false, false, false))
+        assertFalse(notificationReconnectAvailable(true, true, true, false, false, false))
+        assertFalse(notificationReconnectAvailable(true, true, false, true, false, false))
+        assertFalse(notificationReconnectAvailable(true, true, false, false, true, false))
+        assertFalse(notificationReconnectAvailable(true, true, false, false, false, true))
+    }
+
+    @Test
+    fun biometricAndPassphraseProtectedIdentitiesCannotReconnectUnattended() {
+        assertTrue(identityCredentialReusable(requiresPassphrase = false, requiresBiometric = false))
+        assertFalse(identityCredentialReusable(requiresPassphrase = true, requiresBiometric = false))
+        assertFalse(identityCredentialReusable(requiresPassphrase = false, requiresBiometric = true))
+        assertFalse(identityCredentialReusable(requiresPassphrase = true, requiresBiometric = true))
+    }
+
+    @Test
     fun classifiesOnlyTypedTransientFailuresForRetry() {
         listOf(
             SocketTimeoutException(),

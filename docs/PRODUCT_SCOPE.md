@@ -18,7 +18,7 @@ Ghostty Mobile is a focused native SSH client for Android and iOS powered by Gho
 ### Hosts and Authentication
 
 - Add, edit, duplicate, delete, search, and organize saved hosts.
-- Password, imported-key, and keyboard-interactive authentication.
+- Password, imported-key, keyboard-interactive, and explicitly configured network-identity authentication such as Tailscale SSH.
 - Strict host-key verification and trusted-host management.
 - Platform-secure storage for profiles, imported keys, trust, and settings.
 

@@ -16,6 +16,7 @@ import android.os.SystemClock
 import android.provider.OpenableColumns
 import dev.ghostty.connect.MainActivity
 import dev.ghostty.connect.data.HostStore
+import dev.ghostty.connect.data.SftpRecentFolderStore
 import dev.ghostty.connect.data.SshKeyStore
 import dev.ghostty.connect.model.Host
 import dev.ghostty.connect.model.sameSshDestination
@@ -41,6 +42,7 @@ class SftpBrowserService : Service() {
             challenge: AuthenticationChallenge,
             answer: (CharArray?) -> Unit,
         )
+        fun onAuthenticationBanner(browserId: String, hostName: String, message: String)
     }
 
     inner class LocalBinder : Binder() {
@@ -68,6 +70,7 @@ class SftpBrowserService : Service() {
         var connection: SftpConnection? = null
         var pendingVerification: PendingVerification? = null
         var pendingChallenge: PendingChallenge? = null
+        var pendingAuthenticationBanner: String? = null
         var transferCanceled: AtomicBoolean? = null
         var transferFinished: AtomicBoolean? = null
         var busy = false
@@ -75,12 +78,23 @@ class SftpBrowserService : Service() {
         var generation = 0L
     }
 
+    private val recentFolderStore by lazy { SftpRecentFolderStore(applicationContext) }
+
     private inner class AttemptCallbacks(
         private val record: BrowserRecord,
         private val generation: Long,
     ) : SshAuthenticationCallbacks {
         override fun status(message: String) = onMain {
             if (isCurrent(record, generation)) update(record, record.state.copy(status = message, error = null))
+        }
+
+        override fun authenticationBanner(message: String) = onMain {
+            if (!isCurrent(record, generation)) return@onMain
+            record.pendingAuthenticationBanner = message
+            authenticationForegroundBrowsers += record.browserId
+            refreshForegroundNotification()
+            update(record, record.state.copy(status = "Tailscale verification required", error = null))
+            listener?.onAuthenticationBanner(record.browserId, record.host.name, message)
         }
 
         override fun verifyHostKey(request: HostKeyVerification, answer: (Boolean) -> Unit) {
@@ -138,6 +152,7 @@ class SftpBrowserService : Service() {
     private val browsers = LinkedHashMap<String, BrowserRecord>()
     private var listener: Listener? = null
     private var selectedBrowserId: String? = null
+    private val authenticationForegroundBrowsers = mutableSetOf<String>()
 
     override fun onCreate() {
         super.onCreate()
@@ -146,11 +161,20 @@ class SftpBrowserService : Service() {
             NotificationChannel(CHANNEL_ID, "File transfers", NotificationManager.IMPORTANCE_LOW).apply {
                 description = "Shows an active upload or download"
                 setShowBadge(false)
+                lockscreenVisibility = Notification.VISIBILITY_PRIVATE
             },
         )
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (intent?.action == ACTION_PREPARE_BROWSER) {
+            val browserId = intent.getStringExtra(EXTRA_BROWSER_ID) ?: return START_NOT_STICKY
+            startForeground(
+                NOTIFICATION_ID,
+                browserNotification(browserId, "Connecting to remote files"),
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE,
+            )
+        }
         if (intent?.action == ACTION_CANCEL_TRANSFER) {
             intent.getStringExtra(EXTRA_BROWSER_ID)?.let { id -> onMain { cancelTransfer(id) } }
         }
@@ -170,6 +194,9 @@ class SftpBrowserService : Service() {
             record.pendingChallenge?.let {
                 listener.onAuthenticationChallenge(record.browserId, record.host.name, it.challenge, it.answer)
             }
+            record.pendingAuthenticationBanner?.let {
+                listener.onAuthenticationBanner(record.browserId, record.host.name, it)
+            }
         }
     }
 
@@ -177,28 +204,34 @@ class SftpBrowserService : Service() {
         if (this.listener === listener) this.listener = null
     }
 
-    fun connect(browserId: String, host: Host, credential: CharArray) = onServiceMain {
-        require(browserId.isNotBlank())
+    fun connect(browserId: String, host: Host, credential: CharArray, unlockedPrivateKey: ByteArray? = null) = onServiceMain {
+        if (browserId.isBlank()) {
+            credential.fill('\u0000')
+            unlockedPrivateKey?.fill(0)
+            require(browserId.isNotBlank())
+        }
         if (browserId in browsers) {
             credential.fill('\u0000')
+            unlockedPrivateKey?.fill(0)
             error("File browser already exists")
         }
         val record = BrowserRecord(browserId, host)
         browsers[browserId] = record
         selectedBrowserId = browserId
         emit(record)
-        startAttempt(record, credential)
+        startAttempt(record, credential, unlockedPrivateKey)
     }
 
-    fun retry(browserId: String, credential: CharArray) = onServiceMain {
+    fun retry(browserId: String, credential: CharArray, unlockedPrivateKey: ByteArray? = null) = onServiceMain {
         val record = browsers[browserId] ?: run {
             credential.fill('\u0000')
+            unlockedPrivateKey?.fill(0)
             return@onServiceMain
         }
         cancelAttempt(record)
         record.pathStack.clear()
         update(record, record.state.copy(status = STATUS_CONNECTING, connected = false, error = null, entries = emptyList()))
-        startAttempt(record, credential)
+        startAttempt(record, credential, unlockedPrivateKey)
     }
 
     fun state(browserId: String): SftpBrowserState? = onServiceMainResult { browsers[browserId]?.state }
@@ -326,8 +359,9 @@ class SftpBrowserService : Service() {
         record.state.transfer?.openUri?.let(::deletePreviewUri)
         if (activeTransferBrowserId == browserId) {
             activeTransferBrowserId = null
-            stopForeground(STOP_FOREGROUND_REMOVE)
         }
+        authenticationForegroundBrowsers -= browserId
+        refreshForegroundNotification()
         cancelAttempt(record)
         record.executor.shutdownNow()
         if (selectedBrowserId == browserId) selectedBrowserId = null
@@ -351,11 +385,11 @@ class SftpBrowserService : Service() {
 
     override fun onTimeout(startId: Int, fgsType: Int) {
         activeTransferBrowserId?.let(::cancelTransfer)
-        stopForeground(STOP_FOREGROUND_REMOVE)
-        stopSelf()
+        activeTransferBrowserId = null
+        refreshForegroundNotification()
     }
 
-    private fun startAttempt(record: BrowserRecord, credential: CharArray) {
+    private fun startAttempt(record: BrowserRecord, credential: CharArray, unlockedPrivateKey: ByteArray?) {
         val generation = ++record.generation
         val connection = SftpConnection(applicationContext, AttemptCallbacks(record, generation))
         record.connection = connection
@@ -363,10 +397,13 @@ class SftpBrowserService : Service() {
         try {
             record.executor.execute {
                 try {
-                    val home = connection.connect(record.host, credential)
+                    val home = connection.connect(record.host, credential, unlockedPrivateKey)
                     val entries = connection.list(home)
                     onMain {
                     if (!isCurrent(record, generation)) return@onMain
+                    record.pendingAuthenticationBanner = null
+                    authenticationForegroundBrowsers -= record.browserId
+                    refreshForegroundNotification()
                     record.pathStack.clear()
                     record.pathStack.addAll(remoteAbsolutePathStack(home))
                     update(record, record.state.copy(
@@ -377,16 +414,19 @@ class SftpBrowserService : Service() {
                             connected = true,
                             error = null,
                         ))
+                        recordRecentFolder(record, home)
                     }
                 } catch (error: Exception) {
                     onMain { fail(record, generation, error) }
                 } finally {
                     credential.fill('\u0000')
+                    unlockedPrivateKey?.fill(0)
                     synchronized(record.credentialLock) { record.pendingCredentials.removeAll { it === credential } }
                 }
             }
         } catch (error: RuntimeException) {
             credential.fill('\u0000')
+            unlockedPrivateKey?.fill(0)
             synchronized(record.credentialLock) { record.pendingCredentials.removeAll { it === credential } }
             throw error
         }
@@ -495,7 +535,7 @@ class SftpBrowserService : Service() {
                     record.busy = false
                     if (activeTransferBrowserId == browserId) {
                         activeTransferBrowserId = null
-                        stopForeground(STOP_FOREGROUND_REMOVE)
+                        refreshForegroundNotification()
                     }
                     val current = record.state.transfer ?: return@onMain
                     update(record, record.state.copy(
@@ -517,7 +557,7 @@ class SftpBrowserService : Service() {
                     finished.set(true)
                     if (activeTransferBrowserId == browserId) {
                         activeTransferBrowserId = null
-                        stopForeground(STOP_FOREGROUND_REMOVE)
+                        refreshForegroundNotification()
                     }
                     if (canceled.get()) {
                         if (record.connection == null) update(record, record.state.copy(
@@ -551,6 +591,9 @@ class SftpBrowserService : Service() {
         onMain {
             if (!browsers.containsKey(record.browserId)) return@onMain
             record.busy = false
+            record.pendingAuthenticationBanner = null
+            authenticationForegroundBrowsers -= record.browserId
+            refreshForegroundNotification()
             update(record, record.state.copy(
                 status = if (entries.isEmpty()) STATUS_EMPTY else STATUS_READY,
                 path = path,
@@ -559,6 +602,18 @@ class SftpBrowserService : Service() {
                 connected = true,
                 error = null,
             ))
+            recordRecentFolder(record, path)
+        }
+    }
+
+    private fun recordRecentFolder(record: BrowserRecord, path: String) {
+        runCatching {
+            record.executor.execute {
+                val changed = runCatching { recentFolderStore.record(record.host.id, path) }.getOrDefault(false)
+                if (changed) onMain {
+                    if (browsers[record.browserId] === record && record.state.path == path) emit(record)
+                }
+            }
         }
     }
 
@@ -566,6 +621,8 @@ class SftpBrowserService : Service() {
         if (!isCurrent(record, generation)) return
         record.connection?.disconnect()
         record.connection = null
+        authenticationForegroundBrowsers -= record.browserId
+        refreshForegroundNotification()
         update(record, record.state.copy(status = STATUS_FAILED, connected = false, error = failure(error)))
     }
 
@@ -581,6 +638,9 @@ class SftpBrowserService : Service() {
         record.pendingVerification = null
         record.pendingChallenge?.answer?.invoke(null)
         record.pendingChallenge = null
+        record.pendingAuthenticationBanner = null
+        authenticationForegroundBrowsers -= record.browserId
+        refreshForegroundNotification()
         record.connection?.disconnect()
         record.connection = null
         synchronized(record.credentialLock) {
@@ -616,7 +676,7 @@ class SftpBrowserService : Service() {
     }
 
     private fun startTransferForeground(record: BrowserRecord) {
-        startForeground(NOTIFICATION_ID, transferNotification(record), ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
+        refreshForegroundNotification()
     }
 
     private fun updateTransferNotification(record: BrowserRecord) {
@@ -637,11 +697,47 @@ class SftpBrowserService : Service() {
             .setContentText(if (total == null) "Transfer in progress" else "$progress%")
             .setProgress(100, progress, total == null)
             .setContentIntent(openBrowserIntent(record.browserId))
+            .addAction(Notification.Action.Builder(null, "Open", openBrowserIntent(record.browserId)).build())
             .addAction(Notification.Action.Builder(null, "Cancel", cancelIntent(record.browserId)).build())
             .setOngoing(true)
             .setCategory(Notification.CATEGORY_PROGRESS)
+            .setVisibility(Notification.VISIBILITY_PRIVATE)
+            .setLocalOnly(true)
+            .setOnlyAlertOnce(true)
             .build()
     }
+
+    private fun refreshForegroundNotification() {
+        val transferRecord = activeTransferBrowserId?.let(browsers::get)
+        if (transferRecord != null) {
+            val type = ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC or
+                (if (authenticationForegroundBrowsers.isNotEmpty()) ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE else 0)
+            startForeground(NOTIFICATION_ID, transferNotification(transferRecord), type)
+            return
+        }
+        val browserId = authenticationForegroundBrowsers.firstOrNull()
+        if (browserId != null) {
+            startForeground(
+                NOTIFICATION_ID,
+                browserNotification(browserId, "Return after SSH verification"),
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE,
+            )
+        } else {
+            stopForeground(STOP_FOREGROUND_REMOVE)
+        }
+    }
+
+    private fun browserNotification(browserId: String, message: String): Notification =
+        Notification.Builder(this, CHANNEL_ID)
+            .setSmallIcon(android.R.drawable.stat_sys_download_done)
+            .setContentTitle("Remote files")
+            .setContentText(message)
+            .setContentIntent(openBrowserIntent(browserId))
+            .setOngoing(true)
+            .setCategory(Notification.CATEGORY_SERVICE)
+            .setVisibility(Notification.VISIBILITY_PRIVATE)
+            .setLocalOnly(true)
+            .build()
 
     private fun openBrowserIntent(browserId: String): PendingIntent = PendingIntent.getActivity(
         this,
@@ -649,6 +745,7 @@ class SftpBrowserService : Service() {
         Intent(this, MainActivity::class.java)
             .setAction(ACTION_OPEN_BROWSER)
             .setData(Uri.parse("ghostty-connect://files/$browserId/open"))
+            .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
             .putExtra(EXTRA_BROWSER_ID, browserId),
         PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
     )
@@ -678,6 +775,7 @@ class SftpBrowserService : Service() {
     }
 
     companion object {
+        const val ACTION_PREPARE_BROWSER = "dev.ghostty.connect.action.PREPARE_FILES"
         const val ACTION_OPEN_BROWSER = "dev.ghostty.connect.action.OPEN_FILES"
         const val ACTION_CANCEL_TRANSFER = "dev.ghostty.connect.action.CANCEL_FILE_TRANSFER"
         const val EXTRA_BROWSER_ID = "dev.ghostty.connect.extra.BROWSER_ID"

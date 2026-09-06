@@ -4,7 +4,7 @@
 
 Ghostty Mobile's SFTP experience lets a user inspect and move files on a saved remote host without leaving the app or routing file data through a terminal. It is an SFTP client and remote file browser. It does not expose the Android or iOS device as an SFTP server.
 
-The feature uses the same saved host, authentication, and host-key trust policy as terminal connections while keeping file-transfer ownership independent from terminal sessions. Android validates the first product slice before the same behavior is implemented on iOS.
+The feature uses the same saved host, authentication, and host-key trust policy as terminal connections while keeping file-transfer ownership independent from terminal sessions. Android remains the reference implementation while iOS adopts the validated interaction and security behavior with platform-native document handling.
 
 ## User Need
 
@@ -35,7 +35,7 @@ A user can:
 8. Create a directory, rename an entry, and delete a file or empty directory after confirmation.
 9. See byte progress, completion, cancellation, interruption, and an actionable failure message for a transfer.
 10. Open a separate terminal for the same saved host without ending the file browser.
-11. Save favorite remote folders for a saved host and reopen them from later file-browser connections.
+11. Save favorite remote folders and reopen recently visited folders for a saved host across file-browser connections.
 12. Fuzzy-filter the current directory and sort folders/files by name, last-updated time, last-accessed time, or size.
 13. Open a bounded regular file with an installed Android viewer without first choosing a durable download destination.
 
@@ -71,9 +71,9 @@ Credentials are scoped to one connection attempt. Reconnect and **Open terminal*
 
 ## Browser Experience
 
-The browser header shows the host display name and current remote path. The primary actions are **Upload**, **New folder**, **Refresh**, **Open terminal**, and **Close**. Parent navigation is available whenever the current location is not the filesystem root, including from the account's home directory.
+The browser header shows the host display name, one combined current-directory/search field, parent navigation, and one menu. Ordinary text in the combined field filters the loaded directory; a submitted path navigates after server canonicalization. Upload, new-folder, refresh, locations, sorting, hidden-file visibility, terminal launch where supported, and disconnect controls live in the menu rather than a permanent action strip.
 
-The path can be entered directly as an absolute or current-directory-relative path. The server canonicalizes it before use, and an explicitly entered path may open any directory the authenticated account can access. File operations remain constrained to validated children of the resulting current directory. Favorite folders are stored encrypted against the saved host ID, remain available across browser connections, and never retain credentials or connection state.
+The path can be entered directly as an absolute or current-directory-relative path. The server canonicalizes it before use, and an explicitly entered path may open any directory the authenticated account can access. File operations remain constrained to validated children of the resulting current directory. Favorite folders are stored encrypted against the saved host ID and remain available across browser connections. The 10 most recently displayed canonical folders are also stored encrypted per host in most-recent-first order; failed paths are not retained, and the user can clear this history. Neither store retains credentials or connection state.
 
 Search filters only the already loaded current directory using fuzzy subsequence matching; it does not recursively enumerate the server. Direct Open streams at most 25 MiB into app-private temporary cache, grants a read-only content URI to the selected Android viewer, and removes the temporary file when the app regains focus. Unsupported or larger files remain available through explicit Download.
 
@@ -81,7 +81,7 @@ Date sorting uses the server's SFTP modified and access timestamps when availabl
 
 Directories remain before other entries under the selected ordering, without changing remote names. `.` and `..` are never displayed as ordinary entries.
 
-Each entry displays:
+Each ordinary entry row displays its complete remote name without truncating the extension. Long press opens details and available actions, including:
 
 - Remote name.
 - File, directory, or symlink identity.

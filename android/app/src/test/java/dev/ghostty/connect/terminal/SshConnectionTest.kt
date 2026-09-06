@@ -18,7 +18,7 @@ class SshConnectionTest {
         val finished = CountDownLatch(1)
         val credential = "secret".toCharArray()
         val callbacks = RecordingCallbacks()
-        val connection = SshConnection(callbacks, SshConnector { _, _, _ ->
+        val connection = SshConnection(callbacks, SshConnector { _, _, _, _ ->
             setupStarted.countDown()
             try {
                 CountDownLatch(1).await()
@@ -48,7 +48,7 @@ class SshConnectionTest {
         val finished = CountDownLatch(1)
         val finishCount = AtomicInteger()
         val callbacks = RecordingCallbacks()
-        val connection = SshConnection(callbacks, SshConnector { _, _, _ ->
+        val connection = SshConnection(callbacks, SshConnector { _, _, _, _ ->
             setupStarted.countDown()
             while (true) {
                 try {
@@ -87,7 +87,7 @@ class SshConnectionTest {
         val client = SSHClient()
         val connection = SshConnection(
             RecordingCallbacks(),
-            SshConnector { _, _, ownClient ->
+            SshConnector { _, _, _, ownClient ->
                 ownClient(client)
                 setupStarted.countDown()
                 CountDownLatch(1).await()

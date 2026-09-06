@@ -50,8 +50,56 @@ class SshIdentityMigrationTest {
         assertEquals("work", first.name)
         assertArrayEquals(key, store.read(first.id))
         assertEquals(false, first.requiresPassphrase)
+        assertEquals(false, first.requiresBiometric)
         assertEquals(true, encryptedStore.exists("ssh-key-index.enc"))
         assertEquals(true, encryptedStore.exists(legacyIdentityFileName("work")))
+    }
+
+    @Test
+    fun versionOneIdentityDefaultsToStandardProtection() {
+        val id = "123e4567-e89b-12d3-a456-426614174000"
+        val key = "private-key-data".toByteArray()
+        encryptedStore.write("ssh-identity-$id.enc", key)
+        encryptedStore.write("ssh-identity-index.enc", JSONObject().apply {
+            put("version", 1)
+            put("identities", JSONArray().put(JSONObject().apply {
+                put("id", id)
+                put("name", "work")
+                put("algorithm", "RSA")
+                put("fingerprint", "SHA256:test")
+                put("requiresPassphrase", false)
+                put("publicKey", JSONObject.NULL)
+            }))
+        }.toString().toByteArray())
+
+        val identity = SshKeyStore(context).identities().single()
+
+        assertFalse(identity.requiresBiometric)
+        assertArrayEquals(key, SshKeyStore(context).read(id))
+    }
+
+    @Test
+    fun protectedIdentityReconcilesInterruptedOrdinaryFallbackDeletion() {
+        val id = "123e4567-e89b-12d3-a456-426614174000"
+        encryptedStore.write("ssh-identity-$id.enc", "fallback".toByteArray())
+        context.openFileOutput("ssh-identity-$id.biometric", Context.MODE_PRIVATE).use { it.write(byteArrayOf(1)) }
+        encryptedStore.write("ssh-identity-index.enc", JSONObject().apply {
+            put("version", 2)
+            put("identities", JSONArray().put(JSONObject().apply {
+                put("id", id)
+                put("name", "protected")
+                put("algorithm", "RSA")
+                put("fingerprint", "SHA256:test")
+                put("requiresPassphrase", false)
+                put("publicKey", JSONObject.NULL)
+                put("requiresBiometric", true)
+            }))
+        }.toString().toByteArray())
+
+        val identity = SshKeyStore(context).identities().single()
+
+        assertTrue(identity.requiresBiometric)
+        assertFalse(encryptedStore.exists("ssh-identity-$id.enc"))
     }
 
     @Test

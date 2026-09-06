@@ -3,6 +3,7 @@ package dev.ghostty.connect.model
 enum class AuthenticationType {
     PASSWORD,
     SSH_KEY,
+    TAILSCALE_SSH,
 }
 
 enum class RetryBackoff {
@@ -29,6 +30,9 @@ data class Host(
     init {
         require(retryMaxAttempts in MIN_RETRY_ATTEMPTS..MAX_RETRY_ATTEMPTS) {
             "Retry attempts must be between $MIN_RETRY_ATTEMPTS and $MAX_RETRY_ATTEMPTS."
+        }
+        require(authenticationType != AuthenticationType.TAILSCALE_SSH || port == 22) {
+            "Tailscale SSH uses port 22."
         }
     }
 

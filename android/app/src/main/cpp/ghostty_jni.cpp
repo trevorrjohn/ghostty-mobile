@@ -221,6 +221,32 @@ GhosttyKey key_from_name(const std::string& name) {
   if (name == "ALT_RIGHT") return GHOSTTY_KEY_ALT_RIGHT;
   if (name == "META_LEFT") return GHOSTTY_KEY_META_LEFT;
   if (name == "META_RIGHT") return GHOSTTY_KEY_META_RIGHT;
+  if (name == "CAPS_LOCK") return GHOSTTY_KEY_CAPS_LOCK;
+  if (name == "NUM_LOCK") return GHOSTTY_KEY_NUM_LOCK;
+  if (name == "SCROLL_LOCK") return GHOSTTY_KEY_SCROLL_LOCK;
+  if (name == "NUMPAD_0") return GHOSTTY_KEY_NUMPAD_0;
+  if (name == "NUMPAD_1") return GHOSTTY_KEY_NUMPAD_1;
+  if (name == "NUMPAD_2") return GHOSTTY_KEY_NUMPAD_2;
+  if (name == "NUMPAD_3") return GHOSTTY_KEY_NUMPAD_3;
+  if (name == "NUMPAD_4") return GHOSTTY_KEY_NUMPAD_4;
+  if (name == "NUMPAD_5") return GHOSTTY_KEY_NUMPAD_5;
+  if (name == "NUMPAD_6") return GHOSTTY_KEY_NUMPAD_6;
+  if (name == "NUMPAD_7") return GHOSTTY_KEY_NUMPAD_7;
+  if (name == "NUMPAD_8") return GHOSTTY_KEY_NUMPAD_8;
+  if (name == "NUMPAD_9") return GHOSTTY_KEY_NUMPAD_9;
+  if (name == "NUMPAD_ADD") return GHOSTTY_KEY_NUMPAD_ADD;
+  if (name == "NUMPAD_SUBTRACT") return GHOSTTY_KEY_NUMPAD_SUBTRACT;
+  if (name == "NUMPAD_MULTIPLY") return GHOSTTY_KEY_NUMPAD_MULTIPLY;
+  if (name == "NUMPAD_DIVIDE") return GHOSTTY_KEY_NUMPAD_DIVIDE;
+  if (name == "NUMPAD_DECIMAL") return GHOSTTY_KEY_NUMPAD_DECIMAL;
+  if (name == "NUMPAD_COMMA") return GHOSTTY_KEY_NUMPAD_COMMA;
+  if (name == "NUMPAD_ENTER") return GHOSTTY_KEY_NUMPAD_ENTER;
+  if (name == "NUMPAD_EQUAL") return GHOSTTY_KEY_NUMPAD_EQUAL;
+  if (name == "NUMPAD_PAREN_LEFT") return GHOSTTY_KEY_NUMPAD_PAREN_LEFT;
+  if (name == "NUMPAD_PAREN_RIGHT") return GHOSTTY_KEY_NUMPAD_PAREN_RIGHT;
+  if (name == "PRINT_SCREEN") return GHOSTTY_KEY_PRINT_SCREEN;
+  if (name == "PAUSE") return GHOSTTY_KEY_PAUSE;
+  if (name == "CONTEXT_MENU") return GHOSTTY_KEY_CONTEXT_MENU;
   if (name.size() >= 2 && name[0] == 'F') {
     const int number = std::atoi(name.c_str() + 1);
     if (number >= 1 && number <= 25) return static_cast<GhosttyKey>(GHOSTTY_KEY_F1 + number - 1);
@@ -720,6 +746,39 @@ Java_dev_ghostty_connect_terminal_bridge_GhosttyTerminal_nativeSelectedText(
     if (result == GHOSTTY_NO_VALUE) return env->NewStringUTF("");
     require_success(result, "format selection");
     jstring value = utf8_java_string(env, bytes, length);
+    ghostty_free(nullptr, bytes, length);
+    return value;
+  } catch (const std::exception& error) {
+    throw_java(env, error);
+    return nullptr;
+  }
+}
+
+extern "C" JNIEXPORT jbyteArray JNICALL
+Java_dev_ghostty_connect_terminal_bridge_GhosttyTerminal_nativePlainText(
+    JNIEnv* env, jobject, jlong handle) {
+  try {
+    NativeTerminal* instance = from_handle(handle);
+    std::lock_guard lock(instance->mutex);
+    auto options = GHOSTTY_INIT_SIZED(GhosttyFormatterTerminalOptions);
+    options.emit = GHOSTTY_FORMATTER_FORMAT_PLAIN;
+    options.unwrap = true;
+    options.trim = true;
+    GhosttyFormatter formatter = nullptr;
+    require_success(ghostty_formatter_terminal_new(nullptr, &formatter, instance->terminal, options),
+        "create terminal formatter");
+    uint8_t* bytes = nullptr;
+    size_t length = 0;
+    const GhosttyResult result = ghostty_formatter_format_alloc(formatter, nullptr, &bytes, &length);
+    ghostty_formatter_free(formatter);
+    require_success(result, "format terminal");
+    if (length > 32 * 1024 * 1024) {
+      ghostty_free(nullptr, bytes, length);
+      throw std::runtime_error("Terminal archive is too large");
+    }
+    jbyteArray value = env->NewByteArray(static_cast<jsize>(length));
+    if (length > 0) env->SetByteArrayRegion(value, 0, static_cast<jsize>(length),
+        reinterpret_cast<const jbyte*>(bytes));
     ghostty_free(nullptr, bytes, length);
     return value;
   } catch (const std::exception& error) {

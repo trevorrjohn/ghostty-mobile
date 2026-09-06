@@ -27,10 +27,10 @@ internal class SftpConnection(
     @Volatile private var sftp: SFTPClient? = null
     private val closed = AtomicBoolean(false)
 
-    fun connect(host: Host, credential: CharArray): String {
+    fun connect(host: Host, credential: CharArray, unlockedPrivateKey: ByteArray? = null): String {
         check(!closed.get())
         val connectedSsh = AuthenticatedSshClient(context, SshKeyStore(context), callbacks)
-            .connect(host, credential) { ssh = it }
+            .connect(host, credential, clientReady = { ssh = it }, unlockedPrivateKey = unlockedPrivateKey)
         val connectedSftp = connectedSsh.newSFTPClient()
         connectedSftp.sftpEngine.timeoutMs = IO_TIMEOUT_MS
         sftp = connectedSftp

@@ -56,6 +56,24 @@ private struct SSHHostKeyFormatError: LocalizedError {
 protocol KnownHostStore: Sendable {
     func read(account: String) throws -> String?
     func write(_ key: String, account: String) throws
+    func replace(expected: String?, with key: String, account: String) throws -> Bool
+    func matches(_ expected: String?, account: String) throws -> Bool
+}
+
+extension KnownHostStore {
+    func matches(_ expected: String?, account: String) throws -> Bool {
+        try read(account: account) == expected
+    }
+
+    func replace(expected: String?, with key: String, account: String) throws -> Bool {
+        guard try read(account: account) == expected else { return false }
+        try write(key, account: account)
+        return true
+    }
+}
+
+private struct SSHHostKeyTrustChangedError: LocalizedError {
+    var errorDescription: String? { "The saved host key changed while approval was pending. Verify the host again." }
 }
 
 final class KeychainHostKeyValidator: NIOSSHClientServerAuthenticationDelegate, @unchecked Sendable {
@@ -107,6 +125,10 @@ final class KeychainHostKeyValidator: NIOSSHClientServerAuthenticationDelegate, 
             let stored = try store.read(account: account)
             switch KnownHostDecision.decide(stored: stored, presented: presented) {
             case .trusted:
+                guard try store.matches(stored, account: account) else {
+                    completion(.failure(SSHHostKeyTrustChangedError()))
+                    return
+                }
                 lock.lock()
                 guard !cancelled else {
                     lock.unlock()
@@ -132,6 +154,7 @@ final class KeychainHostKeyValidator: NIOSSHClientServerAuthenticationDelegate, 
                     self?.complete(
                         accepted: accepted,
                         requestID: requestID,
+                        expected: stored,
                         presented: presented,
                         completion: completion
                     )
@@ -167,6 +190,7 @@ final class KeychainHostKeyValidator: NIOSSHClientServerAuthenticationDelegate, 
     private func complete(
         accepted: Bool,
         requestID: UUID,
+        expected: String?,
         presented: String,
         completion: @escaping @Sendable (Result<Void, Error>) -> Void
     ) {
@@ -188,7 +212,11 @@ final class KeychainHostKeyValidator: NIOSSHClientServerAuthenticationDelegate, 
             return
         }
         do {
-            try store.write(presented, account: account)
+            guard try store.replace(expected: expected, with: presented, account: account) else {
+                lock.unlock()
+                completion(.failure(SSHHostKeyTrustChangedError()))
+                return
+            }
             lock.unlock()
             completion(.success(()))
         } catch {

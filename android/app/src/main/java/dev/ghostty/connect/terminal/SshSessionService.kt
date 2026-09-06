@@ -10,13 +10,12 @@ import android.content.ClipboardManager
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.net.ConnectivityManager
-import android.net.Network
-import android.net.NetworkCapabilities
 import android.net.Uri
 import android.os.Binder
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.os.SystemClock
 import dev.ghostty.connect.MainActivity
 import dev.ghostty.connect.data.HostStore
 import dev.ghostty.connect.data.SshKeyStore
@@ -47,6 +46,7 @@ class SshSessionService : Service() {
             challenge: AuthenticationChallenge,
             answer: (CharArray?) -> Unit,
         )
+        fun onAuthenticationBanner(sessionId: String, hostName: String, message: String)
         fun onSessionClosed(sessionId: String, error: String?)
     }
 
@@ -70,6 +70,7 @@ class SshSessionService : Service() {
         val host: Host,
         val terminal: GhosttyTerminal,
         val autoReconnectEligible: Boolean,
+        val startedAtElapsedRealtime: Long = SystemClock.elapsedRealtime(),
     ) {
         val outputLock = Any()
         val pendingEffects = ArrayDeque<TerminalEffects>()
@@ -82,6 +83,7 @@ class SshSessionService : Service() {
         var terminalMetrics = TerminalPixelMetrics(80, 24, 640, 384)
         var pendingVerification: PendingVerification? = null
         var pendingChallenge: PendingChallenge? = null
+        var pendingAuthenticationBanner: String? = null
         var retryRunnable: Runnable? = null
         var stableConnectionRunnable: Runnable? = null
         var waitingToReconnect = false
@@ -101,6 +103,15 @@ class SshSessionService : Service() {
         override fun status(message: String) = onMain {
             if (!isCurrentAttempt(record, generation)) return@onMain
             setStatus(record, message)
+        }
+
+        override fun authenticationBanner(message: String) = onMain {
+            if (!isCurrentAttempt(record, generation)) return@onMain
+            record.pendingAuthenticationBanner = message
+            setStatus(record, "Tailscale verification required")
+            if (shouldPresentSessionPrompt(listenerSessionId, record.sessionId)) {
+                listener?.onAuthenticationBanner(record.sessionId, record.host.name, message)
+            }
         }
 
         override fun output(bytes: ByteArray) {
@@ -140,7 +151,9 @@ class SshSessionService : Service() {
                     return@onMain
                 }
                 record.pendingVerification = PendingVerification(request, once)
-                listener?.onHostKeyVerification(record.sessionId, request, once)
+                if (shouldPresentSessionPrompt(listenerSessionId, record.sessionId)) {
+                    listener?.onHostKeyVerification(record.sessionId, request, once)
+                }
             }
         }
 
@@ -174,7 +187,9 @@ class SshSessionService : Service() {
                 }
                 record.pendingChallenge?.answer?.invoke(null)
                 record.pendingChallenge = PendingChallenge(generation, challenge, respond)
-                listener?.onAuthenticationChallenge(record.sessionId, record.host.name, challenge, respond)
+                if (shouldPresentSessionPrompt(listenerSessionId, record.sessionId)) {
+                    listener?.onAuthenticationChallenge(record.sessionId, record.host.name, challenge, respond)
+                }
             }
             return { respond(null) }
         }
@@ -182,6 +197,7 @@ class SshSessionService : Service() {
         override fun connected() = onMain {
             if (!isCurrentAttempt(record, generation)) return@onMain
             record.connected = true
+            record.pendingAuthenticationBanner = null
             record.waitingToReconnect = false
             record.retryRunnable = null
             record.stableConnectionRunnable?.let(mainHandler::removeCallbacks)
@@ -222,12 +238,9 @@ class SshSessionService : Service() {
     private var listenerSessionId: String? = null
     private var notificationSessionId: String? = null
     private val connectivityManager by lazy { getSystemService(ConnectivityManager::class.java) }
-    private var networkCallbackRegistered = false
-    private var networkUsable = false
-    private val networkCallback = object : ConnectivityManager.NetworkCallback() {
-        override fun onAvailable(network: Network) = refreshNetworkState()
-        override fun onLost(network: Network) = refreshNetworkState()
-        override fun onCapabilitiesChanged(network: Network, capabilities: NetworkCapabilities) = refreshNetworkState()
+    private var networkAvailability = NetworkAvailability.UNKNOWN
+    private val networkMonitor by lazy {
+        DefaultNetworkMonitor(connectivityManager, mainHandler, ::applyNetworkAvailability)
     }
 
     override fun onCreate() {
@@ -238,8 +251,13 @@ class SshSessionService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (intent?.action == ACTION_DISCONNECT) {
-            intent.getStringExtra(EXTRA_SESSION_ID)?.let { sessionId -> onMain { disconnect(sessionId) } }
+        when (intent?.action) {
+            ACTION_DISCONNECT -> intent.getStringExtra(EXTRA_SESSION_ID)?.let { sessionId ->
+                onMain { disconnect(sessionId) }
+            }
+            ACTION_RECONNECT -> intent.getStringExtra(EXTRA_SESSION_ID)?.let { sessionId ->
+                onMain { reconnectFromNotification(sessionId) }
+            }
         }
         return START_NOT_STICKY
     }
@@ -252,12 +270,6 @@ class SshSessionService : Service() {
         sessions.values.forEach { record ->
             listener.onSessionStatus(record.sessionId, record.status)
             listener.onTerminalChanged(record.sessionId)
-            record.pendingVerification?.let {
-                listener.onHostKeyVerification(record.sessionId, it.request, it.answer)
-            }
-            record.pendingChallenge?.let {
-                listener.onAuthenticationChallenge(record.sessionId, record.host.name, it.challenge, it.answer)
-            }
         }
     }
 
@@ -276,38 +288,64 @@ class SshSessionService : Service() {
         while (record.pendingEffects.isNotEmpty()) {
             listener?.onTerminalEffects(record.sessionId, record.pendingEffects.removeFirst())
         }
+        record.pendingVerification?.let {
+            listener?.onHostKeyVerification(record.sessionId, it.request, it.answer)
+        }
+        record.pendingChallenge?.let {
+            listener?.onAuthenticationChallenge(record.sessionId, record.host.name, it.challenge, it.answer)
+        }
+        record.pendingAuthenticationBanner?.let {
+            listener?.onAuthenticationBanner(record.sessionId, record.host.name, it)
+        }
     }
 
-    fun connect(sessionId: String, host: Host, credential: CharArray) = onServiceMain {
+    fun connect(sessionId: String, host: Host, credential: CharArray, unlockedPrivateKey: ByteArray? = null) = onServiceMain {
         if (sessionId.isBlank() || sessionId in sessions) {
             credential.fill('\u0000')
+            unlockedPrivateKey?.fill(0)
             require(sessionId.isNotBlank()) { "sessionId must not be blank" }
             error("Session already exists: $sessionId")
         }
-        val theme = TerminalThemeStore(applicationContext).load()
-        val terminal = GhosttyTerminal(
-            foreground = theme.foreground,
-            background = theme.background,
-            cursor = theme.cursor,
-            palette = theme.palette,
-        )
-        val keyStore = SshKeyStore(applicationContext)
-        val autoReconnectEligible = host.authenticationType == AuthenticationType.SSH_KEY &&
-            host.identityId?.let { runCatching { !keyStore.requiresPassphrase(it) }.getOrDefault(false) } == true
-        val record = SessionRecord(sessionId, host, terminal, autoReconnectEligible)
-        resetParsers(record)
-        sessions[sessionId] = record
-        ensureNetworkCallback()
-        listenerSessionId = sessionId
-        notificationSessionId = sessionId
-        startInForeground(record)
-        listener?.onSessionStatus(sessionId, record.status)
-        listener?.onTerminalChanged(sessionId)
-        startAttempt(record, credential)
+        var terminal: GhosttyTerminal? = null
+        var record: SessionRecord? = null
+        try {
+            val theme = TerminalThemeStore(applicationContext).load()
+            terminal = GhosttyTerminal(
+                foreground = theme.foreground,
+                background = theme.background,
+                cursor = theme.cursor,
+                palette = theme.palette,
+            )
+            val keyStore = SshKeyStore(applicationContext)
+            val autoReconnectEligible = host.authenticationType == AuthenticationType.SSH_KEY &&
+                host.identityId?.let {
+                    runCatching {
+                        val identity = keyStore.identity(it)
+                        identity != null && identityCredentialReusable(identity.requiresPassphrase, identity.requiresBiometric)
+                    }.getOrDefault(false)
+                } == true
+            record = SessionRecord(sessionId, host, terminal, autoReconnectEligible)
+            resetParsers(record)
+            sessions[sessionId] = record
+            networkMonitor.start()
+            listenerSessionId = sessionId
+            notificationSessionId = sessionId
+            startInForeground(record)
+            listener?.onSessionStatus(sessionId, record.status)
+            listener?.onTerminalChanged(sessionId)
+            startAttempt(record, credential, unlockedPrivateKey)
+        } catch (error: Exception) {
+            credential.fill('\u0000')
+            unlockedPrivateKey?.fill(0)
+            if (record != null && sessions[sessionId] === record) removeSession(record) else terminal?.close()
+            listener?.onSessionClosed(sessionId, error.message ?: "SSH connection could not start")
+        }
     }
 
     fun summaries(): List<SessionSummary> = onServiceMainResult {
-        sessions.values.map { sessionSummary(it.sessionId, it.host, it.status, it.manualRetryAvailable) }
+        sessions.values.map {
+            sessionSummary(it.sessionId, it.host, it.startedAtElapsedRealtime, it.status, it.manualRetryAvailable)
+        }
     }
 
     fun host(sessionId: String): Host? = onServiceMainResult { sessions[sessionId]?.host }
@@ -359,9 +397,10 @@ class SshSessionService : Service() {
         }
     }
 
-    fun retry(sessionId: String, credential: CharArray) = onServiceMain {
+    fun retry(sessionId: String, credential: CharArray, unlockedPrivateKey: ByteArray? = null) = onServiceMain {
         val record = sessions[sessionId] ?: run {
             credential.fill('\u0000')
+            unlockedPrivateKey?.fill(0)
             return@onServiceMain
         }
         record.manualRetryAvailable = false
@@ -370,6 +409,7 @@ class SshSessionService : Service() {
                 record.attemptGeneration != cancellationGeneration || record.connection != null
             ) {
                 credential.fill('\u0000')
+                unlockedPrivateKey?.fill(0)
                 return@cancelAttempt
             }
             record.reconnectPolicy.reset()
@@ -377,7 +417,7 @@ class SshSessionService : Service() {
             record.manualRetryAvailable = false
             resetParsers(record)
             setStatus(record, "Connecting…")
-            startAttempt(record, credential)
+            startAttempt(record, credential, unlockedPrivateKey)
         }
     }
 
@@ -389,11 +429,25 @@ class SshSessionService : Service() {
         listener?.onSessionClosed(sessionId, null)
     }
 
+    private fun reconnectFromNotification(sessionId: String) {
+        val record = sessions[sessionId] ?: return
+        if (!notificationReconnectAvailable(
+                manualRetryAvailable = record.manualRetryAvailable,
+                credentialReusable = record.autoReconnectEligible,
+                connected = record.connected,
+                attemptActive = record.connection != null,
+                waitingToReconnect = record.waitingToReconnect,
+                cleaningUp = record.cleaningUp.get(),
+            )
+        ) return
+        retry(sessionId, CharArray(0))
+    }
+
     override fun onDestroy() {
         check(Looper.myLooper() == Looper.getMainLooper())
         sessions.values.toList().forEach(::cleanup)
         sessions.clear()
-        unregisterNetworkCallback()
+        networkMonitor.stop()
         active = false
         super.onDestroy()
     }
@@ -405,21 +459,22 @@ class SshSessionService : Service() {
         cleanup(record)
         if (listenerSessionId == record.sessionId) listenerSessionId = null
         if (sessions.isEmpty()) {
-            unregisterNetworkCallback()
+            networkMonitor.stop()
             notificationSessionId = null
             stopForeground(STOP_FOREGROUND_REMOVE)
             stopSelf()
-        } else if (notificationSessionId == record.sessionId) {
-            sessions.values.first().let {
+        } else {
+            val notificationRecord = notificationSessionId?.let(sessions::get) ?: sessions.values.first().also {
                 notificationSessionId = it.sessionId
-                startInForeground(it)
             }
+            startInForeground(notificationRecord)
         }
     }
 
-    private fun startAttempt(record: SessionRecord, credential: CharArray) {
+    private fun startAttempt(record: SessionRecord, credential: CharArray, unlockedPrivateKey: ByteArray? = null) {
         if (!isCurrent(record) || record.cleaningUp.get()) {
             credential.fill('\u0000')
+            unlockedPrivateKey?.fill(0)
             return
         }
         record.retryRunnable?.let(mainHandler::removeCallbacks)
@@ -427,20 +482,29 @@ class SshSessionService : Service() {
         record.waitingToReconnect = false
         record.manualRetryAvailable = false
         record.connected = false
-        val generation = ++record.attemptGeneration
-        val connection = SshConnection(
-            applicationContext,
-            SshKeyStore(applicationContext),
-            AttemptCallbacks(record, generation),
-        )
-        record.connection = connection
-        record.terminalMetrics.let {
-            connection.resize(it.columns, it.rows, it.pixelWidth, it.pixelHeight)
+        try {
+            val generation = ++record.attemptGeneration
+            val connection = SshConnection(
+                applicationContext,
+                SshKeyStore(applicationContext),
+                AttemptCallbacks(record, generation),
+            )
+            record.connection = connection
+            record.terminalMetrics.let {
+                connection.resize(it.columns, it.rows, it.pixelWidth, it.pixelHeight)
+            }
+            connection.connect(record.host, credential, unlockedPrivateKey)
+        } catch (error: Exception) {
+            credential.fill('\u0000')
+            unlockedPrivateKey?.fill(0)
+            record.connection?.disconnect()
+            record.connection = null
+            handleClosure(record, classifySshClosure(error))
         }
-        connection.connect(record.host, credential)
     }
 
     private fun cancelAttempt(record: SessionRecord, afterFinished: ((Long) -> Unit)? = null) {
+        record.pendingAuthenticationBanner = null
         record.retryRunnable?.let(mainHandler::removeCallbacks)
         record.retryRunnable = null
         record.stableConnectionRunnable?.let(mainHandler::removeCallbacks)
@@ -469,7 +533,7 @@ class SshSessionService : Service() {
     private fun handleClosure(record: SessionRecord, closure: SshClosure) {
         when (closure.kind) {
             SshClosureKind.NORMAL -> {
-                if (!networkUsable) {
+                if (!networkAvailability.allowsRetry()) {
                     handleClosure(record, SshClosure(SshClosureKind.RETRYABLE, "Network connection lost"))
                 } else {
                     removeSession(record)
@@ -504,9 +568,9 @@ class SshSessionService : Service() {
     }
 
     private fun scheduleReconnect(record: SessionRecord) {
-        if (!isCurrent(record) || record.cleaningUp.get()) return
+        if (!isCurrent(record) || record.cleaningUp.get() || record.retryRunnable != null) return
         val now = android.os.SystemClock.elapsedRealtime()
-        if (!networkUsable) {
+        if (!networkAvailability.allowsRetry()) {
             record.reconnectPolicy.pause(now)
             record.waitingToReconnect = true
             setStatus(record, STATUS_WAITING_FOR_NETWORK)
@@ -529,7 +593,7 @@ class SshSessionService : Service() {
         val retry = Runnable {
             record.retryRunnable = null
             if (!isCurrent(record) || record.cleaningUp.get()) return@Runnable
-            if (!networkUsable) {
+            if (!networkAvailability.allowsRetry()) {
                 scheduleReconnect(record)
                 return@Runnable
             }
@@ -573,28 +637,19 @@ class SshSessionService : Service() {
         listener?.onSessionStatus(record.sessionId, status)
     }
 
-    private fun ensureNetworkCallback() {
-        if (networkCallbackRegistered) return
-        networkUsable = currentNetworkUsable()
-        runCatching { connectivityManager.registerDefaultNetworkCallback(networkCallback) }
-            .onSuccess { networkCallbackRegistered = true }
-    }
-
-    private fun unregisterNetworkCallback() {
-        if (!networkCallbackRegistered) return
-        runCatching { connectivityManager.unregisterNetworkCallback(networkCallback) }
-        networkCallbackRegistered = false
-        networkUsable = false
-    }
-
-    private fun refreshNetworkState() = onMain {
-        val usable = currentNetworkUsable()
-        if (networkUsable == usable) return@onMain
-        networkUsable = usable
+    private fun applyNetworkAvailability(availability: NetworkAvailability) {
+        check(Looper.myLooper() == Looper.getMainLooper())
+        if (networkAvailability == availability) return
+        val wasUsable = networkAvailability.allowsRetry()
+        networkAvailability = availability
+        val usable = availability.allowsRetry()
+        if (wasUsable == usable) return
         val now = android.os.SystemClock.elapsedRealtime()
         if (usable) {
             sessions.values.forEach { it.reconnectPolicy.resume(now) }
-            sessions.values.filter { it.waitingToReconnect && it.connection == null }.forEach(::scheduleReconnect)
+            sessions.values.filter {
+                it.waitingToReconnect && it.connection == null && it.retryRunnable == null
+            }.forEach(::scheduleReconnect)
         } else {
             sessions.values.forEach { it.reconnectPolicy.pause(now) }
             sessions.values.filter { it.waitingToReconnect }.forEach { record ->
@@ -605,13 +660,6 @@ class SshSessionService : Service() {
         }
     }
 
-    private fun currentNetworkUsable(): Boolean {
-        val network = connectivityManager.activeNetwork ?: return false
-        val capabilities = connectivityManager.getNetworkCapabilities(network) ?: return false
-        return capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
-            capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_SUSPENDED)
-    }
-
     private fun cleanup(record: SessionRecord) {
         if (!record.cleaningUp.compareAndSet(false, true)) return
         cancelAttempt(record)
@@ -620,6 +668,7 @@ class SshSessionService : Service() {
             record.pendingVerification = null
             record.pendingChallenge?.answer?.invoke(null)
             record.pendingChallenge = null
+            record.pendingAuthenticationBanner = null
             record.itermImageParser?.reset()
             record.itermImageParser = null
             record.tmuxPassthroughParser?.reset()
@@ -686,6 +735,14 @@ class SshSessionService : Service() {
                 .setStyle(Notification.BigTextStyle().bigText(body))
                 .setContentIntent(openIntent(record.sessionId))
                 .setAutoCancel(true)
+                .setVisibility(Notification.VISIBILITY_PRIVATE)
+                .setLocalOnly(true)
+                .setOnlyAlertOnce(true)
+                .setPublicVersion(Notification.Builder(this, REMOTE_CHANNEL_ID)
+                    .setSmallIcon(android.R.drawable.stat_sys_download_done)
+                    .setContentTitle("Ghostty Connect")
+                    .setContentText("Terminal notification")
+                    .build())
                 .build(),
         )
     }
@@ -696,11 +753,14 @@ class SshSessionService : Service() {
             NotificationChannel(CHANNEL_ID, "SSH sessions", NotificationManager.IMPORTANCE_LOW).apply {
                 description = "Shows an active background SSH connection"
                 setShowBadge(false)
+                lockscreenVisibility = Notification.VISIBILITY_PRIVATE
             },
         )
-        manager.createNotificationChannel(
-            NotificationChannel(REMOTE_CHANNEL_ID, "Remote terminal notifications", NotificationManager.IMPORTANCE_DEFAULT),
-        )
+        manager.createNotificationChannel(NotificationChannel(
+            REMOTE_CHANNEL_ID,
+            "Remote terminal notifications",
+            NotificationManager.IMPORTANCE_DEFAULT,
+        ).apply { lockscreenVisibility = Notification.VISIBILITY_PRIVATE })
     }
 
     private fun startInForeground(record: SessionRecord?) {
@@ -713,15 +773,43 @@ class SshSessionService : Service() {
 
     private fun notification(record: SessionRecord?, message: String = record?.status ?: "Preparing connection…"): Notification {
         val sessionId = record?.sessionId
+        val duplicateHostSession = record != null && sessions.values.count { it.host.id == record.host.id } > 1
+        val multipleSessions = sessions.size > 1
         val builder = Notification.Builder(this, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.stat_sys_upload)
-            .setContentTitle(record?.host?.name ?: "Ghostty Connect")
-            .setContentText(message)
+            .setContentTitle(when {
+                record == null -> "Ghostty Connect"
+                duplicateHostSession -> "${record.host.name} · ${sessionDisplayId(record.sessionId)}"
+                else -> record.host.name
+            })
+            .setContentText(if (multipleSessions) "$message · ${sessions.size} sessions" else message)
             .setContentIntent(sessionId?.let(::openIntent))
             .setOngoing(true)
             .setCategory(Notification.CATEGORY_SERVICE)
+            .setVisibility(Notification.VISIBILITY_PRIVATE)
+            .setLocalOnly(true)
+            .setOnlyAlertOnce(true)
+            .setPublicVersion(Notification.Builder(this, CHANNEL_ID)
+                .setSmallIcon(android.R.drawable.stat_sys_upload)
+                .setContentTitle("Ghostty Connect")
+                .setContentText("SSH session active")
+                .setOngoing(true)
+                .build())
         if (sessionId != null) {
-            builder.addAction(Notification.Action.Builder(null, "Disconnect", disconnectIntent(sessionId)).build())
+            builder.addAction(Notification.Action.Builder(null, "Open", openIntent(sessionId)).build())
+            if (notificationReconnectAvailable(
+                    manualRetryAvailable = record.manualRetryAvailable,
+                    credentialReusable = record.autoReconnectEligible,
+                    connected = record.connected,
+                    attemptActive = record.connection != null,
+                    waitingToReconnect = record.waitingToReconnect,
+                    cleaningUp = record.cleaningUp.get(),
+                )
+            ) {
+                builder.addAction(Notification.Action.Builder(null, "Reconnect", reconnectIntent(sessionId)).build())
+            }
+            val label = if (multipleSessions) "Disconnect ${sessionDisplayId(sessionId)}" else "Disconnect"
+            builder.addAction(Notification.Action.Builder(null, label, disconnectIntent(sessionId)).build())
         }
         return builder.build()
     }
@@ -732,6 +820,17 @@ class SshSessionService : Service() {
         Intent(this, MainActivity::class.java)
             .setAction(ACTION_OPEN_SESSION)
             .setData(Uri.parse("ghostty-connect://session/$sessionId/open"))
+            .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+            .putExtra(EXTRA_SESSION_ID, sessionId),
+        PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+    )
+
+    private fun reconnectIntent(sessionId: String): PendingIntent = PendingIntent.getService(
+        this,
+        sessionId.hashCode(),
+        Intent(this, SshSessionService::class.java)
+            .setAction(ACTION_RECONNECT)
+            .setData(Uri.parse("ghostty-connect://session/$sessionId/reconnect"))
             .putExtra(EXTRA_SESSION_ID, sessionId),
         PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
     )
@@ -762,6 +861,7 @@ class SshSessionService : Service() {
 
     companion object {
         const val ACTION_DISCONNECT = "dev.ghostty.connect.action.DISCONNECT"
+        const val ACTION_RECONNECT = "dev.ghostty.connect.action.RECONNECT"
         const val ACTION_OPEN_SESSION = "dev.ghostty.connect.action.OPEN_SESSION"
         const val EXTRA_SESSION_ID = "dev.ghostty.connect.extra.SESSION_ID"
         fun newSessionId(): String = UUID.randomUUID().toString()

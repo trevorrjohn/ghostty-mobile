@@ -17,6 +17,7 @@ This document maps the shared [architecture](../ARCHITECTURE.md) to iOS and cont
 | Product state | `AppModel` and models under `Models/` |
 | Session coordinator | Screen-owned `TerminalSessionModel`; app registry planned |
 | SSH transport | `SSHTransport` and actor-based `CitadelSSHTransport` |
+| SFTP transport | Independent actor-based `CitadelSFTPTransport` and screen-owned `SFTPBrowserModel` |
 | Output preprocessing | tmux and iTerm parsers, not yet wired into live output |
 | Terminal adapter | `GhosttyTerminalEngine` using the Ghostty XCFramework |
 | Terminal surface | `TerminalGridView` with SwiftUI Canvas and UIKit keyboard bridge |
@@ -36,6 +37,12 @@ This is a maturity gap rather than a different product architecture. A future ap
 The build script installs a checksum-verified XCFramework for the shared pinned Ghostty revision. `GhosttyTerminalEngine` confines C API ownership and converts render state into Swift values.
 
 The current adapter supports feed, resize, UTF-8 text encoding, mode-aware named-key and paste encoding, bounded scrollback, word/range/semantic-output selection, bounded OSC 8 hyperlink lookup, plain-text formatting, and styled snapshots. Advanced selection interactions, search, effects, graphics, and archive capabilities remain parity work.
+
+## SFTP
+
+`SFTPBrowserScreen` opens an independent Citadel SFTP subsystem connection with the same transient password/imported-key authentication and strict Keychain host verification as terminal sessions. It canonicalizes entered paths, validates server-provided child names, keeps the current directory and search in one field, exposes global actions through one menu, and shows complete filenames with long-press details and actions. Upload and download use fixed-size chunks, temporary previews are bounded and deleted after handoff, deletion is per-host opt-in, and favorites plus ten recent canonical directories use device-only Keychain storage.
+
+The implementation remains partial until live OpenSSH, document-provider, interruption, cancellation, key-authentication, host-key rotation, accessibility, and large hostile-directory behavior are validated. Citadel 0.12.1 buffers a complete directory listing before returning it and does not expose a bounded incremental listing API; this prevents claiming a hard client-side listing-memory bound without an upstream or vendored transport change.
 
 ## Rendering and Input
 
@@ -75,4 +82,4 @@ Choose a simulator available in the installed Xcode version when that destinatio
 
 ## Current Platform Gaps
 
-Current status is maintained in the [roadmap](../ROADMAP.md). Important iOS-specific gaps include prompt in-progress connect cancellation, keepalive and network-aware reconnect policy, broader hardware-key and modifier handling, draggable selection and scrollback search, live effect policy, multiple sessions, lifecycle ownership, and accessibility.
+Current status is maintained in the [roadmap](../ROADMAP.md). Important iOS-specific gaps include prompt in-progress connect cancellation, keepalive and network-aware reconnect policy, broader hardware-key and modifier handling, draggable selection and scrollback search, live effect policy, multiple sessions, lifecycle ownership, SFTP live-server/document-provider validation and bounded incremental listings, and accessibility.
