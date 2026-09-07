@@ -26,7 +26,11 @@ struct SettingsView: View {
                 }
                 Section("Security") {
                     LabeledContent("Saved hosts", value: "\(model.hosts.count)")
-                    LabeledContent("Imported keys", value: "\(model.keys.count)")
+                    NavigationLink {
+                        IdentitiesView()
+                    } label: {
+                        LabeledContent("Imported keys", value: "\(model.keys.count)")
+                    }
                     NavigationLink {
                         TrustedHostsView()
                     } label: {
@@ -46,6 +50,83 @@ struct SettingsView: View {
             .background(Color.ghosttySurface)
             .navigationTitle("Settings")
             .onAppear { model.reloadTrustedHosts() }
+        }
+    }
+}
+
+private struct IdentitiesView: View {
+    @EnvironmentObject private var model: AppModel
+    @State private var renamedKey: StoredKey?
+    @State private var pendingDeletion: StoredKey?
+    @State private var name = ""
+
+    var body: some View {
+        List {
+            if model.keys.isEmpty {
+                ContentUnavailableView("No SSH Keys", systemImage: "key", description: Text("Import a key while editing a host."))
+            } else {
+                ForEach(model.keys) { key in
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(key.name).font(.headline)
+                        Text(key.algorithm ?? "Private key")
+                            .font(.caption)
+                            .foregroundStyle(Color.ghosttySecondary)
+                        if let fingerprint = key.fingerprint {
+                            Text(fingerprint)
+                                .font(.system(.caption, design: .monospaced))
+                                .textSelection(.enabled)
+                        }
+                        if key.requiresPassphrase {
+                            Label("Passphrase required", systemImage: "lock")
+                                .font(.caption)
+                        }
+                    }
+                    .swipeActions {
+                        Button("Delete", role: .destructive) { pendingDeletion = key }
+                        Button("Rename") { name = key.name; renamedKey = key }
+                            .tint(.blue)
+                    }
+                    .contextMenu {
+                        Button("Rename") { name = key.name; renamedKey = key }
+                        if let publicKey = key.publicKey {
+                            ShareLink(item: publicKey) { Label("Share Public Key", systemImage: "square.and.arrow.up") }
+                        }
+                        Button("Delete", role: .destructive) { pendingDeletion = key }
+                    }
+                }
+            }
+        }
+        .navigationTitle("SSH Keys")
+        .alert("Rename SSH key", isPresented: Binding(
+            get: { renamedKey != nil },
+            set: { if !$0 { renamedKey = nil } }
+        )) {
+            TextField("Name", text: $name)
+            Button("Cancel", role: .cancel) { renamedKey = nil }
+            Button("Rename") {
+                guard let key = renamedKey else { return }
+                if model.rename(key: key, to: name) { renamedKey = nil }
+            }
+        } message: {
+            Text("Saved hosts continue using this identity after it is renamed.")
+        }
+        .alert("Delete SSH key?", isPresented: Binding(
+            get: { pendingDeletion != nil },
+            set: { if !$0 { pendingDeletion = nil } }
+        )) {
+            Button("Cancel", role: .cancel) { pendingDeletion = nil }
+            Button("Delete", role: .destructive) {
+                guard let key = pendingDeletion else { return }
+                pendingDeletion = nil
+                model.delete(key: key)
+            }
+        } message: {
+            let affected = pendingDeletion.map(model.hosts(using:)) ?? []
+            if affected.isEmpty {
+                Text("The private key will be permanently removed from this device.")
+            } else {
+                Text("The private key will be removed. These hosts will require another identity: \(affected.map(\.name).joined(separator: ", ")).")
+            }
         }
     }
 }

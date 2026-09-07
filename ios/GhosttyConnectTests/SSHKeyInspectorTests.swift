@@ -1,10 +1,14 @@
+import Crypto
 import XCTest
 @testable import GhosttyConnect
 
 final class SSHKeyInspectorTests: XCTestCase {
     func testRecognizesEncryptedPEM() throws {
         let key = Data("-----BEGIN RSA PRIVATE KEY-----\nProc-Type: 4,ENCRYPTED\nDEK-Info: AES-256-CBC,00000000000000000000000000000000\n\nAAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=\n-----END RSA PRIVATE KEY-----".utf8)
-        XCTAssertEqual(try SSHKeyInspector.inspect(key), SSHKeyDetails(suggestedName: "RSA key", requiresPassphrase: true))
+        XCTAssertEqual(
+            try SSHKeyInspector.inspect(key),
+            SSHKeyDetails(suggestedName: "RSA key", requiresPassphrase: true, algorithm: "ssh-rsa")
+        )
     }
 
     func testRejectsHeaderOnlyEncryptedPEM() {
@@ -46,5 +50,14 @@ final class SSHKeyInspectorTests: XCTestCase {
 
     func testCreatesCaseInsensitiveUniqueNames() {
         XCTAssertEqual(SSHKeyInspector.uniqueName("Work", ["work", "WORK 2"]), "Work 3")
+    }
+
+    func testExtractsFullOpenSSHPublicIdentity() throws {
+        let privateKey = Curve25519.Signing.PrivateKey()
+        let details = try SSHKeyInspector.inspect(Data(privateKey.makeSSHRepresentation().utf8))
+
+        XCTAssertEqual(details.algorithm, "ssh-ed25519")
+        XCTAssertTrue(details.fingerprint?.hasPrefix("SHA256:") == true)
+        XCTAssertTrue(details.publicKey?.hasPrefix("ssh-ed25519 ") == true)
     }
 }

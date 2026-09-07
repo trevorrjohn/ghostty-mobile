@@ -20,7 +20,7 @@ struct SFTPBrowserScreen: View {
     @State private var showingTerminal = false
     @State private var pendingUpload: SFTPPendingUpload?
 
-    private var selectedKey: StoredKey? { app.keys.first { $0.name == host.keyName } }
+    private var selectedKey: StoredKey? { app.key(for: host) }
     private var hostTrustBinding: Binding<HostTrustRequest?> {
         Binding(
             get: { browser.pendingHostTrust },

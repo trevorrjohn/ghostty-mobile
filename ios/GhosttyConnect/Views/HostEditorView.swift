@@ -27,9 +27,9 @@ struct HostEditorView: View {
                         ForEach(AuthenticationType.allCases) { Text($0.label).tag($0) }
                     }
                     if host.authenticationType == .sshKey {
-                        Picker("Private key", selection: $host.keyName) {
-                            Text("Choose a key").tag(String?.none)
-                            ForEach(model.keys) { Text($0.name).tag(String?.some($0.name)) }
+                        Picker("Private key", selection: $host.identityID) {
+                            Text("Choose a key").tag(UUID?.none)
+                            ForEach(model.keys) { Text($0.name).tag(UUID?.some($0.id)) }
                         }
                         Button("Add SSH key") { showingKeyImport = true }
                     }
@@ -53,18 +53,18 @@ struct HostEditorView: View {
             .navigationTitle(host.hostname.isEmpty ? "Add host" : "Edit host")
             .onChange(of: host.authenticationType) { _, authenticationType in
                 guard authenticationType == .sshKey,
-                      host.keyName == nil,
+                      host.identityID == nil,
                       model.keys.count == 1 else { return }
-                host.keyName = model.keys[0].name
+                host.identityID = model.keys[0].id
             }
             .sheet(isPresented: $showingKeyImport) {
-                KeyImportView { key in host.keyName = key.name }
+                KeyImportView { key in host.identityID = key.id }
             }
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Save") { model.save(host: host); dismiss() }
-                        .disabled(host.hostname.trimmingCharacters(in: .whitespaces).isEmpty || host.username.trimmingCharacters(in: .whitespaces).isEmpty || !(1...65535).contains(host.port) || (host.authenticationType == .sshKey && host.keyName == nil))
+                        .disabled(host.hostname.trimmingCharacters(in: .whitespaces).isEmpty || host.username.trimmingCharacters(in: .whitespaces).isEmpty || !(1...65535).contains(host.port) || (host.authenticationType == .sshKey && host.identityID == nil))
                 }
             }
         }

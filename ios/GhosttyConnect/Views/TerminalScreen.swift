@@ -304,7 +304,7 @@ struct TerminalScreen: View {
     }
 
     private var selectedKey: StoredKey? {
-        model.keys.first { $0.name == host.keyName }
+        model.key(for: host)
     }
 
     private var statusText: String {

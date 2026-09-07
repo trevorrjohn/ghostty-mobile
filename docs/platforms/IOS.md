@@ -36,7 +36,7 @@ This is a maturity gap rather than a different product architecture. A future ap
 
 The build script installs a checksum-verified XCFramework for the shared pinned Ghostty revision. `GhosttyTerminalEngine` confines C API ownership and converts render state into Swift values.
 
-The current adapter supports feed, resize, UTF-8 text encoding, mode-aware named-key and paste encoding, bounded scrollback, word/range/semantic-output selection, bounded OSC 8 hyperlink lookup, plain-text formatting, and styled snapshots. Advanced selection interactions, search, effects, graphics, and archive capabilities remain parity work.
+The current adapter supports feed, resize, UTF-8 text encoding, mode-aware named-key and paste encoding, bounded scrollback, word/range/semantic-output selection, bounded OSC 8 hyperlink lookup, plain-text formatting, and styled snapshots. Imported SSH identities use stable UUID host references with migration from unambiguous legacy names; Settings supports inspection, collision-safe rename, affected-host deletion warnings, and OpenSSH public-key sharing when metadata is derivable. Advanced selection interactions, search, effects, graphics, and archive capabilities remain parity work.
 
 ## SFTP
 

@@ -16,6 +16,9 @@ enum KeyInspectionError: LocalizedError {
 struct SSHKeyDetails: Equatable {
     let suggestedName: String
     let requiresPassphrase: Bool
+    var algorithm: String? = nil
+    var fingerprint: String? = nil
+    var publicKey: String? = nil
 }
 
 enum SSHKeyInspector {
@@ -53,10 +56,17 @@ enum SSHKeyInspector {
         else if pem.label == "DSA PRIVATE KEY" { base = "DSA key" }
         else if pem.label == "ENCRYPTED PRIVATE KEY" { base = "Encrypted key" }
         else if pem.label == "PRIVATE KEY" { base = "PKCS#8 key" }
-        else if let fingerprint = openSSHFingerprint(pem.text) { base = fingerprint }
+        else if let metadata = openSSHMetadata(pem.text) { base = "\(metadata.label) \(metadata.fingerprint.dropFirst(7).prefix(12))" }
         else { base = "SSH key" }
 
-        return SSHKeyDetails(suggestedName: uniqueName(base, existingNames), requiresPassphrase: encrypted)
+        let metadata = isOpenSSH ? openSSHMetadata(pem.text) : nil
+        return SSHKeyDetails(
+            suggestedName: uniqueName(base, existingNames),
+            requiresPassphrase: encrypted,
+            algorithm: metadata?.algorithm ?? (pem.label == "RSA PRIVATE KEY" ? "ssh-rsa" : nil),
+            fingerprint: metadata?.fingerprint,
+            publicKey: metadata?.publicKey
+        )
     }
 
     private static func openSSHData(_ text: String) -> Data? {
@@ -204,7 +214,7 @@ enum SSHKeyInspector {
         return identifier.tag == 0x06 && !identifier.content.isEmpty
     }
 
-    private static func openSSHFingerprint(_ text: String) -> String? {
+    private static func openSSHMetadata(_ text: String) -> (algorithm: String, label: String, fingerprint: String, publicKey: String)? {
         guard var data = openSSHData(text), readSSHString(&data) != nil else { return nil }
         _ = readSSHString(&data)
         _ = readSSHString(&data)
@@ -214,7 +224,7 @@ enum SSHKeyInspector {
         let algorithm = String(decoding: algorithmData, as: UTF8.self)
         let label = algorithm == "ssh-ed25519" ? "Ed25519 key" : algorithm == "ssh-rsa" ? "RSA key" : algorithm.hasPrefix("ecdsa-") ? "ECDSA key" : "SSH key"
         let digest = Data(SHA256.hash(data: publicKey)).base64EncodedString().replacingOccurrences(of: "=", with: "")
-        return "\(label) \(digest.prefix(12))"
+        return (algorithm, label, "SHA256:\(digest)", "\(algorithm) \(publicKey.base64EncodedString())")
     }
 
     private static func readSSHString(_ data: inout Data) -> Data? {

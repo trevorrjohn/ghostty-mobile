@@ -3,13 +3,14 @@ import XCTest
 
 final class HostDuplicationTests: XCTestCase {
     func testDuplicatesHostConfigurationWithNewIdentity() {
+        let identityID = UUID()
         let host = Host(
             alias: "Production",
             hostname: "server.example.com",
             port: 2222,
             username: "deploy",
             authenticationType: .sshKey,
-            keyName: "id_ed25519",
+            identityID: identityID,
             remoteClipboard: .allow,
             remoteNotifications: .block
         )
@@ -22,7 +23,7 @@ final class HostDuplicationTests: XCTestCase {
         XCTAssertEqual(duplicate.port, host.port)
         XCTAssertEqual(duplicate.username, host.username)
         XCTAssertEqual(duplicate.authenticationType, host.authenticationType)
-        XCTAssertEqual(duplicate.keyName, host.keyName)
+        XCTAssertEqual(duplicate.identityID, host.identityID)
         XCTAssertEqual(duplicate.remoteClipboard, host.remoteClipboard)
         XCTAssertEqual(duplicate.remoteNotifications, host.remoteNotifications)
     }

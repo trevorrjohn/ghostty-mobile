@@ -16,8 +16,14 @@ final class AppModel: ObservableObject {
 
     init() {
         do {
-            hosts = try store.read([Host].self, account: "hosts", default: [])
-            keys = try store.read([StoredKey].self, account: "keys", default: [])
+            let storedKeys = try store.read([StoredKey].self, account: "keys", default: [])
+            let metadataMigration = IdentityMetadataMigration.enrich(keys: storedKeys)
+            keys = metadataMigration.keys
+            if metadataMigration.changed { try store.write(keys, account: "keys") }
+            let storedHosts = try store.read([Host].self, account: "hosts", default: [])
+            let migration = IdentityReferenceMigration.migrate(hosts: storedHosts, keys: keys)
+            hosts = migration.hosts
+            if migration.changed { try store.write(hosts, account: "hosts") }
             settings = try store.read(AppSettings.self, account: "settings", default: AppSettings())
             trustedHosts = try trustedHostStore.records()
         } catch {
@@ -86,12 +92,57 @@ final class AppModel: ObservableObject {
         let key = StoredKey(
             name: SSHKeyInspector.uniqueName(baseName, keys.map(\.name)),
             data: data,
-            requiresPassphrase: details.requiresPassphrase
+            requiresPassphrase: details.requiresPassphrase,
+            algorithm: details.algorithm,
+            fingerprint: details.fingerprint,
+            publicKey: details.publicKey
         )
         let updated = keys + [key]
         try store.write(updated, account: "keys")
         keys = updated
         return key
+    }
+
+    func key(for host: Host) -> StoredKey? {
+        guard let identityID = host.identityID else { return nil }
+        return keys.first { $0.id == identityID }
+    }
+
+    func hosts(using key: StoredKey) -> [Host] {
+        hosts.filter { $0.identityID == key.id }
+    }
+
+    func rename(key: StoredKey, to requestedName: String) -> Bool {
+        let name = String(requestedName.trimmingCharacters(in: .whitespacesAndNewlines).prefix(80))
+        guard !name.isEmpty else {
+            alertMessage = "SSH key names cannot be empty."
+            return false
+        }
+        guard !keys.contains(where: { $0.id != key.id && $0.name.caseInsensitiveCompare(name) == .orderedSame }) else {
+            alertMessage = "An SSH key named \(name) already exists."
+            return false
+        }
+        guard let index = keys.firstIndex(where: { $0.id == key.id }) else { return false }
+        var updated = keys
+        updated[index].name = name
+        do {
+            try store.write(updated, account: "keys")
+            keys = updated
+            return true
+        } catch {
+            alertMessage = error.localizedDescription
+            return false
+        }
+    }
+
+    func delete(key: StoredKey) {
+        let updated = keys.filter { $0.id != key.id }
+        do {
+            try store.write(updated, account: "keys")
+            keys = updated
+        } catch {
+            alertMessage = error.localizedDescription
+        }
     }
 
     private func persist<T: Encodable>(_ value: T, account: String) {

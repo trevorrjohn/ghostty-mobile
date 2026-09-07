@@ -25,13 +25,78 @@ struct Host: Codable, Identifiable, Hashable {
     var port = 22
     var username = ""
     var authenticationType = AuthenticationType.password
-    var keyName: String?
+    var identityID: UUID?
+    private(set) var legacyKeyName: String?
     var remoteClipboard = RemotePermission.ask
     var remoteNotifications = RemotePermission.ask
     var allowSftpDelete: Bool?
 
     var name: String { alias.trimmingCharacters(in: .whitespaces).isEmpty ? hostname : alias }
     var destination: String { "\(username)@\(hostname):\(port)" }
+
+    init(
+        id: UUID = UUID(),
+        alias: String = "",
+        hostname: String = "",
+        port: Int = 22,
+        username: String = "",
+        authenticationType: AuthenticationType = .password,
+        identityID: UUID? = nil,
+        remoteClipboard: RemotePermission = .ask,
+        remoteNotifications: RemotePermission = .ask,
+        allowSftpDelete: Bool? = nil
+    ) {
+        self.id = id
+        self.alias = alias
+        self.hostname = hostname
+        self.port = port
+        self.username = username
+        self.authenticationType = authenticationType
+        self.identityID = identityID
+        self.remoteClipboard = remoteClipboard
+        self.remoteNotifications = remoteNotifications
+        self.allowSftpDelete = allowSftpDelete
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, alias, hostname, port, username, authenticationType, identityID, keyName
+        case remoteClipboard, remoteNotifications, allowSftpDelete
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        id = try values.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+        alias = try values.decodeIfPresent(String.self, forKey: .alias) ?? ""
+        hostname = try values.decodeIfPresent(String.self, forKey: .hostname) ?? ""
+        port = try values.decodeIfPresent(Int.self, forKey: .port) ?? 22
+        username = try values.decodeIfPresent(String.self, forKey: .username) ?? ""
+        authenticationType = try values.decodeIfPresent(AuthenticationType.self, forKey: .authenticationType) ?? .password
+        identityID = try values.decodeIfPresent(UUID.self, forKey: .identityID)
+        legacyKeyName = try values.decodeIfPresent(String.self, forKey: .keyName)
+        remoteClipboard = try values.decodeIfPresent(RemotePermission.self, forKey: .remoteClipboard) ?? .ask
+        remoteNotifications = try values.decodeIfPresent(RemotePermission.self, forKey: .remoteNotifications) ?? .ask
+        allowSftpDelete = try values.decodeIfPresent(Bool.self, forKey: .allowSftpDelete)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        try values.encode(id, forKey: .id)
+        try values.encode(alias, forKey: .alias)
+        try values.encode(hostname, forKey: .hostname)
+        try values.encode(port, forKey: .port)
+        try values.encode(username, forKey: .username)
+        try values.encode(authenticationType, forKey: .authenticationType)
+        try values.encodeIfPresent(identityID, forKey: .identityID)
+        if identityID == nil { try values.encodeIfPresent(legacyKeyName, forKey: .keyName) }
+        try values.encode(remoteClipboard, forKey: .remoteClipboard)
+        try values.encode(remoteNotifications, forKey: .remoteNotifications)
+        try values.encodeIfPresent(allowSftpDelete, forKey: .allowSftpDelete)
+    }
+
+    mutating func migrateIdentityReference(to id: UUID) {
+        identityID = id
+        legacyKeyName = nil
+    }
 
     func duplicated(existingNames: [String]) -> Host {
         var duplicate = self
@@ -55,6 +120,76 @@ struct StoredKey: Codable, Identifiable, Hashable {
     var name: String
     var data: Data
     var requiresPassphrase: Bool
+    var algorithm: String?
+    var fingerprint: String?
+    var publicKey: String?
+
+    init(
+        id: UUID = UUID(),
+        name: String,
+        data: Data,
+        requiresPassphrase: Bool,
+        algorithm: String? = nil,
+        fingerprint: String? = nil,
+        publicKey: String? = nil
+    ) {
+        self.id = id
+        self.name = name
+        self.data = data
+        self.requiresPassphrase = requiresPassphrase
+        self.algorithm = algorithm
+        self.fingerprint = fingerprint
+        self.publicKey = publicKey
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, name, data, requiresPassphrase, algorithm, fingerprint, publicKey
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        id = try values.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+        name = try values.decode(String.self, forKey: .name)
+        data = try values.decode(Data.self, forKey: .data)
+        requiresPassphrase = try values.decode(Bool.self, forKey: .requiresPassphrase)
+        algorithm = try values.decodeIfPresent(String.self, forKey: .algorithm)
+        fingerprint = try values.decodeIfPresent(String.self, forKey: .fingerprint)
+        publicKey = try values.decodeIfPresent(String.self, forKey: .publicKey)
+    }
+}
+
+enum IdentityReferenceMigration {
+    static func migrate(hosts: [Host], keys: [StoredKey]) -> (hosts: [Host], changed: Bool) {
+        var changed = false
+        let migrated = hosts.map { host in
+            guard host.identityID == nil, let legacyName = host.legacyKeyName else { return host }
+            let matches = keys.filter { $0.name.caseInsensitiveCompare(legacyName) == .orderedSame }
+            guard matches.count == 1 else { return host }
+            var host = host
+            host.migrateIdentityReference(to: matches[0].id)
+            changed = true
+            return host
+        }
+        return (migrated, changed)
+    }
+}
+
+enum IdentityMetadataMigration {
+    static func enrich(keys: [StoredKey]) -> (keys: [StoredKey], changed: Bool) {
+        var changed = false
+        let enriched = keys.map { key in
+            guard key.algorithm == nil || key.fingerprint == nil || key.publicKey == nil,
+                  let details = try? SSHKeyInspector.inspect(key.data) else { return key }
+            let original = key
+            var key = key
+            if key.algorithm == nil { key.algorithm = details.algorithm }
+            if key.fingerprint == nil { key.fingerprint = details.fingerprint }
+            if key.publicKey == nil { key.publicKey = details.publicKey }
+            changed = changed || key != original
+            return key
+        }
+        return (enriched, changed)
+    }
 }
 
 struct AppSettings: Codable, Equatable {
