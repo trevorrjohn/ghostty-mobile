@@ -14,6 +14,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "Ghostty Connect"
+rootProject.name = "Seance Shell"
 include(":app")
-

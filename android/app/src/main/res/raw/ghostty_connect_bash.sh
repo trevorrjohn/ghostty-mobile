@@ -3,7 +3,7 @@ if [[ $- != *i* ]] || [[ -n ${GHOSTTY_CONNECT_SHELL_INTEGRATION:-} ]]; then
 fi
 
 if (( BASH_VERSINFO[0] < 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] < 4) )); then
-    printf '%s\n' 'Ghostty Connect shell integration requires Bash 4.4 or newer.' >&2
+    printf '%s\n' 'Seance Shell integration requires Bash 4.4 or newer.' >&2
     return
 fi
 

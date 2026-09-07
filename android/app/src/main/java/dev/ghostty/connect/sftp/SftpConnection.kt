@@ -155,7 +155,7 @@ internal class SftpConnection(
         if (existing?.type == FileMode.Type.DIRECTORY || existing?.type == FileMode.Type.SYMLINK) {
             error("Only an existing regular file can be replaced.")
         }
-        val tempName = ".ghostty-upload-${UUID.randomUUID()}"
+        val tempName = ".seance-shell-upload-${UUID.randomUUID()}"
         val tempPath = childPath(currentPath, tempName)
         var published = false
         try {

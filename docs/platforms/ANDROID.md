@@ -40,7 +40,7 @@ Native artifacts are included for arm64 and x86_64. They must remain reproducibl
 
 Imported identities use encrypted app-private blobs. An identity can opt into a separate Android Keystore key with a five-second strong-biometric authorization window while the app still requires a fresh biometric prompt for each terminal or SFTP connection. The short window accommodates KeyMint implementations that reject zero-duration operation tokens after successful authentication. Protected identities cannot reconnect unattended, and decrypted key bytes are passed to SSHJ in memory rather than written to a temporary plaintext file. This policy does not claim StrongBox or hardware backing.
 
-Tailscale SSH is an explicit credential-free host mode using SSH `none` authentication on port 22. The separately installed Tailscale app owns VPN and tailnet login. Ghostty Connect continues strict SSH host-key verification, bounds untrusted authentication banners, and only offers HTTPS check-mode links for the Tailscale login authority after a user action.
+Tailscale SSH is an explicit credential-free host mode using SSH `none` authentication on port 22. The separately installed Tailscale app owns VPN and tailnet login. Seance Shell continues strict SSH host-key verification, bounds untrusted authentication banners, and only offers HTTPS check-mode links for the Tailscale login authority after a user action.
 
 ## Rendering and Input
 
@@ -63,11 +63,33 @@ Install the shared debug keystore once on every development computer:
 ./scripts/install-android-debug-keystore
 ```
 
-The installer exits successfully when the expected key is already present at `~/.android/debug.keystore`. Otherwise it retrieves the key from the `Ghostty Mobile Android Debug Keystore` document in your 1Password Private vault, verifies its certificate fingerprint and private-key entry, and installs it with owner-only permissions. Set `GHOSTTY_DEBUG_KEYSTORE_VAULT` when a team keeps the document in a shared vault instead.
+The installer exits successfully when the expected key is already present at `~/.android/debug.keystore`. Otherwise it retrieves the key from the legacy-named `Ghostty Mobile Android Debug Keystore` document in your 1Password Private vault, verifies its certificate fingerprint and private-key entry, and installs it with owner-only permissions. Set `GHOSTTY_DEBUG_KEYSTORE_VAULT` when a team keeps the document in a shared vault instead.
 
 The script explains how to install or authenticate 1Password CLI when `op` is unavailable. It refuses to overwrite a different existing key unless `--replace` is supplied. Replacement creates a timestamped backup; apps signed with the previous key must be uninstalled before installing the shared-key build.
 
 The keystore is not a release credential and must not be committed to this public repository. Sharing it through 1Password allows debug builds from different computers to update the same installation and preserve local dogfooding data.
+
+### Play release signing
+
+Google Play uploads use a dedicated upload key, never the shared debug key. Keep the keystore outside the repository, retain a recovery copy in a secure vault, and provide signing values only through the process environment:
+
+```sh
+export SEANCE_UPLOAD_STORE_FILE="$HOME/.android/seance-shell-upload.jks"
+export SEANCE_UPLOAD_STORE_PASSWORD="..."
+export SEANCE_UPLOAD_KEY_ALIAS="upload"
+export SEANCE_UPLOAD_KEY_PASSWORD="..."
+```
+
+For the locally generated initial key, these exports are stored in `~/.android/seance-shell-upload.env`; load them with `source ~/.android/seance-shell-upload.env`. That file contains plaintext signing credentials protected only by owner-only filesystem permissions. Move the keystore and credentials into the secure vault, verify recovery from a separate copy, and delete the local environment file before treating release signing as operationally ready.
+
+Build and verify the signed Android App Bundle with:
+
+```sh
+cd android
+./scripts/build-play-release
+```
+
+The script runs unit tests, lint, a clean release bundle build, JAR signature and signer-certificate verification, and SHA-256 hashing. It writes `app/build/outputs/bundle/release/app-release.aab`. Release builds intentionally fail when the signing environment is absent; do not add credentials to Gradle files, shell history, or the repository.
 
 Initialize the Ghostty submodule, then run:
 

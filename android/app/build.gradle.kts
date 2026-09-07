@@ -36,6 +36,21 @@ configure<ApplicationExtension> {
             version = "3.22.1"
         }
     }
+
+    signingConfigs {
+        create("release") {
+            storeFile = file(providers.environmentVariable("SEANCE_UPLOAD_STORE_FILE").getOrElse("missing-seance-shell-upload.jks"))
+            storePassword = providers.environmentVariable("SEANCE_UPLOAD_STORE_PASSWORD").getOrElse("")
+            keyAlias = providers.environmentVariable("SEANCE_UPLOAD_KEY_ALIAS").getOrElse("")
+            keyPassword = providers.environmentVariable("SEANCE_UPLOAD_KEY_PASSWORD").getOrElse("")
+        }
+    }
+
+    buildTypes {
+        getByName("release") {
+            signingConfig = signingConfigs.getByName("release")
+        }
+    }
 }
 
 dependencies {

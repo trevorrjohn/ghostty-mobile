@@ -1,6 +1,6 @@
-# Ghostty Mobile
+# Seance Shell
 
-Ghostty Mobile contains the native Android and iOS Ghostty Connect applications.
+Seance Shell is a native Android and iOS SSH client powered by Ghostty's terminal engine.
 
 Website: [founder.fail](https://founder.fail)
 

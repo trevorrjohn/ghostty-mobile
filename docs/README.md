@@ -1,12 +1,15 @@
 # Documentation
 
-This directory is the canonical source for Ghostty Mobile product and engineering documentation. Platform code may implement shared contracts differently, but product behavior and architecture decisions are recorded here once.
+This directory is the canonical source for Seance Shell product and engineering documentation. Platform code may implement shared contracts differently, but product behavior and architecture decisions are recorded here once.
+
+Repository-wide third-party attribution is maintained in [Third-party notices](../THIRD_PARTY_NOTICES.md).
 
 ## Product
 
 - [Product scope](PRODUCT_SCOPE.md)
 - [Product roadmap and platform parity](ROADMAP.md)
 - [SFTP product](SFTP_PRODUCT.md)
+- [Android initial release checklist](RELEASE_CHECKLIST.md)
 
 ## Engineering
 

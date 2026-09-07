@@ -61,7 +61,7 @@ class DogfoodFeedbackTest {
     fun exportIncludesEnteredNotesAndSanitizedContext() {
         val export = formatDogfoodFeedbackExport(listOf(feedback(note = "Selection handle jumped.")))
 
-        assertTrue(export.contains("# Ghostty Connect Android Feedback"))
+        assertTrue(export.contains("# Seance Shell Android Feedback"))
         assertTrue(export.contains("Selection handle jumped."))
         assertTrue(export.contains("- Session state: Connected"))
         assertTrue(export.contains("- Android API: 36"))

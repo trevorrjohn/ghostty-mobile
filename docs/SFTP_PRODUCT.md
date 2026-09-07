@@ -2,7 +2,7 @@
 
 ## Product Statement
 
-Ghostty Mobile's SFTP experience lets a user inspect and move files on a saved remote host without leaving the app or routing file data through a terminal. It is an SFTP client and remote file browser. It does not expose the Android or iOS device as an SFTP server.
+Seance Shell's SFTP experience lets a user inspect and move files on a saved remote host without leaving the app or routing file data through a terminal. It is an SFTP client and remote file browser. It does not expose the Android or iOS device as an SFTP server.
 
 The feature uses the same saved host, authentication, and host-key trust policy as terminal connections while keeping file-transfer ownership independent from terminal sessions. Android remains the reference implementation while iOS adopts the validated interaction and security behavior with platform-native document handling.
 

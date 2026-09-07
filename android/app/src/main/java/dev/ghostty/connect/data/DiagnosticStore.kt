@@ -75,7 +75,7 @@ class DiagnosticStore(context: Context) {
     fun clear() = synchronized(STORE_LOCK) { encryptedStore.delete(FILE_NAME) }
 
     fun formatForExport(): String = buildString {
-        appendLine("Ghostty Connect diagnostics")
+        appendLine("Seance Shell diagnostics")
         appendLine("Allowlisted app metadata only; no host, identity, path, credential, key, or terminal data.")
         loadAll().forEach { event ->
             append(event.occurredAtEpochMillis).append(" | ").append(event.stage.name)

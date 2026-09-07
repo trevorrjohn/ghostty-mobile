@@ -608,10 +608,72 @@ footer p {
 
 .footer-links {
   display: flex;
+  flex-wrap: wrap;
   justify-content: flex-end;
   gap: 1.5rem;
   font-family: var(--mono);
   text-transform: uppercase;
+}
+
+.document-page {
+  width: min(920px, calc(100% - 48px));
+  margin: 0 auto;
+  padding: 7rem 0 9rem;
+}
+
+.document-hero {
+  padding-bottom: 4rem;
+  border-bottom: 1px solid var(--line);
+}
+
+.document-hero h1 {
+  margin-bottom: 1.5rem;
+}
+
+.document-summary {
+  max-width: 720px;
+  color: #b7c0bb;
+  font-size: clamp(1.1rem, 2.4vw, 1.4rem);
+}
+
+.document-date {
+  margin: 2rem 0 0;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  text-transform: uppercase;
+}
+
+.document-content {
+  max-width: 760px;
+  padding-top: 2rem;
+}
+
+.document-content section {
+  padding: 2rem 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.document-content h2 {
+  margin-bottom: 0.9rem;
+  font-size: clamp(1.6rem, 3vw, 2.2rem);
+  letter-spacing: -0.035em;
+}
+
+.document-content p {
+  color: #b7c0bb;
+  line-height: 1.75;
+}
+
+.document-content p:last-child {
+  margin-bottom: 0;
+}
+
+.document-content a {
+  color: var(--green);
+  text-decoration: underline;
+  text-decoration-color: rgba(147, 242, 189, 0.45);
+  text-underline-offset: 0.2em;
 }
 
 @media (max-width: 900px) {
@@ -680,6 +742,7 @@ footer p {
   .site-header,
   .hero,
   .capabilities,
+  .document-page,
   footer {
     width: min(100% - 32px, 1180px);
   }

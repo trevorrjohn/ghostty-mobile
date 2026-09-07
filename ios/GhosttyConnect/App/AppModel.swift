@@ -50,7 +50,7 @@ final class AppModel: ObservableObject {
     }
 
     func handle(url: URL) {
-        guard url.scheme == "ghostty-connect", url.host == "quick-connect" else { return }
+        guard ["seance-shell", "ghostty-connect"].contains(url.scheme), url.host == "quick-connect" else { return }
         quickConnectRequest = UUID()
     }
 

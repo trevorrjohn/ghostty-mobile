@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#0b1210">
+  <meta name="description" content="Support and troubleshooting for the Seance Shell mobile SSH client.">
+  <link rel="canonical" href="https://founder.fail/support.html">
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="styles.css">
+  <title>Support | Seance Shell</title>
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+
+  <header class="site-header">
+    <a class="brand" href="/" aria-label="Seance Shell home">
+      <span class="brand-mark" aria-hidden="true">&gt;_</span>
+      <span>Seance Shell</span>
+    </a>
+    <nav aria-label="Primary navigation">
+      <a href="/">Home</a>
+      <a href="privacy.html">Privacy</a>
+      <a href="https://github.com/trevorrjohn/ghostty-mobile">GitHub</a>
+    </nav>
+  </header>
+
+  <main id="main" class="document-page">
+    <header class="document-hero">
+      <p class="kicker">Help</p>
+      <h1>Support</h1>
+      <p class="document-summary">Connection trouble, unexpected terminal behavior, or a question about your data? Start here.</p>
+      <div class="hero-actions">
+        <a class="button button-primary" href="mailto:ceo@founder.fail?subject=Seance%20Shell%20support">Email support</a>
+        <a class="button button-secondary" href="https://github.com/trevorrjohn/ghostty-mobile/issues">Report an issue</a>
+      </div>
+    </header>
+
+    <article class="document-content">
+      <section>
+        <h2>Before contacting support</h2>
+        <p>Confirm the hostname, port, username, authentication method, and current network route. If a host key changed unexpectedly, do not approve it until you have verified the new fingerprint through a trusted channel.</p>
+      </section>
+
+      <section>
+        <h2>Connection interruptions</h2>
+        <p>A reconnect starts a new SSH transport and a new remote shell. Seance Shell does not claim that a disconnected remote process survived. Use tmux or screen on the remote host when process continuity matters.</p>
+      </section>
+
+      <section>
+        <h2>Reporting a problem</h2>
+        <p>Include your app version, Android or iOS version, device model, connection stage, and steps to reproduce. Do not send passwords, private keys, one-time codes, hostnames, terminal contents, remote paths, or screenshots containing secrets.</p>
+        <p>Android can export bounded diagnostics from Settings. Review the plaintext report before sharing it.</p>
+      </section>
+
+      <section>
+        <h2>Security reports</h2>
+        <p>Do not publish an unpatched vulnerability or sensitive host information in a public issue. Email <a href="mailto:ceo@founder.fail?subject=Seance%20Shell%20security">ceo@founder.fail</a> with a concise description and a safe way to reproduce the issue.</p>
+      </section>
+
+      <section>
+        <h2>Documentation</h2>
+        <p>Current capabilities and known limitations are maintained in the public <a href="https://github.com/trevorrjohn/ghostty-mobile/blob/main/docs/ROADMAP.md">product roadmap</a>. The <a href="https://github.com/trevorrjohn/ghostty-mobile/blob/main/docs/SECURITY.md">security model</a> explains how credentials, host trust, remote effects, and local records are handled.</p>
+      </section>
+    </article>
+  </main>
+
+  <footer>
+    <a class="brand" href="/">
+      <span class="brand-mark" aria-hidden="true">&gt;_</span>
+      <span>Seance Shell</span>
+    </a>
+    <p>Native mobile SSH, powered by Ghostty.</p>
+    <div class="footer-links">
+      <a href="privacy.html">Privacy</a>
+      <a href="support.html" aria-current="page">Support</a>
+      <a href="https://github.com/trevorrjohn/ghostty-mobile">Source</a>
+    </div>
+  </footer>
+</body>
+</html>

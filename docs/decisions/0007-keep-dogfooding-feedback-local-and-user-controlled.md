@@ -25,5 +25,5 @@ Dogfooding feedback is a bounded, encrypted, local log of manually entered notes
 - Notes remain private unless the user explicitly shares them.
 - Users can still type secrets into a note, so the UI warns against it and export requires review.
 - Uninstalling or clearing app data removes unexported feedback.
-- Plaintext shared to another app is outside Ghostty Connect's security boundary.
+- Plaintext shared to another app is outside Seance Shell's security boundary.
 - Attachments, automatic diagnostics, or direct issue submission require a future security review and ADR.

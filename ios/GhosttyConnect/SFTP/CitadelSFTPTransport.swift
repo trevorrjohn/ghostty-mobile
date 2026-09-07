@@ -126,7 +126,7 @@ actor CitadelSFTPTransport: SFTPTransport {
         let sftp = try connectedSFTP()
         let values = try localURL.resourceValues(forKeys: [.fileSizeKey])
         let total = values.fileSize.map(UInt64.init)
-        let temporaryPath = "\(path).ghostty-upload-\(UUID().uuidString)"
+        let temporaryPath = "\(path).seance-shell-upload-\(UUID().uuidString)"
         let local = try FileHandle(forReadingFrom: localURL)
         let remote = try await sftp.openFile(filePath: temporaryPath, flags: [.write, .create, .forceCreate])
         do {

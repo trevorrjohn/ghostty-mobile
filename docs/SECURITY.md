@@ -51,7 +51,7 @@ Android serializes encrypted-file reads, atomic replacement, and deletion by can
 - Terminal contents, host details, credentials, clipboard data, and screenshots are not collected automatically.
 - Local feedback is encrypted and bounded like other product records.
 - Users review entries before an explicit plaintext share action.
-- Shared plaintext is no longer protected by Ghostty Connect and may contain secrets the user typed despite the warning.
+- Shared plaintext is no longer protected by Seance Shell and may contain secrets the user typed despite the warning.
 - Automatic upload, telemetry, attachments, or broader diagnostics require a new security review.
 
 ## Review Requirements

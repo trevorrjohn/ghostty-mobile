@@ -1,8 +1,8 @@
-# Ghostty Mobile Product Roadmap
+# Seance Shell Product Roadmap
 
 ## Purpose
 
-Ghostty Mobile is a native SSH client for Android and iOS powered by Ghostty's terminal engine. This is the single product roadmap for both apps. It records the shared direction, current platform parity, delivery order, and explicit reasons for deferring or excluding work.
+Seance Shell is a native SSH client for Android and iOS powered by Ghostty's terminal engine. This is the single product roadmap for both apps. It records the shared direction, current platform parity, delivery order, and explicit reasons for deferring or excluding work.
 
 The apps may ship features at different times, but platform differences should be intentional and visible here. A missing feature is not rejected unless its status is `Excluded`.
 
@@ -145,7 +145,7 @@ The matrix reflects the current working tree, not only the last commit.
 
 ### SFTP Product Slice
 
-SFTP is part of Ghostty Mobile's SSH product, but it is not part of Ghostty's terminal engine. It reuses saved hosts, authentication, host-key trust, ProxyJump policy, and connection diagnostics while remaining a separate file-transfer subsystem. SFTP data never passes through a PTY, terminal parser, render snapshot, or shell-integration path.
+SFTP is part of Seance Shell's SSH product, but it is not part of Ghostty's terminal engine. It reuses saved hosts, authentication, host-key trust, ProxyJump policy, and connection diagnostics while remaining a separate file-transfer subsystem. SFTP data never passes through a PTY, terminal parser, render snapshot, or shell-integration path.
 
 Status: `Partial` on both platforms. Android remains the reference implementation; iOS uses the same product behavior with platform-native lifecycle and document APIs.
 

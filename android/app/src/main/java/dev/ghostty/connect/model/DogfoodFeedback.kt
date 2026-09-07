@@ -65,7 +65,7 @@ fun createDogfoodFeedbackEntry(
 )
 
 fun formatDogfoodFeedbackExport(entries: List<DogfoodFeedbackEntry>): String = buildString {
-    appendLine("# Ghostty Connect Android Feedback")
+    appendLine("# Seance Shell Android Feedback")
     appendLine()
     appendLine("Manually entered notes with sanitized app context. No terminal contents, host details, credentials, or clipboard data are collected automatically.")
     entries.sortedByDescending(DogfoodFeedbackEntry::createdAtEpochMillis).forEach { entry ->

@@ -13,7 +13,7 @@ Biometric protection is an opt-in property of an SSH identity, not a host. A pro
 
 Biometric enrollment changes do not invalidate the encryption key. Newly enrolled strong biometrics may authorize later use, matching Android's device-owner authentication model. Removing protection requires a successful biometric decryption first.
 
-New protected blobs use a five-second strong-biometric authorization window to accommodate KeyMint implementations that reject zero-duration operation-bound tokens after a successful prompt. Ghostty Connect presents a fresh strong-biometric prompt, then initializes and completes the cipher inside that window; it never reuses the window to skip an app-level prompt or permit unattended work. Existing version-one blobs retain their operation-bound `CryptoObject` flow.
+New protected blobs use a five-second strong-biometric authorization window to accommodate KeyMint implementations that reject zero-duration operation-bound tokens after a successful prompt. Seance Shell presents a fresh strong-biometric prompt, then initializes and completes the cipher inside that window; it never reuses the window to skip an app-level prompt or permit unattended work. Existing version-one blobs retain their operation-bound `CryptoObject` flow.
 
 Decrypted private-key bytes and an optional SSH passphrase remain transient mutable credentials. They are cleared after handoff or failure, never enter saved state, notifications, or logs, and are loaded into SSHJ from memory rather than a plaintext temporary file. A protected identity never qualifies for unattended reconnect.
 

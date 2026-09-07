@@ -30,7 +30,6 @@ import android.os.Build
 import android.os.Looper
 import android.content.pm.PackageManager
 import android.provider.OpenableColumns
-import android.provider.Settings
 import android.text.InputType
 import android.text.Editable
 import android.text.TextWatcher
@@ -206,7 +205,6 @@ class MainActivity : Activity() {
     private var lastOpenedSftpUri: String? = null
     private var activeSftpPreviewUri: Uri? = null
     private var activeSftpPreviewBrowserId: String? = null
-    private var pendingApkInstall: Pair<String, String>? = null
     private var selectedSessionId: String? = null
     private var terminalStatus: TextView? = null
     private var terminalTitle = ""
@@ -731,7 +729,7 @@ class MainActivity : Activity() {
         previewTerminal?.close()
         previewTerminal = null
         val root = vertical(24)
-        root.addView(label("Ghostty Connect", 28f, primary, Typeface.BOLD))
+        root.addView(label("Seance Shell", 28f, primary, Typeface.BOLD))
         root.addView(label("A fast, native SSH terminal", 15f, secondary).margins(bottom = 28))
         val activeSessions = sessionService?.summaries().orEmpty()
         if (activeSessions.isNotEmpty()) {
@@ -1155,16 +1153,6 @@ class MainActivity : Activity() {
     @Deprecated("Activity result callback retained without an AndroidX dependency")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
-        if (requestCode == REQUEST_APK_INSTALL_PERMISSION) {
-            val pending = pendingApkInstall
-            pendingApkInstall = null
-            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O || packageManager.canRequestPackageInstalls()) {
-                pending?.let { (browserId, uri) -> openSftpUri(browserId, uri) }
-            } else {
-                toast("Allow Ghostty Connect to install unknown apps, then open the APK again.")
-            }
-            return
-        }
         if (resultCode != RESULT_OK) {
             if (requestCode == CREATE_DOWNLOAD_DOCUMENT) pendingDownloadRequest = null
             if (requestCode == OPEN_UPLOAD_DOCUMENT) pendingUploadRequest = null
@@ -1657,6 +1645,8 @@ class MainActivity : Activity() {
                 volumeDownActionId = KeyboardBarCatalog.DEFAULT_VOLUME_DOWN_ACTION_ID,
             ))
         }.margins(top = 8))
+        root.addView(label("About", 18f, primary, Typeface.BOLD).margins(top = 24, bottom = 6))
+        root.addView(button("Open source licenses", secondary) { showOpenSourceLicenses() })
         root.addView(label("Dogfooding", 18f, primary, Typeface.BOLD).margins(top = 24, bottom = 6))
         root.addView(label(
             "Feedback notes stay encrypted on this device until you explicitly share them.",
@@ -1667,6 +1657,23 @@ class MainActivity : Activity() {
         root.addView(button("Record feedback", secondary) { showFeedbackDialog("Settings") }.margins(top = 8))
         root.addView(button("Back", secondary) { showHosts(disconnect = false) }.margins(top = 16))
         setContentView(scroll(root))
+    }
+
+    private fun showOpenSourceLicenses() {
+        val notices = runCatching {
+            assets.open("open_source_notices.txt").bufferedReader().use { it.readText() }
+        }.getOrElse {
+            "Open source notices could not be loaded."
+        }
+        val content = label(notices, 13f, primary).apply {
+            setTextIsSelectable(true)
+            setPadding(dp(20), dp(8), dp(20), dp(20))
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Open source licenses")
+            .setView(scroll(content))
+            .setPositiveButton("Close", null)
+            .show()
     }
 
     private fun showSshIdentities() {
@@ -2011,7 +2018,7 @@ class MainActivity : Activity() {
                 }
                 startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).apply {
                     type = "text/plain"
-                    putExtra(Intent.EXTRA_SUBJECT, "Ghostty Connect diagnostics")
+                    putExtra(Intent.EXTRA_SUBJECT, "Seance Shell diagnostics")
                     putExtra(Intent.EXTRA_TEXT, report)
                 }, "Export diagnostics"))
             }
@@ -2053,7 +2060,7 @@ class MainActivity : Activity() {
         }
         AlertDialog.Builder(this)
             .setTitle("Delete ${identity.name}?")
-            .setMessage("Remove this private key from Ghostty Connect?$affectedMessage")
+            .setMessage("Remove this private key from Seance Shell?$affectedMessage")
             .setNegativeButton("Cancel", null)
             .setPositiveButton("Delete") { _, _ ->
                 identityDeletionBlockMessage(identity)?.let {
@@ -2214,7 +2221,7 @@ class MainActivity : Activity() {
         val root = vertical(24)
         root.addView(label("Feedback log", 28f, primary, Typeface.BOLD))
         root.addView(label(
-            "Only notes you enter are saved. Ghostty Connect does not automatically collect terminal contents, host details, credentials, or clipboard data.",
+            "Only notes you enter are saved. Seance Shell does not automatically collect terminal contents, host details, credentials, or clipboard data.",
             14f,
             secondary,
         ).margins(top = 8, bottom = 16))
@@ -2379,7 +2386,7 @@ class MainActivity : Activity() {
                 }
                 startActivity(Intent.createChooser(Intent(Intent.ACTION_SEND).apply {
                     type = "text/plain"
-                    putExtra(Intent.EXTRA_SUBJECT, "Ghostty Connect Android feedback")
+                    putExtra(Intent.EXTRA_SUBJECT, "Seance Shell Android feedback")
                     putExtra(Intent.EXTRA_TEXT, export)
                 }, "Share feedback"))
             }
@@ -2389,7 +2396,7 @@ class MainActivity : Activity() {
     private fun confirmClearFeedback() {
         AlertDialog.Builder(this)
             .setTitle("Clear all feedback?")
-            .setMessage("This removes every saved feedback note from Ghostty Connect.")
+            .setMessage("This removes every saved feedback note from Seance Shell.")
             .setNegativeButton("Cancel", null)
             .setPositiveButton("Clear") { _, _ ->
                 runCatching { feedbackStore.clear() }
@@ -2536,7 +2543,7 @@ class MainActivity : Activity() {
         ).also { previewTerminal = it }
         terminal.write(
             "\u001b[2J\u001b[H" +
-                "\u001b[1;38;2;139;233;179mGhostty Connect\u001b[0m\r\n" +
+                "\u001b[1;38;2;139;233;179mSeance Shell\u001b[0m\r\n" +
                 "\u001b[38;2;174;182;198mNative libghostty-vt rendering spike\u001b[0m\r\n\r\n" +
                 "\u001b[1;34m✓\u001b[0m ANSI colors and bold text\r\n" +
                 "\u001b[3;35m✓ italic text\u001b[0m  \u001b[4;33munderlined text\u001b[0m\r\n" +
@@ -3037,6 +3044,10 @@ class MainActivity : Activity() {
     }
 
     private fun openRemoteFile(browserId: String, entry: SftpEntry) {
+        if (entry.name.endsWith(".apk", ignoreCase = true)) {
+            toast("APK files cannot be opened here. Download the file instead.")
+            return
+        }
         if (entry.size != null && entry.size > MAX_OPEN_FILE_BYTES) {
             toast("This file is too large to open directly. Download it instead.")
             return
@@ -3060,19 +3071,9 @@ class MainActivity : Activity() {
     private fun openSftpUri(browserId: String, uriString: String): Boolean {
         val uri = Uri.parse(uriString)
         val mimeType = contentResolver.getType(uri) ?: "application/octet-stream"
-        if (mimeType == "application/vnd.android.package-archive" &&
-            Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && !packageManager.canRequestPackageInstalls()
-        ) {
-            pendingApkInstall = browserId to uriString
-            return runCatching {
-                startActivityForResult(
-                    Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:$packageName")),
-                    REQUEST_APK_INSTALL_PERMISSION,
-                )
-            }.onFailure {
-                pendingApkInstall = null
-                toast("Open Settings and allow Ghostty Connect to install unknown apps.")
-            }.isSuccess
+        if (mimeType == "application/vnd.android.package-archive") {
+            toast("APK files cannot be opened here. Download the file instead.")
+            return false
         }
         val intent = Intent(Intent.ACTION_VIEW).apply {
             setDataAndType(uri, mimeType)
@@ -3780,11 +3781,11 @@ class MainActivity : Activity() {
             .setItems(arrayOf("Bash", "zsh")) { _, index ->
                 if (index == 0) {
                     showShellIntegrationInstallCommand(
-                        "Bash", R.raw.ghostty_connect_bash, "ghostty-connect.bash", ".bashrc",
+                        "Bash", R.raw.ghostty_connect_bash, "seance-shell.bash", ".bashrc",
                     )
                 } else {
                     showShellIntegrationInstallCommand(
-                        "zsh", R.raw.ghostty_connect_zsh, "ghostty-connect.zsh", ".zshrc",
+                        "zsh", R.raw.ghostty_connect_zsh, "seance-shell.zsh", ".zshrc",
                     )
                 }
             }
@@ -3799,12 +3800,12 @@ class MainActivity : Activity() {
         rcFile: String,
     ) {
         val script = resources.openRawResource(scriptResource).bufferedReader().use { it.readText() }.trimEnd()
-        val sourceLine = "source \"\$HOME/.config/ghostty-connect/$scriptName\""
+        val sourceLine = "source \"\$HOME/.config/seance-shell/$scriptName\""
         val installCommand = buildString {
-            appendLine("mkdir -p \"\$HOME/.config/ghostty-connect\"")
-            appendLine("cat > \"\$HOME/.config/ghostty-connect/$scriptName\" <<'GHOSTTY_CONNECT_EOF'")
+            appendLine("mkdir -p \"\$HOME/.config/seance-shell\"")
+            appendLine("cat > \"\$HOME/.config/seance-shell/$scriptName\" <<'SEANCE_SHELL_EOF'")
             appendLine(script)
-            appendLine("GHOSTTY_CONNECT_EOF")
+            appendLine("SEANCE_SHELL_EOF")
             appendLine("touch \"\$HOME/$rcFile\"")
             appendLine("grep -Fqx '$sourceLine' \"\$HOME/$rcFile\" || printf '%s\\n' '$sourceLine' >> \"\$HOME/$rcFile\"")
             appendLine(sourceLine)
@@ -4590,7 +4591,7 @@ class MainActivity : Activity() {
                             startActivityForResult(Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
                                 addCategory(Intent.CATEGORY_OPENABLE)
                                 type = "application/octet-stream"
-                                putExtra(Intent.EXTRA_TITLE, "ghostty-terminal.gta")
+                                putExtra(Intent.EXTRA_TITLE, "seance-shell-terminal.gta")
                             }, CREATE_TERMINAL_ARCHIVE)
                         }
                     }.onFailure { error ->
@@ -4610,7 +4611,6 @@ class MainActivity : Activity() {
         const val NOTIFICATION_PERMISSION = 1002
         const val CREATE_DOWNLOAD_DOCUMENT = 1003
         const val OPEN_UPLOAD_DOCUMENT = 1004
-        const val REQUEST_APK_INSTALL_PERMISSION = 1005
         const val CREATE_TERMINAL_ARCHIVE = 1006
         const val GHOSTTY_MOD_SHIFT = 1 shl 0
         const val GHOSTTY_MOD_CTRL = 1 shl 1

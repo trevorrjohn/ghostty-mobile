@@ -165,7 +165,7 @@ class OpenSshIntegrationTest {
                 ) { _, _ -> canceled.set(true) }
             }
             assertFalse(connection.exists(home, "canceled.bin"))
-            assertFalse(connection.list(home).any { it.name.startsWith(".ghostty-upload-") })
+            assertFalse(connection.list(home).any { it.name.startsWith(".seance-shell-upload-") })
             assertTrue(connection.exists(home, "round-trip.bin"))
         } finally {
             connection.disconnect()

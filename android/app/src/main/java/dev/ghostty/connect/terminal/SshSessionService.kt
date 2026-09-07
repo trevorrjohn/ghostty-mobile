@@ -740,7 +740,7 @@ class SshSessionService : Service() {
                 .setOnlyAlertOnce(true)
                 .setPublicVersion(Notification.Builder(this, REMOTE_CHANNEL_ID)
                     .setSmallIcon(android.R.drawable.stat_sys_download_done)
-                    .setContentTitle("Ghostty Connect")
+                    .setContentTitle("Seance Shell")
                     .setContentText("Terminal notification")
                     .build())
                 .build(),
@@ -778,7 +778,7 @@ class SshSessionService : Service() {
         val builder = Notification.Builder(this, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.stat_sys_upload)
             .setContentTitle(when {
-                record == null -> "Ghostty Connect"
+                record == null -> "Seance Shell"
                 duplicateHostSession -> "${record.host.name} · ${sessionDisplayId(record.sessionId)}"
                 else -> record.host.name
             })
@@ -791,7 +791,7 @@ class SshSessionService : Service() {
             .setOnlyAlertOnce(true)
             .setPublicVersion(Notification.Builder(this, CHANNEL_ID)
                 .setSmallIcon(android.R.drawable.stat_sys_upload)
-                .setContentTitle("Ghostty Connect")
+                .setContentTitle("Seance Shell")
                 .setContentText("SSH session active")
                 .setOngoing(true)
                 .build())

@@ -1,8 +1,8 @@
-# Ghostty Mobile Product Scope
+# Seance Shell Product Scope
 
 ## Product Statement
 
-Ghostty Mobile is a focused native SSH client for Android and iOS powered by Ghostty's terminal engine. It lets developers and operators save remote hosts, connect securely, and work in a responsive terminal designed for touch, external keyboards, and mobile network interruptions.
+Seance Shell is a focused native SSH client for Android and iOS powered by Ghostty's terminal engine. It lets developers and operators save remote hosts, connect securely, and work in a responsive terminal designed for touch, external keyboards, and mobile network interruptions.
 
 ## Shared User Journey
 

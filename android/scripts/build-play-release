@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+readonly script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+readonly android_dir="$(cd "$script_dir/.." && pwd)"
+readonly bundle="$android_dir/app/build/outputs/bundle/release/app-release.aab"
+readonly required_variables=(
+  SEANCE_UPLOAD_STORE_FILE
+  SEANCE_UPLOAD_STORE_PASSWORD
+  SEANCE_UPLOAD_KEY_ALIAS
+  SEANCE_UPLOAD_KEY_PASSWORD
+)
+
+for variable in "${required_variables[@]}"; do
+  if [[ -z "${!variable:-}" ]]; then
+    printf 'Error: %s is required.\n' "$variable" >&2
+    exit 1
+  fi
+done
+
+if [[ ! -f "$SEANCE_UPLOAD_STORE_FILE" ]]; then
+  printf 'Error: upload keystore does not exist: %s\n' "$SEANCE_UPLOAD_STORE_FILE" >&2
+  exit 1
+fi
+
+command -v jarsigner >/dev/null 2>&1 || {
+  printf 'Error: jarsigner is required.\n' >&2
+  exit 1
+}
+command -v keytool >/dev/null 2>&1 || {
+  printf 'Error: keytool is required.\n' >&2
+  exit 1
+}
+
+"$android_dir/gradlew" --no-daemon clean testDebugUnitTest lintDebug bundleRelease
+jarsigner -verify "$bundle"
+keytool -printcert -jarfile "$bundle"
+sha256sum "$bundle"
+
+printf 'Signed Play bundle: %s\n' "$bundle"

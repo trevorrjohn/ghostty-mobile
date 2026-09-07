@@ -13,7 +13,7 @@ struct HostsView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
                     VStack(alignment: .leading, spacing: 5) {
-                        Text("Ghostty Connect")
+                        Text("Seance Shell")
                             .font(.system(size: 32, weight: .bold, design: .rounded))
                         Text("A fast, native SSH terminal")
                             .foregroundStyle(Color.ghosttySecondary)

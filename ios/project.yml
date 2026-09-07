@@ -19,11 +19,12 @@ targets:
     info:
       path: GhosttyConnect/Info.plist
       properties:
-        CFBundleDisplayName: Ghostty Connect
+        CFBundleDisplayName: Seance Shell
         CFBundleURLTypes:
           - CFBundleTypeRole: Editor
             CFBundleURLName: fail.founder.terminal
             CFBundleURLSchemes:
+              - seance-shell
               - ghostty-connect
         UIApplicationSceneManifest:
           UIApplicationSupportsMultipleScenes: false
@@ -39,7 +40,7 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: fail.founder.terminal
-        PRODUCT_NAME: Ghostty Connect
+        PRODUCT_NAME: Seance Shell
         PRODUCT_MODULE_NAME: GhosttyConnect
         CURRENT_PROJECT_VERSION: 1
         MARKETING_VERSION: 0.1.0
@@ -79,7 +80,7 @@ targets:
     settings:
       base:
         GENERATE_INFOPLIST_FILE: YES
-        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/Ghostty Connect.app/Ghostty Connect"
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/Seance Shell.app/Seance Shell"
         BUNDLE_LOADER: "$(TEST_HOST)"
 schemes:
   GhosttyConnect:
