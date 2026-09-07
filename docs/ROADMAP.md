@@ -140,6 +140,7 @@ The matrix reflects the current working tree, not only the last commit.
 | SFTP browsing, upload, and download | `Partial` | `Partial` | Android has an independent SFTP browser with shared trust/authentication, canonical path entry, fuzzy current-folder search, sorting, encrypted per-host favorites and bounded recent folders, bounded Open and document-URI transfers, conservative symlink handling, opt-in deletion, conflict prompts, progress, cancellation, rotation reattachment, and a disposable OpenSSH tier. iOS now has an independent Citadel SFTP connection, strict shared trust/authentication, canonical browsing, combined path/search, sorting, hidden files, Keychain-backed locations, bounded chunked transfer and previews, metadata/actions, opt-in deletion, and separate host/terminal entry points. iOS still needs a bounded incremental listing API, conflict completion, and live OpenSSH/document-provider/interruption/accessibility validation; Android still needs key authentication, host-key rotation, server-side interruption, connected lifecycle, document-provider, and TalkBack validation. |
 | Local, remote, and dynamic port forwarding | `Planned` | `Planned` | Post-core work; tunnels need visible ownership and shutdown controls. |
 | Tablet, landscape, split-screen, and external-keyboard workflows | `Partial` | `Partial` | Basic layouts work; neither platform has completed its device and interaction matrix. |
+| Platform Quick Connect entry point | `Implemented` | `Implemented` | Android provides a Quick Settings tile. iOS provides an iOS 18 Control Center control that opens the saved-host chooser through a bounded app URL. Neither entry point accepts host details or credentials. |
 | Safe share and deep-link connection entry points | `Planned` | `Planned` | External input requires explicit confirmation and must not carry credentials. |
 | Custom fonts, themes, gestures, and per-host terminal settings | `Planned` | `Planned` | Deferred until core terminal and session behavior reaches parity. |
 
@@ -203,7 +204,8 @@ These are deferred rather than rejected and should be reconsidered only after or
 | UI and lifecycle automation | `Planned` | `Planned` | Required before public release because session ownership and interruption behavior are product-critical. |
 | Accessibility validation | `Partial` | `Partial` | Complete TalkBack and VoiceOver journeys are not yet covered. |
 | Localization and support documentation | `Planned` | `Planned` | Most strings remain hard-coded and support workflows are not established. |
-| CI, signing, diagnostics, and store release | `Planned` | `Planned` | Neither app has a complete public-release pipeline or redacted diagnostics workflow. |
+| Bounded redacted diagnostics and explicit export | `Implemented` | `Planned` | Android stores an encrypted bounded allowlist of biometric events and exposes an explicit plaintext export. iOS diagnostics remain planned. |
+| CI, signing, and store release | `Planned` | `Planned` | Neither app has a complete public-release pipeline. Android has environment-backed signing and local bundle verification, but still needs CI, reproducibility evidence, Play enrollment, and store delivery. |
 
 ## Explicit Exclusions
 
