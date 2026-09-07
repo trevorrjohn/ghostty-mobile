@@ -59,6 +59,19 @@ class TerminalImeInputBufferTest {
     }
 
     @Test
+    fun composingRegionRestoresJustFinishedWordForCorrection() {
+        buffer.setComposing("teh")
+        buffer.finishComposing()
+
+        assertTrue(buffer.setComposingRegion(0, 3))
+        buffer.setComposing("the")
+        buffer.finishComposing()
+        runScheduledActions()
+
+        assertEquals(listOf("the"), input)
+    }
+
+    @Test
     fun emptyOrNullCommitDoesNotDiscardFinishedText() {
         buffer.setComposing("hello")
         buffer.finishComposing()

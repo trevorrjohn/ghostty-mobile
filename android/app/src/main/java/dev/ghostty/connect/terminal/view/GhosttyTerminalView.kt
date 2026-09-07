@@ -1377,7 +1377,7 @@ class GhosttyTerminalView(
             private val inputBuffer = TerminalImeInputBuffer(
                 sendInput = ::sendInput,
                 sendSpecialKey = { onSpecialKey(it) },
-                schedule = { action -> post(action) },
+                schedule = { action -> postDelayed(action, IME_CORRECTION_GRACE_PERIOD_MS) },
             ).also { activeInputBuffer = it }
 
             override fun commitText(text: CharSequence?, newCursorPosition: Int): Boolean {
@@ -1409,7 +1409,7 @@ class GhosttyTerminalView(
 
             override fun setSelection(start: Int, end: Int): Boolean = inputBuffer.setSelection(start, end)
 
-            override fun setComposingRegion(start: Int, end: Int): Boolean = false
+            override fun setComposingRegion(start: Int, end: Int): Boolean = inputBuffer.setComposingRegion(start, end)
 
             override fun closeConnection() {
                 inputBuffer.close()
@@ -1498,6 +1498,7 @@ class GhosttyTerminalView(
         private const val CURSOR_BLINK_INTERVAL_MS = 500L
         private const val SELECTION_SCROLL_INTERVAL_MS = 50L
         private const val ACCESSIBILITY_UPDATE_INTERVAL_MS = 150L
+        private const val IME_CORRECTION_GRACE_PERIOD_MS = 100L
         private const val HANDLE_NONE = 0
         private const val HANDLE_START = 1
         private const val HANDLE_END = 2
@@ -1588,6 +1589,16 @@ internal class TerminalImeInputBuffer(
         schedule {
             if (!closed && generation == pendingGeneration) flushPending()
         }
+    }
+
+    fun setComposingRegion(start: Int, end: Int): Boolean {
+        if (closed || start != 0) return false
+        val text = visibleText()
+        if (text.isEmpty() || end != text.length) return false
+        discardPending()
+        composingText = text
+        cursor = composingText.length
+        return true
     }
 
     fun deleteSurrounding(beforeLength: Int, afterLength: Int, codePoints: Boolean = false): Boolean {
