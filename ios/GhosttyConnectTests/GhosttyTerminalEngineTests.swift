@@ -59,6 +59,25 @@ final class GhosttyTerminalEngineTests: XCTestCase {
         XCTAssertEqual(Array(encoded), [0x03])
     }
 
+    func testEncodesTmuxPrefixSequence() throws {
+        guard TerminalEngineFactory.isAvailable else {
+            throw XCTSkip("GhosttyVt XCFramework is not installed")
+        }
+
+        let engine = try TerminalEngineFactory.make()
+        let action = KeyboardAction(
+            label: "Tmux next",
+            steps: [
+                KeyboardActionStep(key: .b, modifiers: [.control]),
+                KeyboardActionStep(key: .n, modifiers: []),
+            ]
+        )
+        var encoded = Data()
+        for event in action.events() { encoded.append(try engine.encode(event: event)) }
+
+        XCTAssertEqual(Array(encoded), [0x02, 0x6e])
+    }
+
     func testEncodesShiftedTextAndTab() throws {
         guard TerminalEngineFactory.isAvailable else {
             throw XCTSkip("GhosttyVt XCFramework is not installed")
@@ -86,6 +105,14 @@ final class GhosttyTerminalEngineTests: XCTestCase {
         XCTAssertEqual(
             try engine.encode(event: .key(.character("A"), text: "A", modifiers: [.alt, .shift])),
             Data("\u{1b}A".utf8)
+        )
+        XCTAssertEqual(
+            try engine.encode(event: .key(.character("/"), text: "?", modifiers: .shift)),
+            Data("?".utf8)
+        )
+        XCTAssertEqual(
+            try engine.encode(event: .key(.character("`"), text: "~", modifiers: [.alt, .shift])),
+            Data("\u{1b}~".utf8)
         )
     }
 
@@ -157,6 +184,75 @@ final class GhosttyTerminalEngineTests: XCTestCase {
         XCTAssertTrue(try engine.snapshot().viewport.isAtBottom)
     }
 
+    func testSearchSelectsAcrossSoftWrap() throws {
+        guard TerminalEngineFactory.isAvailable else {
+            throw XCTSkip("GhosttyVt XCFramework is not installed")
+        }
+
+        let engine = try TerminalEngineFactory.make(columns: 5, rows: 3)
+        engine.feed(Data("abcdefgh".utf8))
+
+        XCTAssertTrue(engine.search("def", direction: .next))
+        XCTAssertEqual(engine.selectedText(), "def")
+        XCTAssertEqual(try engine.snapshot().cells.filter(\.selected).count, 3)
+    }
+
+    func testSearchFindsOffscreenHistoryAndIgnoresCase() throws {
+        guard TerminalEngineFactory.isAvailable else {
+            throw XCTSkip("GhosttyVt XCFramework is not installed")
+        }
+
+        let engine = try TerminalEngineFactory.make(columns: 20, rows: 3)
+        engine.feed(Data("ÄPFEL target\r\ntwo\r\nthree\r\nfour\r\nfive".utf8))
+        XCTAssertTrue(try engine.snapshot().viewport.isAtBottom)
+
+        XCTAssertTrue(engine.search("äpfel", direction: .previous))
+        XCTAssertEqual(engine.selectedText(), "ÄPFEL")
+        XCTAssertFalse(try engine.snapshot().viewport.isAtBottom)
+    }
+
+    func testSearchDoesNotCrossHardLineBoundary() throws {
+        guard TerminalEngineFactory.isAvailable else {
+            throw XCTSkip("GhosttyVt XCFramework is not installed")
+        }
+
+        let engine = try TerminalEngineFactory.make(columns: 10, rows: 3)
+        engine.feed(Data("abc\r\ndef".utf8))
+
+        XCTAssertFalse(engine.search("cde", direction: .next))
+        XCTAssertFalse(try engine.snapshot().hasSelection)
+    }
+
+    func testSearchRejectsOversizedQueryWithoutChangingSelection() throws {
+        guard TerminalEngineFactory.isAvailable else {
+            throw XCTSkip("GhosttyVt XCFramework is not installed")
+        }
+
+        let engine = try TerminalEngineFactory.make(columns: 10, rows: 3)
+        engine.feed(Data("needle".utf8))
+        XCTAssertTrue(engine.search("needle", direction: .next))
+
+        XCTAssertFalse(engine.search(String(repeating: "x", count: 1_025), direction: .next))
+        XCTAssertEqual(engine.selectedText(), "needle")
+    }
+
+    func testSearchNextAndPreviousWrapBetweenMatches() throws {
+        guard TerminalEngineFactory.isAvailable else {
+            throw XCTSkip("GhosttyVt XCFramework is not installed")
+        }
+
+        let engine = try TerminalEngineFactory.make(columns: 20, rows: 3)
+        engine.feed(Data("hit one\r\ntwo\r\nthree\r\nfour\r\nhit two".utf8))
+
+        XCTAssertTrue(engine.search("hit", direction: .next))
+        let newestOffset = try engine.snapshot().viewport.offset
+        XCTAssertTrue(engine.search("hit", direction: .next))
+        let oldestOffset = try engine.snapshot().viewport.offset
+        XCTAssertLessThan(oldestOffset, newestOffset)
+        XCTAssertTrue(engine.search("hit", direction: .previous))
+        XCTAssertEqual(try engine.snapshot().viewport.offset, newestOffset)
+    }
+
     func testSelectsAndFormatsWord() throws {
         guard TerminalEngineFactory.isAvailable else {
             throw XCTSkip("GhosttyVt XCFramework is not installed")
@@ -166,16 +262,52 @@ final class GhosttyTerminalEngineTests: XCTestCase {
         engine.feed(Data("hello world".utf8))
         XCTAssertTrue(engine.selectWord(column: 1, row: 0))
         XCTAssertEqual(engine.selectedText(), "hello")
-        XCTAssertEqual(try engine.snapshot().cells.filter(\.selected).count, 5)
+        let selected = try engine.snapshot()
+        XCTAssertEqual(selected.cells.filter(\.selected).count, 5)
+        XCTAssertEqual(selected.selectionEndpoints?.start, TerminalSelectionPoint(column: 0, row: 0))
+        XCTAssertEqual(selected.selectionEndpoints?.end, TerminalSelectionPoint(column: 4, row: 0))
 
         engine.feed(Data("\r\none\r\ntwo\r\nthree\r\nfour".utf8))
         let offscreen = try engine.snapshot()
         XCTAssertTrue(offscreen.hasSelection)
         XCTAssertFalse(offscreen.cells.contains(where: \.selected))
+        XCTAssertEqual(offscreen.selectionEndpoints, TerminalSelectionEndpoints(start: nil, end: nil))
         XCTAssertEqual(engine.selectedText(), "hello")
 
         engine.clearSelection()
         XCTAssertFalse(try engine.snapshot().hasSelection)
+    }
+
+    func testExtendsSelectionAcrossRows() throws {
+        guard TerminalEngineFactory.isAvailable else {
+            throw XCTSkip("GhosttyVt XCFramework is not installed")
+        }
+
+        let engine = try TerminalEngineFactory.make(columns: 10, rows: 4)
+        engine.feed(Data("one\r\ntwo\r\nthree".utf8))
+        XCTAssertTrue(engine.selectWord(column: 1, row: 1))
+
+        XCTAssertTrue(engine.setSelectionEndpoint(start: false, column: 2, row: 2))
+        XCTAssertEqual(engine.selectedText(), "two\nthr")
+        let snapshot = try engine.snapshot()
+        XCTAssertEqual(snapshot.selectionEndpoints?.end, TerminalSelectionPoint(column: 2, row: 2))
+        let selectedRows = Set(snapshot.cells.enumerated().compactMap { index, cell in
+            cell.selected ? index / 10 : nil
+        })
+        XCTAssertEqual(selectedRows, Set([1, 2]))
+    }
+
+    func testSelectionEndpointRequiresValidSelectionAndCoordinate() throws {
+        guard TerminalEngineFactory.isAvailable else {
+            throw XCTSkip("GhosttyVt XCFramework is not installed")
+        }
+
+        let engine = try TerminalEngineFactory.make(columns: 10, rows: 3)
+        engine.feed(Data("one two".utf8))
+        XCTAssertFalse(engine.setSelectionEndpoint(start: false, column: 2, row: 0))
+        XCTAssertTrue(engine.selectWord(column: 5, row: 0))
+        XCTAssertFalse(engine.setSelectionEndpoint(start: true, column: -1, row: 0))
+        XCTAssertEqual(engine.selectedText(), "two")
     }
 
     func testSelectsRangeAndSemanticOutputAtPoint() throws {

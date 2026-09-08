@@ -37,7 +37,7 @@ Shared product boundaries are defined in [PRODUCT_SCOPE.md](PRODUCT_SCOPE.md), a
 | 0. Android feedback loop | Capture encrypted in-app dogfooding notes, review them in context, and explicitly export a sanitized report. | Product priorities need evidence from daily use before more scope is added. |
 | 1. Android core quality | Complete identity management, trust, cancellation, retry, secure-store safety, input, shell integration, and error recovery on Android. | Android is the reference implementation for discovering and validating the product workflow. |
 | 2. Android lifecycle and release baseline | Validate multiple sessions, interruptions, accessibility, device layouts, live SSH, and UI automation. | The reference behavior must be dependable before it is copied. |
-| 3. iOS core parity | Implement the validated Android connection, terminal, session, and privacy behavior using iOS-native architecture. | iOS should inherit product decisions, not repeat product discovery from scratch. |
+| 3. iOS core parity | Establish a full-app TestFlight baseline, then implement the validated Android connection, terminal, session, and privacy behavior using iOS-native architecture. | The full app must prove signing, distribution, installation, and core behavior before optional lightweight experiences add release surface. |
 | 4. Remote integrations | Enforce remote clipboard and notification policy, complete title/CWD/link handling, and render bounded inline graphics. | These features must preserve consent and parser limits before being enabled broadly. |
 | 5. Files and tunnels | SFTP plus local, remote, and dynamic forwarding with ownership, progress, and safe cancellation. | Valuable post-core workflows that add substantial transport and security surface. |
 | 6. Organization and portability | Search, favorites, groups, workspaces, archive controls, and encrypted configuration import/export. | Organization becomes important after connection and session behavior are dependable. |
@@ -73,7 +73,7 @@ The matrix reflects the current working tree, not only the last commit.
 | Key inspection, rename, deletion, and public-key export | `Implemented` | `Partial` | Both platforms use stable UUID host references, collision-safe rename, affected-host deletion warnings, and copy/share export when OpenSSH public metadata is derivable. Android additionally guards deletion while identities are in active use; iOS still needs active-session ownership before it can enforce the same guard. |
 | Unknown and changed host-key verification | `Implemented` | `Implemented` | Both block the handshake for explicit approval and display the full SHA-256 fingerprint; iOS also displays the algorithm and previous fingerprint for changed keys. |
 | Trusted-host inspection and removal | `Implemented` | `Implemented` | Android uses versioned alias-preserving migration, normalized DNS/IP destinations, conflict-safe replacement, compare-and-set approval, malformed-record removal, and normalized terminal/SFTP activity guards. iOS enumerates authoritative per-destination Keychain pins; shared normalization fixtures remain parity work. |
-| Cancellation, retry, keepalive, and typed failures | `Partial` | `Partial` | Android owns and cancels each setup worker, uses interruptible DNS waiting, waits for teardown before retry, cancels prompts, and has per-host bounded retry, keepalive, abrupt-EOF recovery, failure classification, a generation-owned default-network callback, and credential-safe notification reconnect for reusable keys; physical Wi-Fi, cellular, and VPN transition validation remains. iOS has typed failures, parent-channel loss detection, close-first teardown, and manual retry with a fresh transport; true keepalive and prompt in-progress connect cancellation require additional Citadel support, and network-aware retry policy remains. |
+| Cancellation, retry, keepalive, and typed failures | `Partial` | `Partial` | Android owns and cancels each setup worker, uses interruptible DNS waiting, waits for teardown before retry, cancels prompts, and has per-host bounded retry, keepalive, abrupt-EOF recovery, failure classification, a generation-owned default-network callback, and credential-safe notification reconnect for reusable keys; physical Wi-Fi, cellular, and VPN transition validation remains. iOS has typed failures, parent-channel loss detection, close-first teardown, per-host bounded retry/backoff, an app-owned network-path monitor that pauses attempts while the route is unavailable, and credential-safe automatic retry for passphrase-free imported keys. Passwords and protected keys require manual reauthentication, reconnects identify the new shell, and explicit or background disconnect cancels retry ownership. True keepalive and prompt in-progress connect cancellation require additional Citadel support; physical Wi-Fi, cellular, and VPN transition validation remains. |
 | ProxyJump and bastion routing | `Planned` | `Planned` | Accepted after trust management; each hop must have independent host verification and credentials. |
 | Per-host startup command, environment, and initial directory | `Planned` | `Planned` | Deferred until connection setup has typed, auditable configuration. |
 
@@ -83,13 +83,13 @@ The matrix reflects the current working tree, not only the last commit.
 | --- | --- | --- | --- |
 | Ghostty VT parsing and styled native rendering | `Implemented` | `Implemented` | Shared foundation with platform-native renderers. |
 | Unicode, colors, cursor state, and PTY resize | `Implemented` | `Implemented` | Continue device, rotation, and split-view validation. |
-| Software and hardware keyboard input | `Partial` | `Partial` | Android has bounded cursor-aware IME staging, Unicode-safe deletion, stale-connection cancellation, privacy flags, one-shot modifier safety, distinct numpad and lock-key encoding, and dedicated copy/paste-key handling; broader device/IME, AltGr, shortcut, and live tmux validation remain. iOS normalizes external Ctrl/Alt/Shift with navigation and F-keys but still needs punctuation and Meta/lock modifier coverage. |
-| Configurable modifier and extra-key controls | `Implemented` | `Partial` | Android includes configurable mode-aware volume actions and a persistent four-direction hold menu with keys, custom chords, selection, paste, search, session switching, and explicit cancellation. iOS has persisted ordering, bounded custom actions, one-shot and locked Ctrl/Alt/Shift, last-used controls, navigation/editing keys, and F1-F12; Meta and lock modifiers remain. |
-| User-defined multi-step key sequences | `Planned` | `Planned` | Extend custom keyboard actions from one chord to a bounded ordered sequence of terminal-encoded key events, enabling workflows such as tmux `Ctrl+B`, then `n` without pasting text or adding tmux-specific UI. |
+| Software and hardware keyboard input | `Partial` | `Partial` | Android has bounded cursor-aware IME staging, Unicode-safe deletion, stale-connection cancellation, privacy flags, one-shot modifier safety, distinct numpad and lock-key encoding, and dedicated copy/paste-key handling; broader device/IME, AltGr, shortcut, and live tmux validation remain. iOS normalizes external Ctrl/Alt/Shift/Caps Lock with navigation, F-keys, and the standard ASCII punctuation keys while preserving Command for app and system shortcuts; physical keyboard layouts and broader device validation remain. |
+| Configurable modifier and extra-key controls | `Implemented` | `Implemented` | Android includes configurable mode-aware volume actions and a persistent four-direction hold menu with keys, custom chords, selection, paste, search, session switching, and explicit cancellation. iOS has persisted ordering, bounded custom actions with standard ASCII punctuation, one-shot and locked Ctrl/Alt/Shift/Meta/Caps/Num, last-used controls, navigation/editing keys, and F1-F12. iOS reserves external Command combinations for app and system shortcuts while Option maps to terminal Alt. |
+| User-defined multi-step key sequences | `Implemented` | `Implemented` | Both platforms encode custom actions as up to eight ordered key events, enabling workflows such as tmux `Ctrl+B`, then `n` without pasting text or adding tmux-specific UI. |
 | Scrollback navigation | `Implemented` | `Partial` | iOS retains 10,000 lines, supports row-based touch and accessibility scrolling, exposes viewport state, and provides a Live return; inertia and pointer-wheel handling remain. |
-| Selection and copy | `Implemented` | `Partial` | Android has an explicit local-selection mode that pauses remote mouse reporting for tmux and other TUIs, plus contextual double-tap actions, draggable endpoints, edge autoscroll, and copy. iOS supports contextual actions, long-press word selection, and plain-text copy; draggable endpoints, edge autoscroll, and broader pointer selection remain. |
+| Selection and copy | `Implemented` | `Partial` | Android has an explicit local-selection mode that pauses remote mouse reporting for tmux and other TUIs, plus contextual double-tap actions, draggable endpoints, edge autoscroll, and copy. iOS supports contextual actions, long-press word selection followed by multi-row drag extension, bounded edge autoscroll, post-lift draggable endpoint handles, and plain-text copy; broader pointer selection remains. |
 | Paste and paste-safety confirmation | `Implemented` | `Implemented` | Both route explicit paste through Ghostty's mode-aware encoder and confirm LF or bracketed-paste termination; iOS also confirms CR-only command submission. |
-| Search within terminal history | `Implemented` | `Planned` | Planned with iOS scrollback exposure. Android still needs full Unicode case handling. |
+| Search within terminal history | `Implemented` | `Implemented` | Both select one match and support cyclic previous/next navigation across soft-wrapped scrollback. iOS bounds queries to 1,024 UTF-8 bytes and uses Unicode-aware case matching; Android still needs full Unicode case handling. |
 | Prompt navigation and semantic output copy | `Partial` | `Planned` | Depends on reliable OSC 133 shell markers. Android has the terminal support; iOS has not started it. |
 | Guided Bash and zsh shell integration | `Partial` | `Planned` | Android detects OSC 133 markers and provides guided setup; it still needs broader validation and durable UX. iOS has not reached this slice. |
 | Mouse, trackpad, stylus, and remote mouse reporting | `Implemented` | `Planned` | Android exposes an explicit local-selection override when remote applications capture pointer input, preserves correct right/middle button identity, and releases remote buttons on focus and lifecycle transitions. iOS pointer support is accepted for iPad and external-device workflows but is lower priority than core touch selection. |
@@ -114,10 +114,10 @@ The matrix reflects the current working tree, not only the last commit.
 
 | Capability | Android | iOS | Direction or reason |
 | --- | --- | --- | --- |
-| Multiple isolated live sessions | `Implemented` | `Planned` | Android keeps independent runtime IDs and monotonic durations visible for concurrent sessions, including sessions sharing one saved host. iOS currently owns one session per terminal screen and disconnects when leaving it. |
-| Session switching and per-session actions | `Implemented` | `Planned` | Android preserves the selected runtime session across activity recreation and distinguishes same-host sessions in rows, prompts, notifications, and disconnect controls. iOS needs a session registry before tabs or switching UI. |
-| Background and foreground lifecycle behavior | `Implemented` | `Planned` | Android uses a foreground service. iOS requires an honest platform-specific suspension and reconnect policy. |
-| Network-aware reconnect and reauthentication | `Implemented` | `Planned` | Reconnect always creates a new shell; neither app should imply remote process continuity. |
+| Multiple isolated live sessions | `Implemented` | `Implemented` | Both use independent runtime IDs and session coordinators, including for concurrent sessions sharing one saved host. Android uses a foreground service; iOS uses an app-owned in-memory registry. |
+| Session switching and per-session actions | `Implemented` | `Implemented` | Both distinguish same-host sessions and expose switching plus explicit per-session disconnect controls. Android restores selection across activity recreation; iOS retains sessions while navigating among app screens. |
+| Background and foreground lifecycle behavior | `Implemented` | `Partial` | Android uses a foreground service. iOS disconnects all transports on background entry, retains in-memory records for manual reconnect, and does not imply remote process continuity; physical-device interruption validation remains. |
+| Network-aware reconnect and reauthentication | `Implemented` | `Partial` | Both pause automatic retry while the default route is unavailable, bound attempts per host, and identify the replacement shell. iOS automatically retries only passphrase-free imported keys; passwords and protected keys require manual reauthentication. Physical Wi-Fi, cellular, and VPN transition validation remains. |
 | Encrypted read-only terminal archives | `Partial` | `Planned` | Android stores one device-bound snapshot per host and can explicitly export a selected live session as bounded passphrase-encrypted portable text. An in-app viewer, retention controls, and same-host local-snapshot concurrency rules remain. |
 | Host and session search, favorites, groups, and workspaces | `Planned` | `Planned` | Deferred until multi-session behavior is dependable on both platforms. |
 
@@ -142,6 +142,37 @@ The matrix reflects the current working tree, not only the last commit.
 | Tablet, landscape, split-screen, and external-keyboard workflows | `Partial` | `Partial` | Basic layouts work; neither platform has completed its device and interaction matrix. |
 | Safe share and deep-link connection entry points | `Planned` | `Planned` | External input requires explicit confirmation and must not carry credentials. |
 | Custom fonts, themes, gestures, and per-host terminal settings | `Planned` | `Planned` | Deferred until core terminal and session behavior reaches parity. |
+
+### iOS App Clip Product Slice
+
+Status: `Blocked`. The product direction is accepted, but implementation depends on proving that the SSH transport can operate within App Clip networking constraints. The current Citadel/SwiftNIO transport must be validated on a physical device and through archive validation; if it depends on unavailable low-level networking, the slice requires a Network.framework-compatible transport path.
+
+The App Clip starts only after the full iOS app has been archived, uploaded, installed, and smoke-tested through TestFlight. It is not a prerequisite for the first TestFlight build.
+
+#### First Slice
+
+- Start one temporary SSH session using a user-entered hostname or IP address, port, username, and password.
+- Require explicit approval of unknown or changed host-key fingerprints before authentication.
+- Render the remote PTY through the same bounded Ghostty terminal adapter used by the full app.
+- Keep credentials, host trust, terminal contents, and connection state in memory only.
+- Disconnect explicitly when the user exits or when App Clip lifecycle limits prevent continued foreground operation.
+- Offer installation of the full app for saved hosts, imported keys, SFTP, settings, and longer-lived session ownership.
+
+#### Boundaries
+
+- Invocation URLs, App Clip Codes, QR codes, and analytics never contain passwords or other credentials.
+- The first slice does not save or transfer hosts, credentials, trust decisions, terminal history, or clipboard contents to the full app.
+- Imported identities, keyboard-interactive authentication, SFTP, tunnels, multiple sessions, background operation, automatic reconnect, archives, and remote integrations remain full-app capabilities.
+- A failed or interrupted App Clip session starts a new shell after reauthentication; it is never presented as resumed.
+- The App Clip ships only if its binary size, privacy manifest, associated-domain configuration, transport behavior, and App Store validation satisfy current platform requirements.
+
+#### Acceptance Criteria
+
+- A physical-device spike proves connection, host-key verification, password authentication, PTY traffic, resize, input, and disconnect using an App Clip build.
+- No credential or host detail is accepted from invocation metadata without explicit in-app review, and credentials are never accepted from invocation metadata.
+- Backgrounding or expiration produces a visible disconnect and releases transport and terminal resources.
+- Installing or opening the full app does not silently persist App Clip secrets or imply continuation of the remote process.
+- The full iOS app has a successful TestFlight baseline before App Clip implementation begins.
 
 ### SFTP Product Slice
 
@@ -233,7 +264,9 @@ These are deferred rather than rejected and should be reconsidered only after or
 3. Continue Android multi-session validation through network and VPN changes and process death; selected-session rotation restoration, same-host identifiers, monotonic durations, prompt ownership, and pending-connect rotation handoff are implemented.
 4. Add disposable SSH-server, lifecycle, accessibility, and UI automation for the validated Android behavior.
 5. Update shared contracts and fixtures with product decisions discovered through Android dogfooding.
-6. Continue iOS connection reliability, complete scrollback selection/search interactions, and add platform-appropriate session ownership.
-7. Connect iOS remote-effect policy only after its core daily workflow reaches parity.
+6. Complete the iOS signing, privacy, packaging, and core connection checks required for a full-app distribution baseline.
+7. Archive, upload, install, and smoke-test the full iOS app through TestFlight before beginning App Clip implementation.
+8. Continue iOS physical-device lifecycle validation, pointer selection, connection reliability, and remote-effect parity without blocking the initial internal TestFlight build.
+9. After the TestFlight baseline, run a physical-device App Clip transport spike and proceed only if networking, binary size, privacy, and lifecycle constraints are satisfied.
 
 This order uses Android to validate trust, daily terminal usability, and interruption recovery before duplicating behavior or adding protocol breadth.

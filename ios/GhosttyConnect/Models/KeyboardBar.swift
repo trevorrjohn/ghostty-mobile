@@ -4,12 +4,18 @@ enum KeyboardModifier: String, Codable, CaseIterable, Hashable {
     case control
     case alt
     case shift
+    case meta
+    case capsLock
+    case numLock
 
     var label: String {
         switch self {
         case .control: "Ctrl"
         case .alt: "Alt"
         case .shift: "Shift"
+        case .meta: "Meta"
+        case .capsLock: "Caps"
+        case .numLock: "Num"
         }
     }
 }
@@ -18,8 +24,11 @@ enum KeyboardBarItemID: String, Codable, CaseIterable, Identifiable {
     case escape
     case control
     case alt
+    case meta
     case tab
     case shift
+    case capsLock
+    case numLock
     case enter
     case backspace
     case delete
@@ -43,8 +52,11 @@ enum KeyboardBarItemID: String, Codable, CaseIterable, Identifiable {
         case .escape: "ESC"
         case .control: "CTRL"
         case .alt: "ALT"
+        case .meta: "META"
         case .tab: "TAB"
         case .shift: "SHIFT"
+        case .capsLock: "CAPS"
+        case .numLock: "NUM"
         case .enter: "ENTER"
         case .backspace: "BKSP"
         case .delete: "DEL"
@@ -68,8 +80,11 @@ enum KeyboardBarItemID: String, Codable, CaseIterable, Identifiable {
         case .escape: "Escape"
         case .control: "Control"
         case .alt: "Alt"
+        case .meta: "Meta"
         case .tab: "Tab"
         case .shift: "Shift"
+        case .capsLock: "Caps Lock"
+        case .numLock: "Num Lock"
         case .enter: "Enter"
         case .backspace: "Backspace"
         case .delete: "Delete"
@@ -93,6 +108,9 @@ enum KeyboardBarItemID: String, Codable, CaseIterable, Identifiable {
         case .control: .control
         case .alt: .alt
         case .shift: .shift
+        case .meta: .meta
+        case .capsLock: .capsLock
+        case .numLock: .numLock
         default: nil
         }
     }
@@ -125,7 +143,7 @@ enum KeyboardBarItemID: String, Codable, CaseIterable, Identifiable {
         case .f10: .function(10)
         case .f11: .function(11)
         case .f12: .function(12)
-        case .control, .alt, .shift, .lastModifier, .lastAction: nil
+        case .control, .alt, .shift, .meta, .capsLock, .numLock, .lastModifier, .lastAction: nil
         }
     }
 }
@@ -134,6 +152,7 @@ enum KeyboardActionKey: String, Codable, CaseIterable, Identifiable {
     case escape, tab, enter, backspace, delete, insert, home, end, pageUp, pageDown
     case up, down, left, right
     case f1, f2, f3, f4, f5, f6, f7, f8, f9, f10, f11, f12
+    case backquote, backslash, bracketLeft, bracketRight, comma, equal, minus, period, quote, semicolon, slash
     case a, b, c, d, e, f, g, h, i, j, k, l, m
     case n, o, p, q, r, s, t, u, v, w, x, y, z
     case zero, one, two, three, four, five, six, seven, eight, nine
@@ -168,6 +187,17 @@ enum KeyboardActionKey: String, Codable, CaseIterable, Identifiable {
         case .seven: "7"
         case .eight: "8"
         case .nine: "9"
+        case .backquote: "`"
+        case .backslash: "\\"
+        case .bracketLeft: "["
+        case .bracketRight: "]"
+        case .comma: ","
+        case .equal: "="
+        case .minus: "-"
+        case .period: "."
+        case .quote: "'"
+        case .semicolon: ";"
+        case .slash: "/"
         case .f1, .f2, .f3, .f4, .f5, .f6, .f7, .f8, .f9, .f10, .f11, .f12:
             rawValue.uppercased()
         default: rawValue.uppercased()
@@ -213,6 +243,17 @@ enum KeyboardActionKey: String, Codable, CaseIterable, Identifiable {
         case .seven: .character("7")
         case .eight: .character("8")
         case .nine: .character("9")
+        case .backquote: .character("`")
+        case .backslash: .character("\\")
+        case .bracketLeft: .character("[")
+        case .bracketRight: .character("]")
+        case .comma: .character(",")
+        case .equal: .character("=")
+        case .minus: .character("-")
+        case .period: .character(".")
+        case .quote: .character("'")
+        case .semicolon: .character(";")
+        case .slash: .character("/")
         default: .character(rawValue.uppercased())
         }
     }
@@ -224,11 +265,27 @@ enum KeyboardActionKey: String, Codable, CaseIterable, Identifiable {
 
 struct KeyboardAction: Codable, Equatable, Identifiable {
     static let maximumLabelBytes = 48
+    static let maximumSteps = 8
 
     var id: UUID
     var label: String
-    var key: KeyboardActionKey
-    var modifiers: Set<KeyboardModifier>
+    var steps: [KeyboardActionStep]
+
+    var key: KeyboardActionKey {
+        get { steps.first?.key ?? .c }
+        set {
+            if steps.isEmpty { steps = [KeyboardActionStep(key: newValue, modifiers: [])] }
+            else { steps[0].key = newValue }
+        }
+    }
+
+    var modifiers: Set<KeyboardModifier> {
+        get { steps.first?.modifiers ?? [] }
+        set {
+            if steps.isEmpty { steps = [KeyboardActionStep(key: .c, modifiers: newValue)] }
+            else { steps[0].modifiers = newValue }
+        }
+    }
 
     init(
         id: UUID = UUID(),
@@ -236,22 +293,28 @@ struct KeyboardAction: Codable, Equatable, Identifiable {
         key: KeyboardActionKey,
         modifiers: Set<KeyboardModifier>
     ) {
+        self.init(id: id, label: label, steps: [KeyboardActionStep(key: key, modifiers: modifiers)])
+    }
+
+    init(id: UUID = UUID(), label: String, steps: [KeyboardActionStep]) {
         self.id = id
         self.label = Self.normalizedLabel(label)
-        self.key = key
-        self.modifiers = modifiers
+        self.steps = Array(steps.prefix(Self.maximumSteps))
     }
 
     var isValid: Bool {
-        !label.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !modifiers.isEmpty
+        !label.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
+            !steps.isEmpty && steps.count <= Self.maximumSteps && !steps[0].modifiers.isEmpty
     }
 
     var event: TerminalInputEvent {
-        .key(
-            key.terminalKey,
-            text: key.text(shifted: modifiers.contains(.shift)),
-            modifiers: TerminalKeyModifiers(modifiers)
-        )
+        steps[0].event
+    }
+
+    func events(adding additionalModifiers: TerminalKeyModifiers = []) -> [TerminalInputEvent] {
+        steps.enumerated().map { index, step in
+            index == 0 ? step.event.adding(additionalModifiers) : step.event
+        }
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -259,16 +322,42 @@ struct KeyboardAction: Codable, Equatable, Identifiable {
         case label
         case key
         case modifiers
+        case steps
     }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        self.init(
-            id: try container.decode(UUID.self, forKey: .id),
-            label: try container.decode(String.self, forKey: .label),
-            key: try container.decode(KeyboardActionKey.self, forKey: .key),
-            modifiers: try Self.decodeModifiers(from: container)
-        )
+        let id = try container.decode(UUID.self, forKey: .id)
+        let label = try container.decode(String.self, forKey: .label)
+        if container.contains(.steps) {
+            var values = try container.nestedUnkeyedContainer(forKey: .steps)
+            var steps: [KeyboardActionStep] = []
+            while !values.isAtEnd {
+                guard steps.count < Self.maximumSteps else {
+                    throw DecodingError.dataCorruptedError(
+                        forKey: .steps,
+                        in: container,
+                        debugDescription: "Too many keyboard action steps."
+                    )
+                }
+                steps.append(try values.decode(KeyboardActionStep.self))
+            }
+            self.init(id: id, label: label, steps: steps)
+        } else {
+            self.init(
+                id: id,
+                label: label,
+                key: try container.decode(KeyboardActionKey.self, forKey: .key),
+                modifiers: try Self.decodeModifiers(from: container)
+            )
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(label, forKey: .label)
+        try container.encode(steps, forKey: .steps)
     }
 
     private static func normalizedLabel(_ label: String) -> String {
@@ -300,6 +389,52 @@ struct KeyboardAction: Codable, Equatable, Identifiable {
             count += 1
         }
         return modifiers
+    }
+}
+
+struct KeyboardActionStep: Codable, Equatable {
+    var key: KeyboardActionKey
+    var modifiers: Set<KeyboardModifier>
+
+    var event: TerminalInputEvent {
+        .key(
+            key.terminalKey,
+            text: key.text(shifted: modifiers.contains(.shift)),
+            modifiers: TerminalKeyModifiers(modifiers)
+        )
+    }
+
+    var description: String {
+        (KeyboardModifier.allCases.filter(modifiers.contains).map(\.label) + [key.label])
+            .joined(separator: "+")
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case key
+        case modifiers
+    }
+
+    init(key: KeyboardActionKey, modifiers: Set<KeyboardModifier>) {
+        self.key = key
+        self.modifiers = modifiers
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        key = try container.decode(KeyboardActionKey.self, forKey: .key)
+        var values = try container.nestedUnkeyedContainer(forKey: .modifiers)
+        var decodedModifiers: Set<KeyboardModifier> = []
+        while !values.isAtEnd {
+            guard decodedModifiers.count < KeyboardModifier.allCases.count else {
+                throw DecodingError.dataCorruptedError(
+                    forKey: .modifiers,
+                    in: container,
+                    debugDescription: "Too many keyboard modifiers."
+                )
+            }
+            decodedModifiers.insert(try values.decode(KeyboardModifier.self))
+        }
+        modifiers = decodedModifiers
     }
 }
 
@@ -339,7 +474,7 @@ extension KeyboardBarItem: Codable {
 }
 
 struct KeyboardBarConfig: Codable, Equatable {
-    static let currentVersion = 3
+    static let currentVersion = 4
     static let maximumEncodedBytes = 16_384
     static let maximumActions = 16
     static let maximumItems = KeyboardBarItemID.allCases.count + maximumActions
@@ -399,8 +534,7 @@ struct KeyboardBarConfig: Codable, Equatable {
         let normalized = KeyboardAction(
             id: action.id,
             label: action.label,
-            key: action.key,
-            modifiers: action.modifiers
+            steps: action.steps
         )
         guard normalized.isValid else { return false }
         if let index = actions.firstIndex(where: { $0.id == normalized.id }) {
@@ -450,7 +584,7 @@ struct KeyboardBarConfig: Codable, Equatable {
                 ids.compactMap(KeyboardBarItemID.init(rawValue:)).map(KeyboardBarItem.builtIn),
                 actionIDs: []
             )
-        case 2, Self.currentVersion:
+        case 2, 3, Self.currentVersion:
             var decodedActions: [KeyboardAction] = []
             var actionContainer = try container.nestedUnkeyedContainer(forKey: .actions)
             while !actionContainer.isAtEnd {

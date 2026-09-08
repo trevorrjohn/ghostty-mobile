@@ -52,7 +52,7 @@ Product models describe hosts, authentication choice, selected identity, remote 
 
 A session coordinator owns exactly one logical relationship among a host, SSH transport attempt, Ghostty terminal, prompts, effects, resize state, and cleanup. Sessions are identified independently from saved hosts so concurrent connections to one host remain isolated.
 
-Android currently stores multiple session records in `SshSessionService`. iOS currently has one screen-owned `TerminalSessionModel`; a platform-appropriate multi-session registry is planned.
+Android stores multiple session records in `SshSessionService`. iOS uses an app-owned `TerminalSessionRegistry` containing an isolated `TerminalSessionModel` for each runtime session.
 
 ### SSH Transport Adapter
 
@@ -136,7 +136,7 @@ Host trust and authentication are session-scoped side channels, never terminal b
 | --- | --- | --- |
 | Application shell | `MainActivity` | `GhosttyConnectApp`, `RootView`, feature views |
 | Product state | Models and encrypted stores | `AppModel`, models, `SecureStore` |
-| Session coordinator | `SshSessionService` session records | `TerminalSessionModel`; registry planned |
+| Session coordinator | `SshSessionService` session records | `TerminalSessionRegistry` with per-session `TerminalSessionModel` records |
 | SSH transport | `SshConnection` using SSHJ | `SSHTransport`, `CitadelSSHTransport` |
 | SFTP transport | `SftpBrowserService`, `SftpConnection` | `SFTPBrowserModel`, `CitadelSFTPTransport` |
 | Terminal adapter | Kotlin `GhosttyTerminal` plus JNI | `GhosttyTerminalEngine` plus XCFramework |

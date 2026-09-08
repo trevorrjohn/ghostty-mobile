@@ -12,7 +12,10 @@ final class HostDuplicationTests: XCTestCase {
             authenticationType: .sshKey,
             identityID: identityID,
             remoteClipboard: .allow,
-            remoteNotifications: .block
+            remoteNotifications: .block,
+            retryEnabled: true,
+            retryMaxAttempts: 8,
+            retryBackoff: .conservative
         )
 
         let duplicate = host.duplicated(existingNames: [host.name])
@@ -26,6 +29,9 @@ final class HostDuplicationTests: XCTestCase {
         XCTAssertEqual(duplicate.identityID, host.identityID)
         XCTAssertEqual(duplicate.remoteClipboard, host.remoteClipboard)
         XCTAssertEqual(duplicate.remoteNotifications, host.remoteNotifications)
+        XCTAssertEqual(duplicate.retryEnabled, host.retryEnabled)
+        XCTAssertEqual(duplicate.retryMaxAttempts, host.retryMaxAttempts)
+        XCTAssertEqual(duplicate.retryBackoff, host.retryBackoff)
     }
 
     func testGeneratesUniqueCopyNameCaseInsensitively() {
@@ -35,5 +41,15 @@ final class HostDuplicationTests: XCTestCase {
         let duplicate = host.duplicated(existingNames: ["server copy", "Server Copy 2"])
 
         XCTAssertEqual(duplicate.alias, "server Copy 3")
+    }
+
+    func testLegacyHostDefaultsReconnectPolicy() throws {
+        let data = Data(#"{"hostname":"example.com","username":"tj"}"#.utf8)
+
+        let host = try JSONDecoder().decode(Host.self, from: data)
+
+        XCTAssertTrue(host.retryEnabled)
+        XCTAssertEqual(host.retryMaxAttempts, 5)
+        XCTAssertEqual(host.retryBackoff, .balanced)
     }
 }

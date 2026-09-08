@@ -26,12 +26,35 @@ final class TerminalInteractionTests: XCTestCase {
             TerminalKeyboardInputView.event(input: UIKeyCommand.f12, flags: []),
             .key(.function(12))
         )
+        XCTAssertEqual(
+            TerminalKeyboardInputView.event(input: "a", flags: .alphaShift),
+            .key(.character("A"), text: "a", modifiers: .capsLock)
+        )
         XCTAssertNil(TerminalKeyboardInputView.event(input: "c", flags: .command))
         XCTAssertNil(TerminalKeyboardInputView.event(input: UIKeyCommand.inputLeftArrow, flags: .command))
         XCTAssertEqual(
             TerminalKeyboardInputView.event(input: "1", flags: []).map { $0.adding(.shift) },
             .key(.character("1"), text: "!", modifiers: .shift)
         )
+    }
+
+    func testNormalizesExternalKeyboardPunctuation() {
+        let shifted: [(String, String)] = [
+            ("`", "~"), ("-", "_"), ("=", "+"), ("[", "{"), ("]", "}"),
+            ("\\", "|"), (";", ":"), ("'", "\""), (",", "<"), (".", ">"), ("/", "?"),
+        ]
+
+        for (input, output) in shifted {
+            XCTAssertEqual(
+                TerminalKeyboardInputView.event(input: input, flags: .shift),
+                .key(.character(input), text: output, modifiers: .shift)
+            )
+            XCTAssertEqual(
+                TerminalKeyboardInputView.event(input: input, flags: []),
+                .key(.character(input), text: input)
+            )
+        }
+        XCTAssertNil(TerminalKeyboardInputView.event(input: "é", flags: []))
     }
 
     func testFitsTerminalDimensionsToViewport() {
@@ -85,5 +108,75 @@ final class TerminalInteractionTests: XCTestCase {
         XCTAssertNotNil(ContextualSelection.safeWebURL("https://example.com/docs"))
         XCTAssertNil(ContextualSelection.safeWebURL("ftp://example.com/file"))
         XCTAssertNil(ContextualSelection.safeWebURL("https://"))
+    }
+
+    func testSelectionDragChoosesAndKeepsForwardEndpoint() {
+        var drag = TerminalSelectionDragState()
+        drag.begin(column: 4, row: 2)
+
+        XCTAssertNil(drag.update(column: 4, row: 2))
+        XCTAssertEqual(drag.update(column: 5, row: 2), .end)
+        XCTAssertNil(drag.update(column: 1, row: 1))
+    }
+
+    func testSelectionDragChoosesBackwardEndpointAndResets() {
+        var drag = TerminalSelectionDragState()
+        drag.begin(column: 4, row: 2)
+
+        XCTAssertEqual(drag.update(column: 9, row: 1), .start)
+        drag.reset()
+        XCTAssertNil(drag.update(column: 0, row: 0))
+        XCTAssertNil(drag.anchor)
+        XCTAssertNil(drag.endpoint)
+    }
+
+    func testSelectionAutoscrollUsesOnlyMatchingEndpointDirection() {
+        var drag = TerminalSelectionDragState()
+        drag.begin(column: 4, row: 2)
+
+        XCTAssertEqual(drag.endpointForAutoscroll(direction: -1), .start)
+        XCTAssertNil(drag.endpointForAutoscroll(direction: 1))
+        drag.reset()
+        XCTAssertNil(drag.endpointForAutoscroll(direction: -1))
+    }
+
+    func testSelectionAutoscrollStopsOutsideEdgesAndOnReset() {
+        var autoscroll = TerminalSelectionAutoscrollState()
+
+        autoscroll.update(locationY: 10, height: 300, edgeHeight: 30)
+        XCTAssertEqual(autoscroll.rowDelta, -1)
+        autoscroll.update(locationY: 290, height: 300, edgeHeight: 30)
+        XCTAssertEqual(autoscroll.rowDelta, 1)
+        autoscroll.update(locationY: 150, height: 300, edgeHeight: 30)
+        XCTAssertEqual(autoscroll.rowDelta, 0)
+        autoscroll.update(locationY: 290, height: 300, edgeHeight: 30)
+        autoscroll.reset()
+        XCTAssertEqual(autoscroll.rowDelta, 0)
+    }
+
+    func testSelectionHandleDoesNotCrossOppositeEndpoint() {
+        let endpoints = TerminalSelectionEndpoints(
+            start: TerminalSelectionPoint(column: 2, row: 1),
+            end: TerminalSelectionPoint(column: 7, row: 2)
+        )
+        var drag = TerminalSelectionHandleDragState()
+
+        drag.begin(endpoint: .start, endpoints: endpoints)
+        XCTAssertTrue(drag.allows(TerminalSelectionPoint(column: 6, row: 2)))
+        XCTAssertFalse(drag.allows(TerminalSelectionPoint(column: 8, row: 2)))
+        drag.reset()
+        XCTAssertFalse(drag.allows(TerminalSelectionPoint(column: 0, row: 0)))
+    }
+
+    func testSelectionHandlePreservesReversedSelectionDirection() {
+        let endpoints = TerminalSelectionEndpoints(
+            start: TerminalSelectionPoint(column: 7, row: 2),
+            end: TerminalSelectionPoint(column: 2, row: 1)
+        )
+        var drag = TerminalSelectionHandleDragState()
+
+        drag.begin(endpoint: .start, endpoints: endpoints)
+        XCTAssertTrue(drag.allows(TerminalSelectionPoint(column: 3, row: 1)))
+        XCTAssertFalse(drag.allows(TerminalSelectionPoint(column: 1, row: 1)))
     }
 }

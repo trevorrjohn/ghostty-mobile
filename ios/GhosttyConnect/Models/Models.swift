@@ -18,6 +18,15 @@ enum RemotePermission: String, Codable, CaseIterable, Identifiable {
     var label: String { rawValue.capitalized }
 }
 
+enum RetryBackoff: String, Codable, CaseIterable, Identifiable {
+    case fast
+    case balanced
+    case conservative
+
+    var id: Self { self }
+    var label: String { rawValue.capitalized }
+}
+
 struct Host: Codable, Identifiable, Hashable {
     var id = UUID()
     var alias = ""
@@ -30,6 +39,9 @@ struct Host: Codable, Identifiable, Hashable {
     var remoteClipboard = RemotePermission.ask
     var remoteNotifications = RemotePermission.ask
     var allowSftpDelete: Bool?
+    var retryEnabled = true
+    var retryMaxAttempts = 5
+    var retryBackoff = RetryBackoff.balanced
 
     var name: String { alias.trimmingCharacters(in: .whitespaces).isEmpty ? hostname : alias }
     var destination: String { "\(username)@\(hostname):\(port)" }
@@ -44,7 +56,10 @@ struct Host: Codable, Identifiable, Hashable {
         identityID: UUID? = nil,
         remoteClipboard: RemotePermission = .ask,
         remoteNotifications: RemotePermission = .ask,
-        allowSftpDelete: Bool? = nil
+        allowSftpDelete: Bool? = nil,
+        retryEnabled: Bool = true,
+        retryMaxAttempts: Int = 5,
+        retryBackoff: RetryBackoff = .balanced
     ) {
         self.id = id
         self.alias = alias
@@ -56,11 +71,15 @@ struct Host: Codable, Identifiable, Hashable {
         self.remoteClipboard = remoteClipboard
         self.remoteNotifications = remoteNotifications
         self.allowSftpDelete = allowSftpDelete
+        self.retryEnabled = retryEnabled
+        self.retryMaxAttempts = min(10, max(1, retryMaxAttempts))
+        self.retryBackoff = retryBackoff
     }
 
     private enum CodingKeys: String, CodingKey {
         case id, alias, hostname, port, username, authenticationType, identityID, keyName
         case remoteClipboard, remoteNotifications, allowSftpDelete
+        case retryEnabled, retryMaxAttempts, retryBackoff
     }
 
     init(from decoder: Decoder) throws {
@@ -76,6 +95,9 @@ struct Host: Codable, Identifiable, Hashable {
         remoteClipboard = try values.decodeIfPresent(RemotePermission.self, forKey: .remoteClipboard) ?? .ask
         remoteNotifications = try values.decodeIfPresent(RemotePermission.self, forKey: .remoteNotifications) ?? .ask
         allowSftpDelete = try values.decodeIfPresent(Bool.self, forKey: .allowSftpDelete)
+        retryEnabled = try values.decodeIfPresent(Bool.self, forKey: .retryEnabled) ?? true
+        retryMaxAttempts = min(10, max(1, try values.decodeIfPresent(Int.self, forKey: .retryMaxAttempts) ?? 5))
+        retryBackoff = try values.decodeIfPresent(RetryBackoff.self, forKey: .retryBackoff) ?? .balanced
     }
 
     func encode(to encoder: Encoder) throws {
@@ -91,6 +113,9 @@ struct Host: Codable, Identifiable, Hashable {
         try values.encode(remoteClipboard, forKey: .remoteClipboard)
         try values.encode(remoteNotifications, forKey: .remoteNotifications)
         try values.encodeIfPresent(allowSftpDelete, forKey: .allowSftpDelete)
+        try values.encode(retryEnabled, forKey: .retryEnabled)
+        try values.encode(retryMaxAttempts, forKey: .retryMaxAttempts)
+        try values.encode(retryBackoff, forKey: .retryBackoff)
     }
 
     mutating func migrateIdentityReference(to id: UUID) {

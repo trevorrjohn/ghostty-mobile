@@ -3,6 +3,17 @@ import XCTest
 
 @MainActor
 final class TerminalInputSessionTests: XCTestCase {
+    func testSearchForwardsToEngineWhileDisconnected() {
+        let engine = InputTestEngine()
+        engine.searchResult = true
+        let session = TerminalSessionModel(engineFactory: { engine })
+
+        XCTAssertTrue(session.search("needle", direction: .previous))
+        XCTAssertEqual(engine.searchQuery, "needle")
+        XCTAssertEqual(engine.searchDirection, .previous)
+        XCTAssertNotNil(session.snapshot)
+    }
+
     func testRapidInputWritesRemainOrdered() async throws {
         let recorder = InputRecorder()
         let transport = RecordingInputTransport(recorder: recorder)
@@ -22,6 +33,26 @@ final class TerminalInputSessionTests: XCTestCase {
 
         let values = await recorder.values()
         XCTAssertEqual(values, ["1", "2", "3"])
+        await session.disconnect()
+    }
+
+    func testInputSequenceUsesOneOrderedTransportWrite() async throws {
+        let recorder = InputRecorder()
+        let transport = RecordingInputTransport(recorder: recorder)
+        let session = TerminalSessionModel(
+            transportFactory: { transport },
+            engineFactory: { InputTestEngine() }
+        )
+        var host = Host()
+        host.hostname = "example.com"
+        host.username = "user"
+
+        await session.connect(to: host, secret: "password")
+        session.send([.text("prefix"), .text("command")])
+        try? await Task.sleep(nanoseconds: 100_000_000)
+
+        let values = await recorder.values()
+        XCTAssertEqual(values, ["prefixcommand"])
         await session.disconnect()
     }
 
@@ -74,6 +105,184 @@ final class TerminalInputSessionTests: XCTestCase {
         let transportClosed = await waitUntil { await transport.disconnectCount() == 1 }
         XCTAssertTrue(failed)
         XCTAssertTrue(transportClosed)
+    }
+
+    func testNetworkFailureAutomaticallyReconnectsWithReusableKey() async throws {
+        let first = LifecycleTransport()
+        let second = LifecycleTransport()
+        let factory = LifecycleTransportFactory([first, second])
+        let key = StoredKey(name: "test", data: Data("key".utf8), requiresPassphrase: false)
+        let session = TerminalSessionModel(
+            transportFactory: factory.make,
+            engineFactory: { InputTestEngine() },
+            keyProvider: { id in id == key.id ? key : nil },
+            retrySleep: { _ in }
+        )
+        var host = testHost()
+        host.authenticationType = .sshKey
+        await session.connect(to: host, secret: nil, key: key)
+
+        first.finishOutput(throwing: SSHTransportError.sessionClosed)
+
+        let reconnected = await waitUntil { session.state == .connected && factory.createdCount == 2 }
+        XCTAssertTrue(reconnected)
+        XCTAssertTrue(session.hasConnectedShell)
+        await session.disconnect()
+    }
+
+    func testAutomaticReconnectWaitsForUsableNetwork() async throws {
+        let first = LifecycleTransport()
+        let second = LifecycleTransport()
+        let factory = LifecycleTransportFactory([first, second])
+        let key = StoredKey(name: "test", data: Data("key".utf8), requiresPassphrase: false)
+        let session = TerminalSessionModel(
+            transportFactory: factory.make,
+            engineFactory: { InputTestEngine() },
+            keyProvider: { id in id == key.id ? key : nil },
+            retrySleep: { _ in }
+        )
+        var host = testHost()
+        host.authenticationType = .sshKey
+        await session.connect(to: host, secret: nil, key: key)
+        session.setNetworkAvailability(.unavailable)
+
+        first.finishOutput()
+
+        let waiting = await waitUntil { session.state == .waitingForNetwork }
+        XCTAssertTrue(waiting)
+        XCTAssertEqual(factory.createdCount, 1)
+        session.setNetworkAvailability(.usable)
+        let reconnected = await waitUntil { session.state == .connected && factory.createdCount == 2 }
+        XCTAssertTrue(reconnected)
+        await session.disconnect()
+    }
+
+    func testAutomaticReconnectStopsAtConfiguredAttemptLimit() async throws {
+        let first = LifecycleTransport()
+        let failedRetry = LifecycleTransport(connectError: SSHTransportError.sessionClosed)
+        let factory = LifecycleTransportFactory([first, failedRetry])
+        let key = StoredKey(name: "test", data: Data("key".utf8), requiresPassphrase: false)
+        let session = TerminalSessionModel(
+            transportFactory: factory.make,
+            engineFactory: { InputTestEngine() },
+            keyProvider: { id in id == key.id ? key : nil },
+            retrySleep: { _ in }
+        )
+        var host = testHost()
+        host.authenticationType = .sshKey
+        host.retryMaxAttempts = 1
+        await session.connect(to: host, secret: nil, key: key)
+
+        first.finishOutput(throwing: SSHTransportError.sessionClosed)
+
+        let exhausted = await waitUntil {
+            guard case .failed(let failure) = session.state else { return false }
+            return failure.message.contains("stopped after 1 attempt")
+        }
+        XCTAssertTrue(exhausted)
+        XCTAssertEqual(factory.createdCount, 2)
+    }
+
+    func testPasswordConnectionNeverRetriesWithoutReauthentication() async throws {
+        let transport = LifecycleTransport()
+        let factory = LifecycleTransportFactory([transport])
+        let session = TerminalSessionModel(
+            transportFactory: factory.make,
+            engineFactory: { InputTestEngine() },
+            retrySleep: { _ in }
+        )
+        await session.connect(to: testHost(), secret: "password")
+
+        transport.finishOutput(throwing: SSHTransportError.sessionClosed)
+
+        let failed = await waitUntil {
+            guard case .failed(let failure) = session.state else { return false }
+            return failure.kind == .network
+        }
+        XCTAssertTrue(failed)
+        XCTAssertEqual(factory.createdCount, 1)
+    }
+
+    func testPassphraseProtectedKeyNeverRetriesWithoutReauthentication() async throws {
+        let transport = LifecycleTransport()
+        let factory = LifecycleTransportFactory([transport])
+        let session = TerminalSessionModel(
+            transportFactory: factory.make,
+            engineFactory: { InputTestEngine() },
+            retrySleep: { _ in }
+        )
+        var host = testHost()
+        host.authenticationType = .sshKey
+        let key = StoredKey(name: "protected", data: Data("key".utf8), requiresPassphrase: true)
+        await session.connect(to: host, secret: "passphrase", key: key)
+
+        transport.finishOutput(throwing: SSHTransportError.sessionClosed)
+
+        let failed = await waitUntil {
+            guard case .failed(let failure) = session.state else { return false }
+            return failure.kind == .network
+        }
+        XCTAssertTrue(failed)
+        XCTAssertEqual(factory.createdCount, 1)
+    }
+
+    func testExplicitDisconnectCancelsScheduledAutomaticReconnect() async throws {
+        let first = LifecycleTransport()
+        let second = LifecycleTransport()
+        let factory = LifecycleTransportFactory([first, second])
+        let key = StoredKey(name: "test", data: Data("key".utf8), requiresPassphrase: false)
+        let session = TerminalSessionModel(
+            transportFactory: factory.make,
+            engineFactory: { InputTestEngine() },
+            keyProvider: { id in id == key.id ? key : nil },
+            retrySleep: { _ in try await Task.sleep(nanoseconds: 10_000_000_000) }
+        )
+        var host = testHost()
+        host.authenticationType = .sshKey
+        await session.connect(to: host, secret: nil, key: key)
+        first.finishOutput(throwing: SSHTransportError.sessionClosed)
+        let scheduled = await waitUntil {
+            if case .retrying = session.state { return true }
+            return false
+        }
+        XCTAssertTrue(scheduled)
+
+        await session.disconnect()
+        try? await Task.sleep(nanoseconds: 20_000_000)
+
+        XCTAssertEqual(session.state, .disconnected)
+        XCTAssertEqual(factory.createdCount, 1)
+    }
+
+    func testDeletedIdentityStopsScheduledAutomaticReconnect() async throws {
+        let first = LifecycleTransport()
+        let factory = LifecycleTransportFactory([first, LifecycleTransport()])
+        let key = StoredKey(name: "test", data: Data("key".utf8), requiresPassphrase: false)
+        var availableKey: StoredKey? = key
+        let session = TerminalSessionModel(
+            transportFactory: factory.make,
+            engineFactory: { InputTestEngine() },
+            keyProvider: { id in availableKey?.id == id ? availableKey : nil },
+            retrySleep: { _ in try await Task.sleep(nanoseconds: 50_000_000) }
+        )
+        var host = testHost()
+        host.authenticationType = .sshKey
+        await session.connect(to: host, secret: nil, key: key)
+
+        first.finishOutput(throwing: SSHTransportError.sessionClosed)
+        let scheduled = await waitUntil {
+            if case .retrying = session.state { return true }
+            return false
+        }
+        XCTAssertTrue(scheduled)
+        availableKey = nil
+
+        let revoked = await waitUntil {
+            guard case .failed(let failure) = session.state else { return false }
+            return failure.kind == .configuration && failure.message.contains("no longer available")
+        }
+        XCTAssertTrue(revoked)
+        XCTAssertEqual(factory.createdCount, 1)
     }
 
     func testRemoteCloseDoesNotWaitForHungWriteBeforeLeavingConnectedState() async throws {
@@ -199,8 +408,10 @@ private final class LifecycleTransport: SSHTransport {
     private let outputContinuation: AsyncThrowingStream<Data, Error>.Continuation
     private let trustContinuation: AsyncStream<HostTrustRequest>.Continuation
     private let state: LifecycleTransportState
+    private let connectError: Error?
 
-    init(hangWrites: Bool = false, delayDisconnect: Bool = false) {
+    init(hangWrites: Bool = false, delayDisconnect: Bool = false, connectError: Error? = nil) {
+        self.connectError = connectError
         state = LifecycleTransportState(hangWrites: hangWrites, delayDisconnect: delayDisconnect)
         var outputContinuation: AsyncThrowingStream<Data, Error>.Continuation!
         output = AsyncThrowingStream { outputContinuation = $0 }
@@ -210,7 +421,9 @@ private final class LifecycleTransport: SSHTransport {
         self.trustContinuation = trustContinuation
     }
 
-    func connect(to host: Host, credential: SSHCredential) async throws {}
+    func connect(to host: Host, credential: SSHCredential) async throws {
+        if let connectError { throw connectError }
+    }
     func write(_ data: Data) async throws { try await state.write() }
     func resize(columns: Int, rows: Int, pixelWidth: Int, pixelHeight: Int) async throws {}
 
@@ -296,6 +509,10 @@ private final class LifecycleTransportFactory: @unchecked Sendable {
 }
 
 private final class InputTestEngine: TerminalEngine {
+    var searchResult = false
+    private(set) var searchQuery: String?
+    private(set) var searchDirection: TerminalSearchDirection?
+
     func feed(_ data: Data) {}
     func resize(columns: Int, rows: Int) {}
 
@@ -308,7 +525,13 @@ private final class InputTestEngine: TerminalEngine {
     func encodePaste(_ text: String) throws -> Data { Data("paste:\(text)".utf8) }
     func scrollViewport(byRows rows: Int) {}
     func scrollToBottom() {}
+    func search(_ query: String, direction: TerminalSearchDirection) -> Bool {
+        searchQuery = query
+        searchDirection = direction
+        return searchResult
+    }
     func selectWord(column: Int, row: Int) -> Bool { false }
+    func setSelectionEndpoint(start: Bool, column: Int, row: Int) -> Bool { false }
     func selectRange(startColumn: Int, endColumn: Int, row: Int) -> Bool { false }
     func selectOutput(column: Int, row: Int) -> Bool { false }
     func hyperlink(column: Int, row: Int) -> String? { nil }

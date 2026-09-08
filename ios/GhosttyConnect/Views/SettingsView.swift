@@ -41,7 +41,7 @@ struct SettingsView: View {
                         .foregroundStyle(Color.ghosttySecondary)
                 }
                 Section("About") {
-                    LabeledContent("Version", value: "0.1.0")
+                    LabeledContent("Version", value: appVersion)
                     LabeledContent("Terminal engine", value: TerminalEngineFactory.isAvailable ? "Ghostty VT" : "Unavailable")
                     LabeledContent("SSH transport", value: "Citadel")
                 }
@@ -51,6 +51,12 @@ struct SettingsView: View {
             .navigationTitle("Settings")
             .onAppear { model.reloadTrustedHosts() }
         }
+    }
+
+    private var appVersion: String {
+        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "Unknown"
+        let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "Unknown"
+        return "\(version) (\(build))"
     }
 }
 
@@ -216,7 +222,7 @@ private struct KeyboardBarSettingsView: View {
             } header: {
                 Text("Custom Actions")
             } footer: {
-                Text("Create up to \(KeyboardBarConfig.maximumActions) actions from a key and Ctrl, Alt, or Shift.")
+                Text("Create up to \(KeyboardBarConfig.maximumActions) actions with \(KeyboardAction.maximumSteps) ordered key events.")
             }
 
             Section {
@@ -249,10 +255,7 @@ private struct KeyboardBarSettingsView: View {
     }
 
     private func description(for action: KeyboardAction) -> String {
-        let modifiers = KeyboardModifier.allCases
-            .filter(action.modifiers.contains)
-            .map(\.label)
-        return (modifiers + [action.key.label]).joined(separator: "+")
+        action.steps.map(\.description).joined(separator: ", then ")
     }
 }
 
@@ -299,16 +302,23 @@ private struct KeyboardActionEditor: View {
                 Section("Action") {
                     TextField("Label", text: $action.label)
                         .textInputAutocapitalization(.characters)
-                    Picker("Key", selection: $action.key) {
-                        ForEach(KeyboardActionKey.allCases) { key in
-                            Text(key.label).tag(key)
+                }
+                Section("Events") {
+                    ForEach(action.steps.indices, id: \.self) { index in
+                        NavigationLink {
+                            KeyboardActionStepEditor(step: $action.steps[index], requiresModifier: index == 0)
+                        } label: {
+                            LabeledContent("Event \(index + 1)", value: action.steps[index].description)
                         }
                     }
-                }
-                Section("Modifiers") {
-                    ForEach(KeyboardModifier.allCases, id: \.self) { modifier in
-                        Toggle(modifier.label, isOn: modifierBinding(modifier))
+                    .onDelete(perform: deleteSteps)
+                    .onMove { source, destination in
+                        action.steps.move(fromOffsets: source, toOffset: destination)
                     }
+                    Button("Add Event", systemImage: "plus") {
+                        action.steps.append(KeyboardActionStep(key: .n, modifiers: []))
+                    }
+                    .disabled(action.steps.count >= KeyboardAction.maximumSteps)
                 }
             }
             .navigationTitle("Custom Action")
@@ -319,26 +329,53 @@ private struct KeyboardActionEditor: View {
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Save") {
-                        let saved = onSave(KeyboardAction(
-                            id: action.id,
-                            label: action.label,
-                            key: action.key,
-                            modifiers: action.modifiers
-                        ))
+                        let saved = onSave(action)
                         if saved { dismiss() }
                     }
                     .disabled(!action.isValid)
                 }
+                ToolbarItem(placement: .primaryAction) { EditButton() }
             }
         }
     }
 
+    private func deleteSteps(at offsets: IndexSet) {
+        guard action.steps.count - offsets.count >= 1 else { return }
+        action.steps.remove(atOffsets: offsets)
+    }
+}
+
+private struct KeyboardActionStepEditor: View {
+    @Binding var step: KeyboardActionStep
+    let requiresModifier: Bool
+
+    var body: some View {
+        Form {
+            Picker("Key", selection: $step.key) {
+                ForEach(KeyboardActionKey.allCases) { key in
+                    Text(key.label).tag(key)
+                }
+            }
+            Section {
+                ForEach(KeyboardModifier.allCases, id: \.self) { modifier in
+                    Toggle(modifier.label, isOn: modifierBinding(modifier))
+                }
+            } header: {
+                Text("Modifiers")
+            } footer: {
+                Text(requiresModifier ? "The first event requires at least one modifier." : "Modifiers are optional for this event.")
+            }
+        }
+        .navigationTitle("Key Event")
+        .navigationBarTitleDisplayMode(.inline)
+    }
+
     private func modifierBinding(_ modifier: KeyboardModifier) -> Binding<Bool> {
         Binding {
-            action.modifiers.contains(modifier)
+            step.modifiers.contains(modifier)
         } set: { enabled in
-            if enabled { action.modifiers.insert(modifier) }
-            else { action.modifiers.remove(modifier) }
+            if enabled { step.modifiers.insert(modifier) }
+            else { step.modifiers.remove(modifier) }
         }
     }
 }

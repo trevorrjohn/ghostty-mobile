@@ -105,7 +105,11 @@ final class AppModel: ObservableObject {
 
     func key(for host: Host) -> StoredKey? {
         guard let identityID = host.identityID else { return nil }
-        return keys.first { $0.id == identityID }
+        return key(id: identityID)
+    }
+
+    func key(id: UUID) -> StoredKey? {
+        keys.first { $0.id == id }
     }
 
     func hosts(using key: StoredKey) -> [Host] {

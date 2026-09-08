@@ -33,7 +33,7 @@ final class KeyboardBarTests: XCTestCase {
     }
 
     func testRejectsUnsupportedConfigurationVersion() {
-        let data = Data(#"{"version":4,"enabled":true,"items":[],"actions":[]}"#.utf8)
+        let data = Data(#"{"version":5,"enabled":true,"items":[],"actions":[]}"#.utf8)
 
         XCTAssertThrowsError(try JSONDecoder().decode(KeyboardBarConfig.self, from: data))
     }
@@ -82,8 +82,23 @@ final class KeyboardBarTests: XCTestCase {
         XCTAssertEqual(KeyboardBarItemID.delete.key, .delete)
         XCTAssertEqual(KeyboardBarItemID.pageDown.key, .pageDown)
         XCTAssertEqual(KeyboardBarItemID.f12.key, .function(12))
+        XCTAssertEqual(KeyboardBarItemID.meta.modifier, .meta)
+        XCTAssertEqual(KeyboardBarItemID.capsLock.modifier, .capsLock)
+        XCTAssertEqual(KeyboardBarItemID.numLock.modifier, .numLock)
         XCTAssertNil(KeyboardBarItemID.lastModifier.key)
         XCTAssertNil(KeyboardBarItemID.lastAction.key)
+    }
+
+    func testExtendedModifiersMapToGhosttyBitsAndRoundTrip() throws {
+        let modifiers: Set<KeyboardModifier> = [.meta, .capsLock, .numLock]
+        XCTAssertEqual(TerminalKeyModifiers(modifiers), [.meta, .capsLock, .numLock])
+
+        let action = KeyboardAction(label: "Meta key", key: .a, modifiers: modifiers)
+        let config = KeyboardBarConfig(enabled: true, items: [.action(action.id)], actions: [action])
+        XCTAssertEqual(
+            try JSONDecoder().decode(KeyboardBarConfig.self, from: JSONEncoder().encode(config)),
+            config
+        )
     }
 
     func testSavesAddsAndDeletesCustomAction() {
@@ -136,9 +151,32 @@ final class KeyboardBarTests: XCTestCase {
     func testShiftedActionUsesGeneratedText() {
         let letter = KeyboardAction(label: "Upper A", key: .a, modifiers: [.shift])
         let digit = KeyboardAction(label: "Bang", key: .one, modifiers: [.shift])
+        let punctuation = KeyboardAction(label: "Question", key: .slash, modifiers: [.shift])
 
         XCTAssertEqual(letter.event, .key(.character("A"), text: "A", modifiers: .shift))
         XCTAssertEqual(digit.event, .key(.character("1"), text: "!", modifiers: .shift))
+        XCTAssertEqual(punctuation.event, .key(.character("/"), text: "?", modifiers: .shift))
+    }
+
+    func testPunctuationActionSequenceRoundTrips() throws {
+        let action = KeyboardAction(
+            label: "Shell operators",
+            steps: [
+                KeyboardActionStep(key: .backslash, modifiers: [.alt]),
+                KeyboardActionStep(key: .semicolon, modifiers: [.shift]),
+            ]
+        )
+        let config = KeyboardBarConfig(enabled: true, items: [.action(action.id)], actions: [action])
+
+        let decoded = try JSONDecoder().decode(
+            KeyboardBarConfig.self,
+            from: JSONEncoder().encode(config)
+        )
+        XCTAssertEqual(decoded, config)
+        XCTAssertEqual(action.events(), [
+            .key(.character("\\"), text: "\\", modifiers: .alt),
+            .key(.character(";"), text: ":", modifiers: .shift),
+        ])
     }
 
     func testKeyboardBarShiftRegeneratesCustomActionText() {
@@ -148,5 +186,67 @@ final class KeyboardBarTests: XCTestCase {
             action.event.adding(.shift),
             .key(.character("1"), text: "!", modifiers: [.control, .shift])
         )
+    }
+
+    func testMultiStepActionRoundTripsAndKeepsModifiersPerEvent() throws {
+        let action = KeyboardAction(
+            label: "Tmux next",
+            steps: [
+                KeyboardActionStep(key: .b, modifiers: [.control]),
+                KeyboardActionStep(key: .n, modifiers: []),
+            ]
+        )
+        let config = KeyboardBarConfig(enabled: true, items: [.action(action.id)], actions: [action])
+
+        let data = try JSONEncoder().encode(config)
+        let decoded = try JSONDecoder().decode(KeyboardBarConfig.self, from: data)
+
+        XCTAssertEqual(decoded, config)
+        XCTAssertEqual(
+            action.events(),
+            [
+                .key(.character("B"), text: "b", modifiers: .control),
+                .key(.character("N"), text: "n", modifiers: []),
+            ]
+        )
+    }
+
+    func testRuntimeModifiersApplyOnlyToFirstSequenceEvent() {
+        let action = KeyboardAction(
+            label: "Tmux next",
+            steps: [
+                KeyboardActionStep(key: .b, modifiers: [.control]),
+                KeyboardActionStep(key: .n, modifiers: []),
+            ]
+        )
+
+        XCTAssertEqual(
+            action.events(adding: .shift),
+            [
+                .key(.character("B"), text: "B", modifiers: [.control, .shift]),
+                .key(.character("N"), text: "n", modifiers: []),
+            ]
+        )
+    }
+
+    func testVersionThreeLegacyActionMigratesToOneStep() throws {
+        let id = UUID()
+        let data = Data(#"{"version":3,"enabled":true,"items":["action:\#(id.uuidString)"],"actions":[{"id":"\#(id.uuidString)","label":"Ctrl+B","key":"b","modifiers":["control"]}]}"#.utf8)
+
+        let config = try JSONDecoder().decode(KeyboardBarConfig.self, from: data)
+
+        XCTAssertEqual(
+            config.actions.first?.steps,
+            [KeyboardActionStep(key: .b, modifiers: [.control])]
+        )
+    }
+
+    func testRejectsMoreThanEightDecodedActionSteps() {
+        let id = UUID()
+        let step = #"{"key":"n","modifiers":[]}"#
+        let steps = Array(repeating: step, count: KeyboardAction.maximumSteps + 1).joined(separator: ",")
+        let data = Data(#"{"version":4,"enabled":true,"items":["action:\#(id.uuidString)"],"actions":[{"id":"\#(id.uuidString)","label":"Too long","steps":[\#(steps)]}]}"#.utf8)
+
+        XCTAssertThrowsError(try JSONDecoder().decode(KeyboardBarConfig.self, from: data))
     }
 }

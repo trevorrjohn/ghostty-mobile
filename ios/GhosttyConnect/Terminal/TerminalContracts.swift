@@ -3,6 +3,8 @@ import Foundation
 enum SessionState: Equatable {
     case disconnected
     case connecting
+    case waitingForNetwork
+    case retrying(attempt: Int, maxAttempts: Int, delaySeconds: Int)
     case verifyingHost
     case authenticating
     case connected
@@ -54,7 +56,8 @@ enum TerminalKey: Equatable {
               let scalar = text.unicodeScalars.first,
               scalar.isASCII else { return nil }
         let value = text.uppercased()
-        guard value.range(of: #"^[A-Z0-9 ]$"#, options: .regularExpression) != nil else { return nil }
+        let supported = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 `-=[]\\;',./")
+        guard value.unicodeScalars.allSatisfy(supported.contains) else { return nil }
         return .character(value)
     }
 
@@ -72,6 +75,17 @@ enum TerminalKey: Equatable {
         case "7": return "&"
         case "8": return "*"
         case "9": return "("
+        case "`": return "~"
+        case "-": return "_"
+        case "=": return "+"
+        case "[": return "{"
+        case "]": return "}"
+        case "\\": return "|"
+        case ";": return ":"
+        case "'": return "\""
+        case ",": return "<"
+        case ".": return ">"
+        case "/": return "?"
         default: return value.uppercased()
         }
     }
@@ -83,6 +97,9 @@ struct TerminalKeyModifiers: OptionSet, Equatable {
     static let shift = TerminalKeyModifiers(rawValue: 1 << 0)
     static let control = TerminalKeyModifiers(rawValue: 1 << 1)
     static let alt = TerminalKeyModifiers(rawValue: 1 << 2)
+    static let meta = TerminalKeyModifiers(rawValue: 1 << 3)
+    static let capsLock = TerminalKeyModifiers(rawValue: 1 << 4)
+    static let numLock = TerminalKeyModifiers(rawValue: 1 << 5)
 
     init(rawValue: UInt16) { self.rawValue = rawValue }
 
@@ -91,6 +108,9 @@ struct TerminalKeyModifiers: OptionSet, Equatable {
         if modifiers.contains(.shift) { value.insert(.shift) }
         if modifiers.contains(.control) { value.insert(.control) }
         if modifiers.contains(.alt) { value.insert(.alt) }
+        if modifiers.contains(.meta) { value.insert(.meta) }
+        if modifiers.contains(.capsLock) { value.insert(.capsLock) }
+        if modifiers.contains(.numLock) { value.insert(.numLock) }
         self = value
     }
 }
@@ -109,6 +129,11 @@ enum TerminalInputEvent: Equatable {
             return .key(key, text: output, modifiers: combined)
         }
     }
+}
+
+enum TerminalSearchDirection: Equatable {
+    case previous
+    case next
 }
 
 protocol SSHTransport: AnyObject {
@@ -187,7 +212,9 @@ protocol TerminalEngine: AnyObject {
     func encodePaste(_ text: String) throws -> Data
     func scrollViewport(byRows rows: Int)
     func scrollToBottom()
+    func search(_ query: String, direction: TerminalSearchDirection) -> Bool
     func selectWord(column: Int, row: Int) -> Bool
+    func setSelectionEndpoint(start: Bool, column: Int, row: Int) -> Bool
     func selectRange(startColumn: Int, endColumn: Int, row: Int) -> Bool
     func selectOutput(column: Int, row: Int) -> Bool
     func hyperlink(column: Int, row: Int) -> String?
@@ -214,11 +241,22 @@ struct TerminalSnapshot: Equatable {
     let cursor: TerminalCursor?
     let viewport: TerminalViewport
     let hasSelection: Bool
+    var selectionEndpoints: TerminalSelectionEndpoints? = nil
 
     func cell(column: Int, row: Int) -> TerminalCell? {
         guard column >= 0, column < columns, row >= 0, row < rows else { return nil }
         return cells[row * columns + column]
     }
+}
+
+struct TerminalSelectionPoint: Equatable {
+    let column: Int
+    let row: Int
+}
+
+struct TerminalSelectionEndpoints: Equatable {
+    let start: TerminalSelectionPoint?
+    let end: TerminalSelectionPoint?
 }
 
 struct TerminalCell: Equatable {

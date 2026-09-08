@@ -6,6 +6,7 @@ import UIKit
 struct SFTPBrowserScreen: View {
     let host: Host
     @EnvironmentObject private var app: AppModel
+    @EnvironmentObject private var sessions: TerminalSessionRegistry
     @Environment(\.dismiss) private var dismiss
     @StateObject private var browser = SFTPBrowserModel()
     @State private var secret = ""
@@ -18,6 +19,7 @@ struct SFTPBrowserScreen: View {
     @State private var exportItem: SFTPExportItem?
     @State private var previewURL: URL?
     @State private var showingTerminal = false
+    @State private var terminalSessionID: UUID?
     @State private var pendingUpload: SFTPPendingUpload?
 
     private var selectedKey: StoredKey? { app.key(for: host) }
@@ -118,7 +120,14 @@ struct SFTPBrowserScreen: View {
             }
         }
         .sheet(isPresented: $showingTerminal) {
-            NavigationStack { TerminalScreen(host: host) }
+            if let terminalSessionID, let record = sessions.record(id: terminalSessionID) {
+                NavigationStack {
+                    TerminalScreen(record: record) { selectedID in
+                        self.terminalSessionID = selectedID
+                    }
+                    .id(record.id)
+                }
+            }
         }
         .sheet(item: $pendingUpload) { upload in
             SFTPUploadNameView(
@@ -240,7 +249,10 @@ struct SFTPBrowserScreen: View {
             }
             Toggle("Show hidden files", isOn: $browser.showHidden)
             Divider()
-            Button("Open terminal", systemImage: "terminal") { showingTerminal = true }
+            Button("Open terminal", systemImage: "terminal") {
+                terminalSessionID = sessions.create(for: host)
+                showingTerminal = true
+            }
             Button("Disconnect", role: .destructive) {
                 Task { await browser.disconnect(); dismiss() }
             }

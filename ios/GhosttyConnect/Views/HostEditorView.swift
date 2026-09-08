@@ -34,6 +34,22 @@ struct HostEditorView: View {
                         Button("Add SSH key") { showingKeyImport = true }
                     }
                 }
+                Section("Reconnect") {
+                    Toggle("Retry after network loss", isOn: $host.retryEnabled)
+                    Stepper(
+                        "Maximum attempts: \(host.retryMaxAttempts)",
+                        value: $host.retryMaxAttempts,
+                        in: 1...10
+                    )
+                    .disabled(!host.retryEnabled)
+                    Picker("Backoff", selection: $host.retryBackoff) {
+                        ForEach(RetryBackoff.allCases) { Text($0.label).tag($0) }
+                    }
+                    .disabled(!host.retryEnabled)
+                    Text("Automatic retry is available only for SSH keys that do not require a passphrase. A reconnect always starts a new shell.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
                 Section("Remote requests") {
                     permissionPicker("Clipboard", selection: $host.remoteClipboard)
                     permissionPicker("Notifications", selection: $host.remoteNotifications)

@@ -2,22 +2,29 @@ import SwiftUI
 import UIKit
 
 struct TerminalScreen: View {
-    let host: Host
+    @ObservedObject var record: TerminalSessionRecord
+    let switchSession: (UUID) -> Void
     @EnvironmentObject private var model: AppModel
+    @EnvironmentObject private var sessions: TerminalSessionRegistry
+    @Environment(\.dismiss) private var dismiss
     @Environment(\.displayScale) private var displayScale
     @Environment(\.openURL) private var openURL
-    @StateObject private var session = TerminalSessionModel()
     @State private var secret = ""
     @State private var showingCredential = false
     @State private var keyboardFocused = false
     @State private var pendingReconnect = false
     @State private var showingFiles = false
-    @State private var hasRequestedConnection = false
     @State private var keyboardBarState = KeyboardBarRuntimeState()
     @State private var pastePrompt: PastePrompt?
     @State private var contextualSelection: ContextualSelection?
     @State private var transientFontSize: Double?
     @State private var pressedKeyboardBarItem: KeyboardBarItem?
+    @State private var showingHistorySearch = false
+    @State private var historySearchMessage: String?
+    @FocusState private var historySearchFocused: Bool
+
+    private var host: Host { record.host }
+    private var session: TerminalSessionModel { record.session }
 
     var body: some View {
         let theme = TerminalTheme.theme(id: model.settings.themeID)
@@ -36,7 +43,16 @@ struct TerminalScreen: View {
                                 contextualSelection = session.contextualSelection(column: column, row: row)
                             },
                             onScrollRows: session.scrollViewport(byRows:),
-                            onSelectWord: session.selectWord(column:row:),
+                            onSelectWord: { column, row in
+                                contextualSelection = nil
+                                session.selectWord(column: column, row: row)
+                            },
+                            onSelectionEndpointChanged: session.setSelectionEndpoint(start:column:row:),
+                            onSelectionFinished: {
+                                if session.snapshot?.hasSelection == true {
+                                    contextualSelection = ContextualSelection(kind: .word)
+                                }
+                            },
                             onMagnify: updateFontSize(_:commit:)
                         )
                         .accessibilityAction(named: "Scroll backward") {
@@ -141,6 +157,9 @@ struct TerminalScreen: View {
                 .opacity(0.01)
         }
         .background(theme.background)
+        .overlay(alignment: .top) {
+            if showingHistorySearch { historySearchBar }
+        }
         .persistentSystemOverlays(session.state == .connected ? .hidden : .automatic)
         .navigationTitle(host.name)
         .navigationBarTitleDisplayMode(.inline)
@@ -155,7 +174,17 @@ struct TerminalScreen: View {
                 .disabled(session.state != .connected)
 
                 Menu {
+                    if sessions.records.count > 1 {
+                        Menu("Switch Session", systemImage: "rectangle.2.swap") {
+                            ForEach(sessions.records.filter { $0.id != record.id }) { candidate in
+                                Button("\(candidate.host.name) · \(candidate.shortID)") {
+                                    switchSession(candidate.id)
+                                }
+                            }
+                        }
+                    }
                     Button("Browse files", systemImage: "folder") { showingFiles = true }
+                    Button("Search History", systemImage: "magnifyingglass") { openHistorySearch() }
                     Button("Paste", systemImage: "doc.on.clipboard") { requestPaste() }
                         .disabled(session.state != .connected)
                     if session.snapshot?.hasSelection == true {
@@ -163,7 +192,12 @@ struct TerminalScreen: View {
                         Button("Clear Selection", systemImage: "xmark") { session.clearSelection() }
                     }
                     Divider()
-                    Button("Disconnect") { Task { await session.disconnect() } }
+                    Button("Disconnect") {
+                        Task {
+                            await sessions.close(id: record.id)
+                            dismiss()
+                        }
+                    }
                     Button("Forget Host Key", role: .destructive) { model.forgetHostKey(for: host) }
                         .disabled(!canForgetHostKey)
                 } label: {
@@ -172,7 +206,7 @@ struct TerminalScreen: View {
             }
         }
         .onAppear {
-            requestConnection(isReconnect: false)
+            if !record.hasRequestedConnection { requestConnection(isReconnect: false) }
         }
         .sheet(isPresented: $showingFiles) {
             NavigationStack { SFTPBrowserScreen(host: host) }
@@ -181,7 +215,6 @@ struct TerminalScreen: View {
             secret = ""
             keyboardFocused = false
             keyboardBarState.reset()
-            Task { await session.disconnect() }
         }
         .onChange(of: session.state) { _, state in
             if state == .connected { keyboardFocused = true }
@@ -244,6 +277,65 @@ struct TerminalScreen: View {
                 accept: { session.answerHostTrust(requestID: request.id, accepted: true) }
             )
         }
+    }
+
+    private var historySearchBar: some View {
+        VStack(spacing: 6) {
+            HStack(spacing: 8) {
+                TextField("Search history", text: $record.searchQuery)
+                    .textFieldStyle(.roundedBorder)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .focused($historySearchFocused)
+                    .submitLabel(.search)
+                    .onSubmit { searchHistory(.next) }
+                Button { searchHistory(.previous) } label: {
+                    Image(systemName: "chevron.up")
+                }
+                .accessibilityLabel("Previous Match")
+                Button { searchHistory(.next) } label: {
+                    Image(systemName: "chevron.down")
+                }
+                .accessibilityLabel("Next Match")
+                Button { closeHistorySearch() } label: {
+                    Image(systemName: "xmark")
+                }
+                .accessibilityLabel("Close Search")
+            }
+            if let historySearchMessage {
+                Text(historySearchMessage)
+                    .font(.caption)
+                    .foregroundStyle(Color.ghosttySecondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+        .padding(10)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
+        .padding(10)
+    }
+
+    private func openHistorySearch() {
+        keyboardFocused = false
+        contextualSelection = nil
+        historySearchMessage = nil
+        showingHistorySearch = true
+        DispatchQueue.main.async { historySearchFocused = true }
+    }
+
+    private func closeHistorySearch() {
+        showingHistorySearch = false
+        historySearchFocused = false
+        historySearchMessage = nil
+        if session.state == .connected { keyboardFocused = true }
+    }
+
+    private func searchHistory(_ direction: TerminalSearchDirection) {
+        guard !record.searchQuery.isEmpty else { return }
+        if record.searchQuery.utf8.count > 1_024 {
+            historySearchMessage = "Search is limited to 1,024 bytes."
+            return
+        }
+        historySearchMessage = session.search(record.searchQuery, direction: direction) ? nil : "No match"
     }
 
     private var statusBar: some View {
@@ -311,6 +403,11 @@ struct TerminalScreen: View {
         switch session.state {
         case .disconnected: "Disconnected"
         case .connecting: "Connecting to \(host.destination)..."
+        case .waitingForNetwork: "Waiting for network..."
+        case .retrying(let attempt, let maxAttempts, let delaySeconds):
+            delaySeconds == 0
+                ? "Reconnecting (attempt \(attempt) of \(maxAttempts))..."
+                : "Reconnecting in \(delaySeconds)s (attempt \(attempt) of \(maxAttempts))..."
         case .verifyingHost: "Waiting for host key approval..."
         case .authenticating: "Authenticating..."
         case .connected: "Connected to \(host.destination)"
@@ -335,20 +432,20 @@ struct TerminalScreen: View {
     private var canForgetHostKey: Bool {
         switch session.state {
         case .disconnected, .failed: true
-        case .connecting, .verifyingHost, .authenticating, .connected: false
+        case .connecting, .waitingForNetwork, .retrying, .verifyingHost, .authenticating, .connected: false
         }
     }
 
     private var canReconnect: Bool {
         switch session.state {
         case .failed(let failure): failure.canRetry
-        case .disconnected: hasRequestedConnection
-        case .connecting, .verifyingHost, .authenticating, .connected: false
+        case .disconnected: record.hasRequestedConnection
+        case .connecting, .waitingForNetwork, .retrying, .verifyingHost, .authenticating, .connected: false
         }
     }
 
     private func requestConnection(isReconnect: Bool) {
-        hasRequestedConnection = true
+        record.hasRequestedConnection = true
         pendingReconnect = isReconnect
         if host.authenticationType == .password || selectedKey?.requiresPassphrase == true {
             showingCredential = true
@@ -409,7 +506,7 @@ struct TerminalScreen: View {
 
     private func send(_ action: KeyboardAction) {
         keyboardBarState.recordAction(id: action.id)
-        session.send(action.event.adding(TerminalKeyModifiers(keyboardBarState.activeModifiers)))
+        session.send(action.events(adding: TerminalKeyModifiers(keyboardBarState.activeModifiers)))
         keyboardBarState.consumeOneShot()
     }
 
@@ -529,10 +626,7 @@ struct TerminalScreen: View {
                 : "Tap for one use or hold to lock."
         }
         guard let action = resolvedAction(item) else { return "" }
-        let modifiers = KeyboardModifier.allCases
-            .filter(action.modifiers.contains)
-            .map(\.label)
-        return "Sends \((modifiers + [action.key.label]).joined(separator: " plus "))"
+        return "Sends \(action.steps.map(\.description).joined(separator: ", then "))"
     }
 
     private func keyboardBarAccessibilityValue(_ item: KeyboardBarItem) -> String {

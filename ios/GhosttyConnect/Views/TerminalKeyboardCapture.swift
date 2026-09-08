@@ -111,10 +111,10 @@ final class TerminalKeyboardInputView: UIView, UIKeyInput {
         guard !flags.contains(.command) else { return nil }
         let modifiers = TerminalKeyModifiers(flags)
         if let key = namedKey(input) { return .key(key, modifiers: modifiers) }
-        guard let actionKey = characterKey(input) else { return nil }
+        guard let key = TerminalKey.fromCommittedText(input) else { return nil }
         return .key(
-            actionKey.terminalKey,
-            text: actionKey.text(shifted: modifiers.contains(.shift)),
+            key,
+            text: key.generatedText(shifted: modifiers.contains(.shift)) ?? input,
             modifiers: modifiers
         )
     }
@@ -150,18 +150,6 @@ final class TerminalKeyboardInputView: UIView, UIKeyInput {
         }
     }
 
-    private static func characterKey(_ input: String) -> KeyboardActionKey? {
-        if input.count == 1,
-           input.lowercased().first?.isLetter == true,
-           let letter = KeyboardActionKey(rawValue: input.lowercased()) {
-            return letter
-        }
-        let digits: [String: KeyboardActionKey] = [
-            "0": .zero, "1": .one, "2": .two, "3": .three, "4": .four,
-            "5": .five, "6": .six, "7": .seven, "8": .eight, "9": .nine,
-        ]
-        return input == " " ? .space : digits[input]
-    }
 }
 
 private extension TerminalKeyModifiers {
@@ -170,6 +158,7 @@ private extension TerminalKeyModifiers {
         if flags.contains(.shift) { modifiers.insert(.shift) }
         if flags.contains(.control) { modifiers.insert(.control) }
         if flags.contains(.alternate) { modifiers.insert(.alt) }
+        if flags.contains(.alphaShift) { modifiers.insert(.capsLock) }
         self = modifiers
     }
 }

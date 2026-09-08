@@ -11,6 +11,32 @@ final class GhosttyTerminalEngine: TerminalEngine {
     private let keyEncoder: GhosttyKeyEncoder
     private let keyEvent: GhosttyKeyEvent
     private let lock = NSLock()
+    private var searchState: SearchState?
+
+    private struct SearchPosition: Equatable {
+        let row: Int
+        let column: Int
+    }
+
+    private struct SearchMatch: Equatable {
+        let start: SearchPosition
+        let end: SearchPosition
+    }
+
+    private struct SearchState {
+        let query: String
+        let match: SearchMatch
+    }
+
+    private struct SearchableLine {
+        var text = ""
+        var utf16Cells: [SearchPosition] = []
+
+        mutating func append(_ value: String, at position: SearchPosition) {
+            text.append(value)
+            utf16Cells.append(contentsOf: repeatElement(position, count: value.utf16.count))
+        }
+    }
 
     init(columns: Int, rows: Int) throws {
         var terminal: GhosttyTerminal?
@@ -118,6 +144,7 @@ final class GhosttyTerminalEngine: TerminalEngine {
     func feed(_ data: Data) {
         lock.lock()
         defer { lock.unlock() }
+        searchState = nil
         data.withUnsafeBytes { bytes in
             guard let baseAddress = bytes.baseAddress else { return }
             ghostty_terminal_vt_write(
@@ -131,6 +158,7 @@ final class GhosttyTerminalEngine: TerminalEngine {
     func resize(columns: Int, rows: Int) {
         lock.lock()
         defer { lock.unlock() }
+        searchState = nil
         ghostty_terminal_resize(
             terminal,
             Self.dimension(columns),
@@ -266,6 +294,17 @@ final class GhosttyTerminalEngine: TerminalEngine {
         case "8": GHOSTTY_KEY_DIGIT_8
         case "9": GHOSTTY_KEY_DIGIT_9
         case " ": GHOSTTY_KEY_SPACE
+        case "`": GHOSTTY_KEY_BACKQUOTE
+        case "\\": GHOSTTY_KEY_BACKSLASH
+        case "[": GHOSTTY_KEY_BRACKET_LEFT
+        case "]": GHOSTTY_KEY_BRACKET_RIGHT
+        case ",": GHOSTTY_KEY_COMMA
+        case "=": GHOSTTY_KEY_EQUAL
+        case "-": GHOSTTY_KEY_MINUS
+        case ".": GHOSTTY_KEY_PERIOD
+        case "'": GHOSTTY_KEY_QUOTE
+        case ";": GHOSTTY_KEY_SEMICOLON
+        case "/": GHOSTTY_KEY_SLASH
         default: GHOSTTY_KEY_UNIDENTIFIED
         }
     }
@@ -326,6 +365,144 @@ final class GhosttyTerminalEngine: TerminalEngine {
         ghostty_terminal_scroll_viewport(terminal, behavior)
     }
 
+    func search(_ query: String, direction: TerminalSearchDirection) -> Bool {
+        guard !query.isEmpty, query.utf8.count <= 1_024 else { return false }
+        lock.lock()
+        defer { lock.unlock() }
+
+        var totalRows: UInt = 0
+        var columns: UInt16 = 0
+        var scrollbar = GhosttyTerminalScrollbar()
+        guard ghostty_terminal_get(terminal, GHOSTTY_TERMINAL_DATA_TOTAL_ROWS, &totalRows) == GHOSTTY_SUCCESS,
+              ghostty_terminal_get(terminal, GHOSTTY_TERMINAL_DATA_COLS, &columns) == GHOSTTY_SUCCESS,
+              ghostty_terminal_get(terminal, GHOSTTY_TERMINAL_DATA_SCROLLBAR, &scrollbar) == GHOSTTY_SUCCESS,
+              totalRows > 0, columns > 0 else { return false }
+
+        let continuing = searchState.map {
+            $0.query.compare(query, options: .caseInsensitive) == .orderedSame
+        } ?? false
+        let current = continuing ? searchState?.match : nil
+        var first: SearchMatch?
+        var last: SearchMatch?
+        var previous: SearchMatch?
+        var next: SearchMatch?
+        var foundCurrent = false
+        var viewportPrevious: SearchMatch?
+        var viewportNext: SearchMatch?
+        var logicalLine = SearchableLine()
+
+        func consume(_ match: SearchMatch) {
+            if first == nil { first = match }
+            last = match
+            if match.start.row <= Int(scrollbar.offset) { viewportPrevious = match }
+            if viewportNext == nil, match.start.row >= Int(scrollbar.offset) { viewportNext = match }
+            guard let current else { return }
+            if match == current { foundCurrent = true }
+            else if foundCurrent {
+                if next == nil { next = match }
+            } else {
+                previous = match
+            }
+        }
+
+        func consumeMatches(in line: SearchableLine) {
+            let source = line.text as NSString
+            guard source.length > 0 else { return }
+            var location = 0
+            while location < source.length {
+                let range = source.range(
+                    of: query,
+                    options: .caseInsensitive,
+                    range: NSRange(location: location, length: source.length - location)
+                )
+                guard range.location != NSNotFound, range.length > 0,
+                      range.location < line.utf16Cells.count,
+                      range.location + range.length <= line.utf16Cells.count else { return }
+                consume(SearchMatch(
+                    start: line.utf16Cells[range.location],
+                    end: line.utf16Cells[range.location + range.length - 1]
+                ))
+                location = range.location + 1
+            }
+        }
+
+        for row in 0..<Int(totalRows) {
+            for column in 0..<Int(columns) {
+                guard var reference = screenReference(column: column, row: row) else { continue }
+                var cell: GhosttyCell = 0
+                var wide = GHOSTTY_CELL_WIDE_NARROW
+                guard ghostty_grid_ref_cell(&reference, &cell) == GHOSTTY_SUCCESS else { continue }
+                _ = ghostty_cell_get(cell, GHOSTTY_CELL_DATA_WIDE, &wide)
+                if wide == GHOSTTY_CELL_WIDE_SPACER_TAIL { continue }
+
+                var count = 0
+                var value = ""
+                if ghostty_grid_ref_graphemes(&reference, nil, 0, &count) == GHOSTTY_OUT_OF_SPACE,
+                   count > 0 {
+                    var codepoints = [UInt32](repeating: 0, count: count)
+                    let result = codepoints.withUnsafeMutableBufferPointer { buffer in
+                        ghostty_grid_ref_graphemes(&reference, buffer.baseAddress, buffer.count, &count)
+                    }
+                    if result == GHOSTTY_SUCCESS {
+                        for codepoint in codepoints.prefix(count) {
+                            if let scalar = UnicodeScalar(codepoint) { value.unicodeScalars.append(scalar) }
+                        }
+                    }
+                }
+                logicalLine.append(value.isEmpty ? " " : value, at: SearchPosition(row: row, column: column))
+            }
+            if !rowWraps(row: row) || row + 1 == Int(totalRows) {
+                consumeMatches(in: logicalLine)
+                logicalLine = SearchableLine()
+            }
+        }
+
+        guard let selected: SearchMatch = {
+            if continuing, foundCurrent {
+                return direction == .previous ? (previous ?? last) : (next ?? first)
+            }
+            return direction == .previous ? (viewportPrevious ?? last) : (viewportNext ?? first)
+        }() else { return false }
+
+        guard let start = screenReference(column: selected.start.column, row: selected.start.row),
+              let end = screenReference(column: selected.end.column, row: selected.end.row) else { return false }
+        var selection = GhosttySelection()
+        selection.size = MemoryLayout<GhosttySelection>.size
+        selection.start = start
+        selection.end = end
+        guard ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_SELECTION, &selection) == GHOSTTY_SUCCESS else {
+            return false
+        }
+        searchState = SearchState(query: query, match: selected)
+
+        var behavior = GhosttyTerminalScrollViewport()
+        behavior.tag = GHOSTTY_SCROLL_VIEWPORT_ROW
+        behavior.value.row = max(0, selected.start.row - Int(scrollbar.len / 3))
+        ghostty_terminal_scroll_viewport(terminal, behavior)
+        return true
+    }
+
+    private func screenReference(column: Int, row: Int) -> GhosttyGridRef? {
+        var point = GhosttyPoint()
+        point.tag = GHOSTTY_POINT_TAG_SCREEN
+        point.value.coordinate = GhosttyPointCoordinate(
+            x: UInt16(clamping: column),
+            y: UInt32(clamping: row)
+        )
+        var reference = GhosttyGridRef()
+        reference.size = MemoryLayout<GhosttyGridRef>.size
+        return ghostty_terminal_grid_ref(terminal, point, &reference) == GHOSTTY_SUCCESS ? reference : nil
+    }
+
+    private func rowWraps(row: Int) -> Bool {
+        guard var reference = screenReference(column: 0, row: row) else { return false }
+        var nativeRow: GhosttyRow = 0
+        var wraps = false
+        return ghostty_grid_ref_row(&reference, &nativeRow) == GHOSTTY_SUCCESS
+            && ghostty_row_get(nativeRow, GHOSTTY_ROW_DATA_WRAP, &wraps) == GHOSTTY_SUCCESS
+            && wraps
+    }
+
     func selectWord(column: Int, row: Int) -> Bool {
         lock.lock()
         defer { lock.unlock() }
@@ -350,6 +527,20 @@ final class GhosttyTerminalEngine: TerminalEngine {
             return false
         }
         return true
+    }
+
+    func setSelectionEndpoint(start: Bool, column: Int, row: Int) -> Bool {
+        guard column >= 0, row >= 0 else { return false }
+        lock.lock()
+        defer { lock.unlock() }
+
+        var selection = GhosttySelection()
+        selection.size = MemoryLayout<GhosttySelection>.size
+        guard ghostty_terminal_get(terminal, GHOSTTY_TERMINAL_DATA_SELECTION, &selection) == GHOSTTY_SUCCESS,
+              let reference = gridReference(column: column, row: row) else { return false }
+        if start { selection.start = reference }
+        else { selection.end = reference }
+        return ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_SELECTION, &selection) == GHOSTTY_SUCCESS
     }
 
     func selectRange(startColumn: Int, endColumn: Int, row: Int) -> Bool {
@@ -477,6 +668,12 @@ final class GhosttyTerminalEngine: TerminalEngine {
         guard selectionResult == GHOSTTY_SUCCESS || selectionResult == GHOSTTY_NO_VALUE else {
             throw TerminalEngineError.snapshotFailed
         }
+        let selectionEndpoints: TerminalSelectionEndpoints? = selectionResult == GHOSTTY_SUCCESS
+            ? TerminalSelectionEndpoints(
+                start: viewportSelectionPoint(selection.start),
+                end: viewportSelectionPoint(selection.end)
+            )
+            : nil
 
         var cursorColor = foreground
         var hasCursorColor = false
@@ -545,8 +742,21 @@ final class GhosttyTerminalEngine: TerminalEngine {
                 visibleRows: scrollbar.len,
                 isAtBottom: viewportActive
             ),
-            hasSelection: selectionResult == GHOSTTY_SUCCESS
+            hasSelection: selectionResult == GHOSTTY_SUCCESS,
+            selectionEndpoints: selectionEndpoints
         )
+    }
+
+    private func viewportSelectionPoint(_ reference: GhosttyGridRef) -> TerminalSelectionPoint? {
+        var reference = reference
+        var coordinate = GhosttyPointCoordinate()
+        guard ghostty_terminal_point_from_grid_ref(
+            terminal,
+            &reference,
+            GHOSTTY_POINT_TAG_VIEWPORT,
+            &coordinate
+        ) == GHOSTTY_SUCCESS else { return nil }
+        return TerminalSelectionPoint(column: Int(coordinate.x), row: Int(coordinate.y))
     }
 
     private func snapshotCell(
