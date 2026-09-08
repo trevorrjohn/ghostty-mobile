@@ -2,6 +2,73 @@
 import Foundation
 import GhosttyVt
 
+private final class GhosttyClipboardWriteQueue {
+    private static let maximumPendingWrites = 8
+    private static let maximumTextBytes = 1_048_576
+    private let lock = NSLock()
+    private var writes: [TerminalClipboardWrite] = []
+
+    func capture(_ request: UnsafePointer<GhosttyClipboardWrite>) -> GhosttyClipboardWriteResult {
+        guard request.pointee.size >= MemoryLayout<GhosttyClipboardWrite>.size else {
+            return GHOSTTY_CLIPBOARD_WRITE_RESULT_INVALID_DATA
+        }
+        let request = request.pointee
+        guard request.location == GHOSTTY_CLIPBOARD_LOCATION_STANDARD else {
+            return GHOSTTY_CLIPBOARD_WRITE_RESULT_UNSUPPORTED
+        }
+        if request.contents_len == 0 {
+            return append(.clear)
+        }
+        guard let contents = request.contents else {
+            return GHOSTTY_CLIPBOARD_WRITE_RESULT_INVALID_DATA
+        }
+        for index in 0..<request.contents_len {
+            let content = contents[index]
+            guard let mimeData = Self.data(content.mime),
+                  let mime = String(data: mimeData, encoding: .utf8) else {
+                return GHOSTTY_CLIPBOARD_WRITE_RESULT_INVALID_DATA
+            }
+            guard mime == "text/plain" || mime == "text/plain;charset=utf-8" else { continue }
+            guard content.data.len <= Self.maximumTextBytes,
+                  let data = Self.data(content.data),
+                  let text = String(data: data, encoding: .utf8) else {
+                return GHOSTTY_CLIPBOARD_WRITE_RESULT_INVALID_DATA
+            }
+            return append(.text(text))
+        }
+        return GHOSTTY_CLIPBOARD_WRITE_RESULT_UNSUPPORTED
+    }
+
+    func drain() -> [TerminalClipboardWrite] {
+        lock.lock()
+        defer { lock.unlock() }
+        let result = writes
+        writes.removeAll(keepingCapacity: true)
+        return result
+    }
+
+    private func append(_ write: TerminalClipboardWrite) -> GhosttyClipboardWriteResult {
+        lock.lock()
+        defer { lock.unlock() }
+        guard writes.count < Self.maximumPendingWrites else {
+            return GHOSTTY_CLIPBOARD_WRITE_RESULT_BUSY
+        }
+        writes.append(write)
+        return GHOSTTY_CLIPBOARD_WRITE_RESULT_SUCCESS
+    }
+
+    private static func data(_ value: GhosttyString) -> Data? {
+        guard value.len == 0 || value.ptr != nil else { return nil }
+        guard let pointer = value.ptr else { return Data() }
+        return Data(bytes: pointer, count: value.len)
+    }
+}
+
+private let ghosttyClipboardWriteCallback: GhosttyTerminalClipboardWriteFn = { _, userdata, request in
+    guard let userdata, let request else { return GHOSTTY_CLIPBOARD_WRITE_RESULT_INVALID_DATA }
+    return Unmanaged<GhosttyClipboardWriteQueue>.fromOpaque(userdata).takeUnretainedValue().capture(request)
+}
+
 final class GhosttyTerminalEngine: TerminalEngine {
     private let terminal: GhosttyTerminal
     private let formatter: GhosttyFormatter
@@ -10,6 +77,7 @@ final class GhosttyTerminalEngine: TerminalEngine {
     private let rowCells: GhosttyRenderStateRowCells
     private let keyEncoder: GhosttyKeyEncoder
     private let keyEvent: GhosttyKeyEvent
+    private let clipboardWrites: GhosttyClipboardWriteQueue
     private let lock = NSLock()
     private var searchState: SearchState?
 
@@ -39,6 +107,7 @@ final class GhosttyTerminalEngine: TerminalEngine {
     }
 
     init(columns: Int, rows: Int) throws {
+        let clipboardWrites = GhosttyClipboardWriteQueue()
         var terminal: GhosttyTerminal?
         let result = ghostty_terminal_new(
             nil,
@@ -47,6 +116,21 @@ final class GhosttyTerminalEngine: TerminalEngine {
             Self.dimension(rows)
         )
         guard result == GHOSTTY_SUCCESS, let terminal else {
+            throw TerminalEngineError.initializationFailed
+        }
+
+        let clipboardCallback = unsafeBitCast(ghosttyClipboardWriteCallback, to: UnsafeRawPointer.self)
+        guard ghostty_terminal_set(
+            terminal,
+            GHOSTTY_TERMINAL_OPT_USERDATA,
+            Unmanaged.passUnretained(clipboardWrites).toOpaque()
+        ) == GHOSTTY_SUCCESS,
+        ghostty_terminal_set(
+            terminal,
+            GHOSTTY_TERMINAL_OPT_CLIPBOARD_WRITE,
+            clipboardCallback
+        ) == GHOSTTY_SUCCESS else {
+            ghostty_terminal_free(terminal)
             throw TerminalEngineError.initializationFailed
         }
 
@@ -129,6 +213,7 @@ final class GhosttyTerminalEngine: TerminalEngine {
         self.rowCells = rowCells
         self.keyEncoder = keyEncoder
         self.keyEvent = keyEvent
+        self.clipboardWrites = clipboardWrites
     }
 
     deinit {
@@ -153,6 +238,10 @@ final class GhosttyTerminalEngine: TerminalEngine {
                 bytes.count
             )
         }
+    }
+
+    func drainClipboardWrites() -> [TerminalClipboardWrite] {
+        clipboardWrites.drain()
     }
 
     func resize(columns: Int, rows: Int) {

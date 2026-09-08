@@ -206,6 +206,7 @@ enum SSHCredential {
 
 protocol TerminalEngine: AnyObject {
     func feed(_ data: Data)
+    func drainClipboardWrites() -> [TerminalClipboardWrite]
     func resize(columns: Int, rows: Int)
     func encode(event: TerminalInputEvent) throws -> Data
     func isPasteSafe(_ text: String) -> Bool
@@ -222,6 +223,21 @@ protocol TerminalEngine: AnyObject {
     func selectedText() -> String
     func visibleText() -> String
     func snapshot() throws -> TerminalSnapshot
+}
+
+extension TerminalEngine {
+    func drainClipboardWrites() -> [TerminalClipboardWrite] { [] }
+}
+
+enum TerminalClipboardWrite: Equatable, Sendable {
+    case text(String)
+    case clear
+}
+
+struct TerminalClipboardWriteRequest: Identifiable, Equatable {
+    let id: UUID
+    let write: TerminalClipboardWrite
+    let connectionAttemptID: UUID
 }
 
 struct TerminalViewport: Equatable {

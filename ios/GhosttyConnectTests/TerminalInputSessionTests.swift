@@ -78,6 +78,100 @@ final class TerminalInputSessionTests: XCTestCase {
         await session.disconnect()
     }
 
+    func testAllowedRemoteClipboardWriteAppliesImmediately() async throws {
+        let transport = LifecycleTransport()
+        let engine = InputTestEngine()
+        var writes: [TerminalClipboardWrite] = []
+        let session = TerminalSessionModel(
+            transportFactory: { transport },
+            engineFactory: { engine },
+            clipboardWriter: { writes.append($0) }
+        )
+        var host = testHost()
+        host.remoteClipboard = .allow
+        await session.connect(to: host, secret: "password")
+
+        engine.clipboardWrites = [.text("remote"), .clear]
+        transport.yieldOutput(Data("output".utf8))
+
+        let applied = await waitUntil { writes == [.text("remote"), .clear] }
+        XCTAssertTrue(applied)
+        XCTAssertNil(session.pendingClipboardWrite)
+        await session.disconnect()
+    }
+
+    func testBlockedRemoteClipboardWriteIsDiscarded() async throws {
+        let transport = LifecycleTransport()
+        let engine = InputTestEngine()
+        var writes: [TerminalClipboardWrite] = []
+        let session = TerminalSessionModel(
+            transportFactory: { transport },
+            engineFactory: { engine },
+            clipboardWriter: { writes.append($0) }
+        )
+        var host = testHost()
+        host.remoteClipboard = .block
+        await session.connect(to: host, secret: "password")
+
+        engine.clipboardWrites = [.text("remote")]
+        transport.yieldOutput(Data("output".utf8))
+        try? await Task.sleep(nanoseconds: 50_000_000)
+
+        XCTAssertTrue(writes.isEmpty)
+        XCTAssertNil(session.pendingClipboardWrite)
+        await session.disconnect()
+    }
+
+    func testRemoteClipboardPromptAllowsOneWrite() async throws {
+        let transport = LifecycleTransport()
+        let engine = InputTestEngine()
+        var writes: [TerminalClipboardWrite] = []
+        let session = TerminalSessionModel(
+            transportFactory: { transport },
+            engineFactory: { engine },
+            clipboardWriter: { writes.append($0) }
+        )
+        var host = testHost()
+        host.remoteClipboard = .ask
+        await session.connect(to: host, secret: "password")
+
+        engine.clipboardWrites = [.text("remote")]
+        transport.yieldOutput(Data("output".utf8))
+
+        let prompted = await waitUntil { session.pendingClipboardWrite != nil }
+        XCTAssertTrue(prompted)
+        let requestID = try XCTUnwrap(session.pendingClipboardWrite?.id)
+        session.answerClipboardWrite(requestID: requestID, accepted: true)
+        XCTAssertEqual(writes, [.text("remote")])
+        XCTAssertNil(session.pendingClipboardWrite)
+        await session.disconnect()
+    }
+
+    func testRemoteClipboardPromptCannotApplyAfterDisconnect() async throws {
+        let transport = LifecycleTransport()
+        let engine = InputTestEngine()
+        var writes: [TerminalClipboardWrite] = []
+        let session = TerminalSessionModel(
+            transportFactory: { transport },
+            engineFactory: { engine },
+            clipboardWriter: { writes.append($0) }
+        )
+        var host = testHost()
+        host.remoteClipboard = .ask
+        await session.connect(to: host, secret: "password")
+
+        engine.clipboardWrites = [.text("remote")]
+        transport.yieldOutput(Data("output".utf8))
+        let prompted = await waitUntil { session.pendingClipboardWrite != nil }
+        XCTAssertTrue(prompted)
+        let requestID = try XCTUnwrap(session.pendingClipboardWrite?.id)
+
+        await session.disconnect()
+        session.answerClipboardWrite(requestID: requestID, accepted: true)
+        XCTAssertTrue(writes.isEmpty)
+        XCTAssertNil(session.pendingClipboardWrite)
+    }
+
     func testCleanRemoteCloseDisconnectsAndClosesTransport() async throws {
         let transport = LifecycleTransport()
         let session = makeSession(transport)
@@ -438,6 +532,10 @@ private final class LifecycleTransport: SSHTransport {
         else { outputContinuation.finish() }
     }
 
+    func yieldOutput(_ data: Data) {
+        outputContinuation.yield(data)
+    }
+
     func waitForWriteStart() async { await state.waitForWriteStart() }
     func waitForDisconnectStart() async { await state.waitForDisconnectStart() }
     func allowDisconnect() async { await state.allowDisconnect() }
@@ -510,10 +608,15 @@ private final class LifecycleTransportFactory: @unchecked Sendable {
 
 private final class InputTestEngine: TerminalEngine {
     var searchResult = false
+    var clipboardWrites: [TerminalClipboardWrite] = []
     private(set) var searchQuery: String?
     private(set) var searchDirection: TerminalSearchDirection?
 
     func feed(_ data: Data) {}
+    func drainClipboardWrites() -> [TerminalClipboardWrite] {
+        defer { clipboardWrites.removeAll(keepingCapacity: true) }
+        return clipboardWrites
+    }
     func resize(columns: Int, rows: Int) {}
 
     func encode(event: TerminalInputEvent) throws -> Data {

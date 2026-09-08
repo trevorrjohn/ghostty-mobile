@@ -340,6 +340,65 @@ final class GhosttyTerminalEngineTests: XCTestCase {
         XCTAssertNil(engine.hyperlink(column: 6, row: 0))
     }
 
+    func testDrainsStandardOSC52ClipboardWrites() throws {
+        guard TerminalEngineFactory.isAvailable else {
+            throw XCTSkip("GhosttyVt XCFramework is not installed")
+        }
+
+        let engine = try TerminalEngineFactory.make()
+        engine.feed(Data("\u{1b}]52;c;aGVsbG8=\u{7}".utf8))
+        XCTAssertEqual(engine.drainClipboardWrites(), [.text("hello")])
+        XCTAssertTrue(engine.drainClipboardWrites().isEmpty)
+
+        engine.feed(Data("\u{1b}]52;c;\u{7}".utf8))
+        XCTAssertEqual(engine.drainClipboardWrites(), [.clear])
+    }
+
+    func testRejectsUnsupportedAndMalformedOSC52ClipboardWrites() throws {
+        guard TerminalEngineFactory.isAvailable else {
+            throw XCTSkip("GhosttyVt XCFramework is not installed")
+        }
+
+        let engine = try TerminalEngineFactory.make()
+        engine.feed(Data("\u{1b}]52;p;aGVsbG8=\u{7}".utf8))
+        engine.feed(Data("\u{1b}]52;c;/w==\u{7}".utf8))
+        XCTAssertTrue(engine.drainClipboardWrites().isEmpty)
+    }
+
+    func testBoundsPendingOSC52ClipboardWrites() throws {
+        guard TerminalEngineFactory.isAvailable else {
+            throw XCTSkip("GhosttyVt XCFramework is not installed")
+        }
+
+        let engine = try TerminalEngineFactory.make()
+        for value in 0..<9 {
+            let payload = Data(String(value).utf8).base64EncodedString()
+            engine.feed(Data("\u{1b}]52;c;\(payload)\u{7}".utf8))
+        }
+        XCTAssertEqual(engine.drainClipboardWrites(), (0..<8).map { .text(String($0)) })
+
+        engine.feed(Data("\u{1b}]52;c;YWdhaW4=\u{7}".utf8))
+        XCTAssertEqual(engine.drainClipboardWrites(), [.text("again")])
+    }
+
+    func testAcceptsMaximumAndRejectsOversizedOSC52ClipboardWrite() throws {
+        guard TerminalEngineFactory.isAvailable else {
+            throw XCTSkip("GhosttyVt XCFramework is not installed")
+        }
+
+        let engine = try TerminalEngineFactory.make()
+        let maximumPayload = Data(repeating: 0x61, count: 1_048_576).base64EncodedString()
+        engine.feed(Data("\u{1b}]52;c;\(maximumPayload)\u{7}".utf8))
+        guard case .text(let maximumText) = try XCTUnwrap(engine.drainClipboardWrites().first) else {
+            return XCTFail("Expected a text clipboard write")
+        }
+        XCTAssertEqual(maximumText.utf8.count, 1_048_576)
+
+        let payload = Data(repeating: 0x61, count: 1_048_577).base64EncodedString()
+        engine.feed(Data("\u{1b}]52;c;\(payload)\u{7}".utf8))
+        XCTAssertTrue(engine.drainClipboardWrites().isEmpty)
+    }
+
     func testEncodesSafeAndConfirmedPasteForTerminalMode() throws {
         guard TerminalEngineFactory.isAvailable else {
             throw XCTSkip("GhosttyVt XCFramework is not installed")

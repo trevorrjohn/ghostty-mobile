@@ -5,10 +5,12 @@ final class TerminalSessionModel: ObservableObject {
     @Published private(set) var state = SessionState.disconnected
     @Published private(set) var snapshot: TerminalSnapshot?
     @Published private(set) var pendingHostTrust: HostTrustRequest?
+    @Published private(set) var pendingClipboardWrite: TerminalClipboardWriteRequest?
 
     private let engine: (any TerminalEngine)?
     private let transportFactory: () -> any SSHTransport
     private let keyProvider: @MainActor (UUID) -> StoredKey?
+    private let clipboardWriter: @MainActor (TerminalClipboardWrite) -> Void
     private var transport: (any SSHTransport)?
     private var outputTask: Task<Void, Never>?
     private var writeTask: Task<Void, Never>?
@@ -39,11 +41,13 @@ final class TerminalSessionModel: ObservableObject {
         transportFactory: @escaping () -> any SSHTransport = { CitadelSSHTransport() },
         engineFactory: () throws -> any TerminalEngine = { try TerminalEngineFactory.make() },
         keyProvider: @escaping @MainActor (UUID) -> StoredKey? = { _ in nil },
+        clipboardWriter: @escaping @MainActor (TerminalClipboardWrite) -> Void = { _ in },
         retrySleep: @escaping @Sendable (UInt64) async throws -> Void = { try await Task.sleep(nanoseconds: $0) },
         stableConnectionNanoseconds: UInt64 = 30_000_000_000
     ) {
         self.transportFactory = transportFactory
         self.keyProvider = keyProvider
+        self.clipboardWriter = clipboardWriter
         self.retrySleep = retrySleep
         self.stableConnectionNanoseconds = stableConnectionNanoseconds
         do {
@@ -58,6 +62,7 @@ final class TerminalSessionModel: ObservableObject {
     }
 
     func connect(to host: Host, secret: String?, key: StoredKey? = nil, isReconnect: Bool = false) async {
+        pendingClipboardWrite = nil
         cancelAutomaticRetry(clearCredential: true)
         reconnectPolicy.reset()
         await connectAttempt(to: host, secret: secret, key: key, isReconnect: isReconnect, automaticRetry: false)
@@ -120,6 +125,7 @@ final class TerminalSessionModel: ObservableObject {
                 for try await data in transport.output {
                     guard connectionAttemptID == attemptID else { return }
                     engine.feed(data)
+                    handleClipboardWrites(engine.drainClipboardWrites(), policy: host.remoteClipboard, attemptID: attemptID)
                     snapshot = try engine.snapshot()
                 }
                 await finishAttempt(attemptID: attemptID, transport: transport, failure: nil)
@@ -181,6 +187,14 @@ final class TerminalSessionModel: ObservableObject {
         pendingHostTrust = nil
         state = .connecting
         request.answer(accepted: accepted)
+    }
+
+    func answerClipboardWrite(requestID: UUID, accepted: Bool) {
+        guard let request = pendingClipboardWrite,
+              request.id == requestID,
+              request.connectionAttemptID == connectionAttemptID else { return }
+        pendingClipboardWrite = nil
+        if accepted { clipboardWriter(request.write) }
     }
 
     func send(_ event: TerminalInputEvent) {
@@ -405,6 +419,7 @@ final class TerminalSessionModel: ObservableObject {
         hostTrustTask = nil
         pendingHostTrust?.answer(accepted: false)
         pendingHostTrust = nil
+        pendingClipboardWrite = nil
         await closeTransport(transport)
         guard shouldRetry, lifecycleGeneration == generation else { return }
         if !reconnectPending {
@@ -434,6 +449,7 @@ final class TerminalSessionModel: ObservableObject {
         hostTrustTask = nil
         pendingHostTrust?.answer(accepted: false)
         pendingHostTrust = nil
+        pendingClipboardWrite = nil
         if let transport {
             await closeTransport(transport)
         } else if let cleanupTask {
@@ -447,6 +463,29 @@ final class TerminalSessionModel: ObservableObject {
         cleanupTask = (id, task)
         await task.value
         if cleanupTask?.id == id { cleanupTask = nil }
+    }
+
+    private func handleClipboardWrites(
+        _ writes: [TerminalClipboardWrite],
+        policy: RemotePermission,
+        attemptID: UUID
+    ) {
+        guard connectionAttemptID == attemptID else { return }
+        for write in writes {
+            switch policy {
+            case .allow:
+                clipboardWriter(write)
+            case .block:
+                continue
+            case .ask:
+                guard pendingClipboardWrite == nil else { continue }
+                pendingClipboardWrite = TerminalClipboardWriteRequest(
+                    id: UUID(),
+                    write: write,
+                    connectionAttemptID: attemptID
+                )
+            }
+        }
     }
 
     private func scheduleAutomaticRetry() {

@@ -54,6 +54,7 @@ final class TerminalSessionRegistry: ObservableObject {
 
     private let sessionFactory: (@MainActor () -> TerminalSessionModel)?
     private let keyProvider: @MainActor (UUID) -> StoredKey?
+    private let clipboardWriter: @MainActor (TerminalClipboardWrite) -> Void
     private let networkMonitor: (any NetworkPathMonitoring)?
     private var backgroundGeneration = 0
     private var backgroundDisconnectTask: Task<Void, Never>?
@@ -62,11 +63,13 @@ final class TerminalSessionRegistry: ObservableObject {
     init(
         sessionFactory: (@MainActor () -> TerminalSessionModel)? = nil,
         networkMonitor: (any NetworkPathMonitoring)? = DefaultNetworkPathMonitor(),
-        keyProvider: @escaping @MainActor (UUID) -> StoredKey? = { _ in nil }
+        keyProvider: @escaping @MainActor (UUID) -> StoredKey? = { _ in nil },
+        clipboardWriter: @escaping @MainActor (TerminalClipboardWrite) -> Void = { _ in }
     ) {
         self.sessionFactory = sessionFactory
         self.networkMonitor = networkMonitor
         self.keyProvider = keyProvider
+        self.clipboardWriter = clipboardWriter
         networkMonitor?.start { [weak self] availability in
             Task { @MainActor in self?.setNetworkAvailability(availability) }
         }
@@ -78,7 +81,10 @@ final class TerminalSessionRegistry: ObservableObject {
 
     @discardableResult
     func create(for host: Host) -> UUID {
-        let session = sessionFactory?() ?? TerminalSessionModel(keyProvider: keyProvider)
+        let session = sessionFactory?() ?? TerminalSessionModel(
+            keyProvider: keyProvider,
+            clipboardWriter: clipboardWriter
+        )
         let record = TerminalSessionRecord(host: host, session: session)
         record.session.setNetworkAvailability(networkAvailability)
         records.append(record)

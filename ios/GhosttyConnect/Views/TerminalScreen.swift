@@ -262,6 +262,18 @@ struct TerminalScreen: View {
                 )
             }
         }
+        .alert(item: remoteClipboardBinding) { request in
+            Alert(
+                title: Text("Remote Clipboard Request"),
+                message: Text("The remote terminal wants to write to the system clipboard."),
+                primaryButton: .default(Text("Allow Once")) {
+                    session.answerClipboardWrite(requestID: request.id, accepted: true)
+                },
+                secondaryButton: .cancel(Text("Block")) {
+                    session.answerClipboardWrite(requestID: request.id, accepted: false)
+                }
+            )
+        }
         .overlay(alignment: .bottom) {
             if let selection = contextualSelection {
                 selectionActionStrip(selection)
@@ -276,6 +288,14 @@ struct TerminalScreen: View {
                 reject: { session.answerHostTrust(requestID: request.id, accepted: false) },
                 accept: { session.answerHostTrust(requestID: request.id, accepted: true) }
             )
+        }
+    }
+
+    private var remoteClipboardBinding: Binding<TerminalClipboardWriteRequest?> {
+        Binding {
+            session.pendingClipboardWrite
+        } set: { _ in
+            // Keep the request pending until one of the explicit policy actions answers it.
         }
     }
 

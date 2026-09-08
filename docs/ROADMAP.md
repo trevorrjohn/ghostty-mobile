@@ -101,7 +101,7 @@ The matrix reflects the current working tree, not only the last commit.
 
 | Capability | Android | iOS | Direction or reason |
 | --- | --- | --- | --- |
-| Per-host OSC 52 clipboard policy | `Implemented` | `Partial` | iOS stores the policy but does not yet intercept or enforce requests. |
+| Per-host OSC 52 clipboard policy | `Implemented` | `Implemented` | Both enforce persisted ask/allow/block policy. iOS accepts only bounded plain UTF-8 writes to the standard clipboard, bounds callback buffering, permits one pending approval, and rejects stale approvals after connection teardown. |
 | Per-host remote-notification policy | `Implemented` | `Partial` | iOS stores the policy but does not yet parse or deliver notifications. |
 | Bell, progress, hyperlinks, title, and working directory | `Implemented` | `Partial` | iOS supports explicit copy/open actions for bounded `http` and `https` OSC 8 hyperlinks; bell, progress, title, working directory, and broader effect policy remain. |
 | iTerm2 inline images and tmux passthrough | `Partial` | `Partial` | Android renders a bounded bitmap subset. iOS parses bounded payloads but does not render them live. Downloads and rich media are deferred. |

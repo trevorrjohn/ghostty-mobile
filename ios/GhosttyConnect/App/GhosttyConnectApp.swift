@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 @main
 struct GhosttyConnectApp: App {
@@ -10,7 +11,13 @@ struct GhosttyConnectApp: App {
         let appModel = AppModel()
         _appModel = StateObject(wrappedValue: appModel)
         _sessions = StateObject(wrappedValue: TerminalSessionRegistry(
-            keyProvider: { [weak appModel] id in appModel?.key(id: id) }
+            keyProvider: { [weak appModel] id in appModel?.key(id: id) },
+            clipboardWriter: { write in
+                switch write {
+                case .text(let text): UIPasteboard.general.string = text
+                case .clear: UIPasteboard.general.items = []
+                }
+            }
         ))
     }
 
