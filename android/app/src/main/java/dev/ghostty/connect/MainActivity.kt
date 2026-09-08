@@ -88,7 +88,11 @@ import dev.ghostty.connect.model.KeyboardBarItemType
 import dev.ghostty.connect.model.KeyboardModifier
 import dev.ghostty.connect.model.HoldSwipeActions
 import dev.ghostty.connect.model.HoldSwipeDirection
+import dev.ghostty.connect.model.MAX_KEYBOARD_ACTION_STEPS
+import dev.ghostty.connect.model.displayLabel
+import dev.ghostty.connect.model.encodeKeyboardAction
 import dev.ghostty.connect.model.isVisibleForTerminalTitle
+import dev.ghostty.connect.model.parseKeyboardActionStep
 import dev.ghostty.connect.model.MAX_RETRY_ATTEMPTS
 import dev.ghostty.connect.model.MIN_RETRY_ATTEMPTS
 import dev.ghostty.connect.model.MAX_FEEDBACK_ENTRIES
@@ -2464,9 +2468,15 @@ class MainActivity : Activity() {
         val form = vertical(16)
         val name = field("Label (optional)", existing?.label.orEmpty())
         val key = field("Key, for example b or ARROW_LEFT", existing?.key.orEmpty())
+        val followingSteps = field(
+            "Then steps, comma-separated (optional)",
+            existing?.steps?.drop(1)?.joinToString(", ") { it.displayLabel() }.orEmpty(),
+        )
         val titleContains = field("Show when terminal title contains (optional)", existing?.titleContains.orEmpty())
         form.addView(name.margins(bottom = 8))
         form.addView(key.margins(bottom = 8))
+        form.addView(followingSteps.margins(bottom = 8))
+        form.addView(label("Example: key b + Ctrl, then n sends a tmux command.", 13f, secondary).margins(bottom = 8))
         form.addView(titleContains.margins(bottom = 10))
         form.addView(label("Modifiers", 14f, secondary).margins(bottom = 4))
         val checks = KeyboardModifier.entries.associateWith { modifier ->
@@ -2487,12 +2497,25 @@ class MainActivity : Activity() {
             dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
                 val keyValue = key.text.toString().trim()
                 val modifiers = checks.filterValues(CheckBox::isChecked).keys
-                if (keyValue.isBlank() || modifiers.isEmpty()) {
+                val firstStep = parseKeyboardActionStep(keyValue)?.copy(modifiers = modifiers)
+                if (firstStep == null || modifiers.isEmpty()) {
                     toast("Choose at least one modifier and enter a key.")
                     return@setOnClickListener
                 }
+                val followingValues = followingSteps.text.toString().split(',').map(String::trim)
+                    .filter(String::isNotEmpty)
+                val parsedFollowingSteps = followingValues.mapNotNull(::parseKeyboardActionStep)
+                if (parsedFollowingSteps.size != followingValues.size) {
+                    toast("Each step must be one key, optionally prefixed by modifiers such as Ctrl+c.")
+                    return@setOnClickListener
+                }
+                val steps = listOf(firstStep) + parsedFollowingSteps
+                if (steps.size > MAX_KEYBOARD_ACTION_STEPS) {
+                    toast("Actions can contain at most $MAX_KEYBOARD_ACTION_STEPS steps.")
+                    return@setOnClickListener
+                }
                 val labelValue = name.text.toString().trim().ifBlank {
-                    (modifiers.joinToString("+") { it.displayName }) + "+" + keyValue
+                    steps.joinToString(", then ") { it.displayLabel() }
                 }
                 val titleCondition = titleContains.text.toString().trim().take(128).takeIf(String::isNotBlank)
                 if (titleCondition?.any(Char::isISOControl) == true) {
@@ -2503,11 +2526,10 @@ class MainActivity : Activity() {
                     id = existing?.id ?: "combination-${UUID.randomUUID()}",
                     label = labelValue,
                     type = KeyboardBarItemType.COMBINATION,
-                    key = keyValue.uppercase().takeIf { candidate ->
-                        KeyboardBarCatalog.keys.any { it.key == candidate }
-                    } ?: keyValue,
+                    key = firstStep.key,
                     modifiers = modifiers,
                     titleContains = titleCondition,
+                    steps = steps,
                 )
                 val items = if (existing == null) {
                     keyboardBarConfig.items + combination
@@ -3891,7 +3913,7 @@ class MainActivity : Activity() {
             KeyboardBarItemType.KEY -> sendBarKey(item.key.orEmpty(), activeModifiers)
             KeyboardBarItemType.COMBINATION -> {
                 lastUsedCombination = item
-                sendBarKey(item.key.orEmpty(), activeModifiers + item.modifiers)
+                sendBarAction(item, activeModifiers)
             }
             KeyboardBarItemType.LAST_USED_MODIFIER -> Unit
             KeyboardBarItemType.LAST_USED_COMBINATION -> lastUsedCombination?.let(::activateBarItem)
@@ -3987,6 +4009,17 @@ class MainActivity : Activity() {
             text = text,
             modifiers = ghosttyModifierBits(modifiers),
         ))
+        consumeOneShotModifiers()
+    }
+
+    private fun sendBarAction(item: KeyboardBarItem, additionalModifiers: Set<KeyboardModifier>) {
+        val sessionId = selectedSessionId ?: return
+        val terminal = sessionService?.terminal(sessionId) ?: return
+        val bytes = encodeKeyboardAction(item, additionalModifiers) { step ->
+            val text = step.key.takeUnless { candidate -> KeyboardBarCatalog.keys.any { it.key == candidate } }.orEmpty()
+            terminal.encodeKey(step.key, text, ghosttyModifierBits(step.modifiers))
+        }
+        if (bytes.isNotEmpty()) sessionService?.send(sessionId, bytes)
         consumeOneShotModifiers()
     }
 

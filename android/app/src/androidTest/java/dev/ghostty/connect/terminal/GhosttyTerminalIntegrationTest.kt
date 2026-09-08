@@ -5,6 +5,11 @@ import android.graphics.Paint
 import android.graphics.Typeface
 import android.graphics.text.TextRunShaper
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import dev.ghostty.connect.model.KeyboardActionStep
+import dev.ghostty.connect.model.KeyboardBarItem
+import dev.ghostty.connect.model.KeyboardBarItemType
+import dev.ghostty.connect.model.KeyboardModifier
+import dev.ghostty.connect.model.encodeKeyboardAction
 import dev.ghostty.connect.terminal.bridge.GhosttyTerminal
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
@@ -15,6 +20,31 @@ import java.io.ByteArrayOutputStream
 
 @RunWith(AndroidJUnit4::class)
 class GhosttyTerminalIntegrationTest {
+    @Test
+    fun multiStepActionEncodesControlPrefixThenPlainCommand() {
+        val action = KeyboardBarItem(
+            id = "tmux-next",
+            label = "Tmux next",
+            type = KeyboardBarItemType.COMBINATION,
+            steps = listOf(
+                KeyboardActionStep("b", setOf(KeyboardModifier.CONTROL)),
+                KeyboardActionStep("n"),
+            ),
+        )
+
+        GhosttyTerminal().use { terminal ->
+            val bytes = encodeKeyboardAction(action) { step ->
+                terminal.encodeKey(
+                    key = step.key,
+                    text = step.key,
+                    modifiers = if (KeyboardModifier.CONTROL in step.modifiers) 1 shl 1 else 0,
+                )
+            }
+
+            assertArrayEquals(byteArrayOf(0x02, 0x6e), bytes)
+        }
+    }
+
     @Test
     fun focusReportsOnlyWhenApplicationEnablesMode() {
         GhosttyTerminal().use { terminal ->

@@ -22,6 +22,13 @@ enum class KeyboardBarItemType {
 
 enum class HoldSwipeDirection { UP, RIGHT, DOWN, LEFT }
 
+const val MAX_KEYBOARD_ACTION_STEPS = 8
+
+data class KeyboardActionStep(
+    val key: String,
+    val modifiers: Set<KeyboardModifier> = emptySet(),
+)
+
 object HoldSwipeActions {
     const val SELECT_HERE = "quick-select-here"
     const val PASTE = "quick-paste"
@@ -47,7 +54,45 @@ data class KeyboardBarItem(
     val key: String? = null,
     val modifiers: Set<KeyboardModifier> = emptySet(),
     val titleContains: String? = null,
+    val steps: List<KeyboardActionStep> = emptyList(),
 )
+
+fun KeyboardBarItem.actionSteps(additionalModifiers: Set<KeyboardModifier> = emptySet()): List<KeyboardActionStep> {
+    val configured = steps.takeIf { it.isNotEmpty() }
+        ?: key?.let { listOf(KeyboardActionStep(it, modifiers)) }.orEmpty()
+    return configured.take(MAX_KEYBOARD_ACTION_STEPS).mapIndexed { index, step ->
+        if (index == 0) step.copy(modifiers = step.modifiers + additionalModifiers) else step
+    }
+}
+
+fun encodeKeyboardAction(
+    item: KeyboardBarItem,
+    additionalModifiers: Set<KeyboardModifier> = emptySet(),
+    encode: (KeyboardActionStep) -> ByteArray,
+): ByteArray = item.actionSteps(additionalModifiers).fold(ByteArray(0)) { bytes, step -> bytes + encode(step) }
+
+fun parseKeyboardActionStep(value: String): KeyboardActionStep? {
+    val parts = value.split('+').map(String::trim)
+    if (parts.any(String::isEmpty)) return null
+    val key = normalizedKeyboardActionKey(parts.last()) ?: return null
+    val modifiers = parts.dropLast(1).map { name ->
+        KeyboardModifier.entries.firstOrNull {
+            it.name.equals(name, ignoreCase = true) || it.displayName.equals(name, ignoreCase = true) ||
+                (it == KeyboardModifier.CONTROL && name.equals("Control", ignoreCase = true))
+        } ?: return null
+    }.toSet()
+    return KeyboardActionStep(key, modifiers)
+}
+
+fun KeyboardActionStep.displayLabel(): String =
+    (modifiers.joinToString("+") { it.displayName }.takeIf(String::isNotEmpty)?.plus("+") ?: "") + key
+
+private fun normalizedKeyboardActionKey(value: String): String? {
+    val key = value.trim()
+    if (key.isEmpty() || key.any(Char::isISOControl) || key.toByteArray().size > 32) return null
+    KeyboardBarCatalog.keys.firstOrNull { it.key.equals(key, ignoreCase = true) }?.key?.let { return it }
+    return key.takeIf { it.codePointCount(0, it.length) == 1 }
+}
 
 fun KeyboardBarItem.isVisibleForTerminalTitle(title: String): Boolean =
     titleContains.isNullOrBlank() || title.contains(titleContains, ignoreCase = true)

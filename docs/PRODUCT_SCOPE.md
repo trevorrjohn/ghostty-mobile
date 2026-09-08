@@ -38,6 +38,12 @@ Seance Shell is a focused native SSH client for Android and iOS powered by Ghost
 - Platform-appropriate lifecycle behavior and honest reconnect semantics.
 - Keepalives, configurable retry, ProxyJump, SFTP, and port forwarding as later product phases.
 
+### Lightweight Connection Entry
+
+- An iOS App Clip may provide one foreground-only, ephemeral SSH session after the full iOS app has a validated TestFlight baseline.
+- The App Clip accepts a host, port, username, and transient password, performs strict host-key verification, and stores no profile, credential, trust decision, or terminal archive.
+- App Clip invocation data never contains credentials. Saved hosts, imported identities, SFTP, background sessions, and reconnect remain full-app capabilities.
+
 ### Security and Quality
 
 - Transient handling of passwords, passphrases, OTPs, and challenge answers.
@@ -64,3 +70,4 @@ The reasons for these decisions and any future reconsideration are recorded in t
 - Disconnect and reconnect states are visible and never imply that a remote process survived.
 - Remote effects and file paths are treated as untrusted input.
 - Supported platform builds pass their automated checks and release security review.
+- The App Clip, if shipped, disconnects honestly when it can no longer remain active and never implies that its temporary shell was saved or resumed.

@@ -3,11 +3,13 @@ package dev.ghostty.connect.data
 import android.content.Context
 import dev.ghostty.connect.model.KeyboardBarConfig
 import dev.ghostty.connect.model.KeyboardBarCatalog
+import dev.ghostty.connect.model.KeyboardActionStep
 import dev.ghostty.connect.model.KeyboardBarItem
 import dev.ghostty.connect.model.KeyboardBarItemType
 import dev.ghostty.connect.model.KeyboardModifier
 import dev.ghostty.connect.model.HoldSwipeDirection
 import dev.ghostty.connect.model.HoldSwipeActions
+import dev.ghostty.connect.model.MAX_KEYBOARD_ACTION_STEPS
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -46,7 +48,7 @@ class KeyboardBarStore(context: Context) {
 
     fun save(config: KeyboardBarConfig) {
         val root = JSONObject().apply {
-            put("version", 3)
+            put("version", 4)
             put("enabled", config.enabled)
             put("items", encodeItems(config.items))
             put("combinations", encodeItems(config.combinations))
@@ -71,6 +73,22 @@ class KeyboardBarStore(context: Context) {
                     add(KeyboardModifier.valueOf(modifierValues.getString(modifierIndex)))
                 }
             }
+            val steps = value.optJSONArray("steps")?.let { stepValues ->
+                buildList {
+                    for (stepIndex in 0 until minOf(stepValues.length(), MAX_KEYBOARD_ACTION_STEPS)) {
+                        val step = stepValues.getJSONObject(stepIndex)
+                        val stepModifiers = step.optJSONArray("modifiers") ?: JSONArray()
+                        add(KeyboardActionStep(
+                            key = step.getString("key"),
+                            modifiers = buildSet {
+                                for (modifierIndex in 0 until stepModifiers.length()) {
+                                    add(KeyboardModifier.valueOf(stepModifiers.getString(modifierIndex)))
+                                }
+                            },
+                        ))
+                    }
+                }
+            }.orEmpty()
             add(KeyboardBarItem(
                 id = value.getString("id"),
                 label = value.getString("label"),
@@ -78,6 +96,7 @@ class KeyboardBarStore(context: Context) {
                 key = value.optString("key").takeIf { !value.isNull("key") && it.isNotBlank() },
                 modifiers = modifiers,
                 titleContains = value.optString("titleContains").takeIf { it.isNotBlank() },
+                steps = steps,
             ))
         }
     }
@@ -91,6 +110,14 @@ class KeyboardBarStore(context: Context) {
                 put("key", item.key ?: JSONObject.NULL)
                 put("modifiers", JSONArray(item.modifiers.map(KeyboardModifier::name)))
                 put("titleContains", item.titleContains ?: JSONObject.NULL)
+                put("steps", JSONArray().apply {
+                    item.steps.take(MAX_KEYBOARD_ACTION_STEPS).forEach { step ->
+                        put(JSONObject().apply {
+                            put("key", step.key)
+                            put("modifiers", JSONArray(step.modifiers.map(KeyboardModifier::name)))
+                        })
+                    }
+                })
             })
         }
     }

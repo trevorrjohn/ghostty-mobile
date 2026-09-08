@@ -45,6 +45,67 @@ class KeyboardBarTest {
         assertTrue(KeyboardBarCatalog.keys.map(KeyboardBarItem::id).toSet().size == KeyboardBarCatalog.keys.size)
     }
 
+    @Test
+    fun multiStepActionEncodesPrefixAndCommandIndependently() {
+        val item = KeyboardBarItem(
+            id = "tmux-next",
+            label = "Tmux next",
+            type = KeyboardBarItemType.COMBINATION,
+            key = "b",
+            modifiers = setOf(KeyboardModifier.CONTROL),
+            steps = listOf(
+                KeyboardActionStep("b", setOf(KeyboardModifier.CONTROL)),
+                KeyboardActionStep("n"),
+            ),
+        )
+        val encodedSteps = mutableListOf<KeyboardActionStep>()
+
+        val bytes = encodeKeyboardAction(item) { step ->
+            encodedSteps += step
+            when (step) {
+                KeyboardActionStep("b", setOf(KeyboardModifier.CONTROL)) -> byteArrayOf(0x02)
+                KeyboardActionStep("n") -> byteArrayOf(0x6e)
+                else -> byteArrayOf()
+            }
+        }
+
+        assertEquals(listOf(0x02.toByte(), 0x6e.toByte()), bytes.toList())
+        assertEquals(item.steps, encodedSteps)
+    }
+
+    @Test
+    fun legacyCombinationBecomesOneStepAndActiveModifierOnlyAppliesToPrefix() {
+        val legacy = KeyboardBarCatalog.controlB
+        assertEquals(
+            listOf(KeyboardActionStep("b", setOf(KeyboardModifier.CONTROL, KeyboardModifier.ALT))),
+            legacy.actionSteps(setOf(KeyboardModifier.ALT)),
+        )
+
+        val sequence = legacy.copy(steps = listOf(
+            KeyboardActionStep("b", setOf(KeyboardModifier.CONTROL)),
+            KeyboardActionStep("n"),
+        ))
+        assertEquals(
+            listOf(
+                KeyboardActionStep("b", setOf(KeyboardModifier.CONTROL, KeyboardModifier.SHIFT)),
+                KeyboardActionStep("n"),
+            ),
+            sequence.actionSteps(setOf(KeyboardModifier.SHIFT)),
+        )
+    }
+
+    @Test
+    fun parsesBoundedSequenceStepSyntax() {
+        assertEquals(KeyboardActionStep("n"), parseKeyboardActionStep("n"))
+        assertEquals(
+            KeyboardActionStep("c", setOf(KeyboardModifier.CONTROL)),
+            parseKeyboardActionStep("Ctrl+c"),
+        )
+        assertEquals(KeyboardActionStep("ARROW_LEFT"), parseKeyboardActionStep("arrow_left"))
+        assertNull(parseKeyboardActionStep("two"))
+        assertNull(parseKeyboardActionStep("Ctrl+"))
+    }
+
     @Test fun holdSwipeDefaultsFavorSafeFrequentActions() {
         val config = KeyboardBarConfig()
 
