@@ -31,6 +31,10 @@ final class TerminalSessionModel: ObservableObject {
     private let retrySleep: @Sendable (UInt64) async throws -> Void
     private let stableConnectionNanoseconds: UInt64
 
+    var ownsConnectionResources: Bool {
+        transport != nil || cleanupTask != nil || reconnectPending || retryTask != nil
+    }
+
     init(
         transportFactory: @escaping () -> any SSHTransport = { CitadelSSHTransport() },
         engineFactory: () throws -> any TerminalEngine = { try TerminalEngineFactory.make() },

@@ -82,6 +82,28 @@ final class TerminalSessionRegistryTests: XCTestCase {
         await secondTransport.allowDisconnect()
         await task.value
     }
+
+    func testIdentityRemainsInUseUntilSessionResourcesClose() async {
+        let identityID = UUID()
+        let key = StoredKey(id: identityID, name: "test", data: Data("key".utf8), requiresPassphrase: false)
+        let transport = RegistryTestTransport()
+        let session = TerminalSessionModel(transportFactory: { transport })
+        let registry = TerminalSessionRegistry(sessionFactory: { session }, networkMonitor: nil)
+        let host = Host(
+            hostname: "example.com",
+            username: "tj",
+            authenticationType: .sshKey,
+            identityID: identityID
+        )
+        registry.create(for: host)
+
+        XCTAssertFalse(registry.isIdentityInUse(identityID))
+        await session.connect(to: host, secret: nil, key: key)
+        XCTAssertTrue(registry.isIdentityInUse(identityID))
+
+        await session.disconnect()
+        XCTAssertFalse(registry.isIdentityInUse(identityID))
+    }
 }
 
 private final class RegistryTestTransport: SSHTransport {

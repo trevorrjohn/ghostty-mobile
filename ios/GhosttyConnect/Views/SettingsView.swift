@@ -62,6 +62,7 @@ struct SettingsView: View {
 
 private struct IdentitiesView: View {
     @EnvironmentObject private var model: AppModel
+    @EnvironmentObject private var sessions: TerminalSessionRegistry
     @State private var renamedKey: StoredKey?
     @State private var pendingDeletion: StoredKey?
     @State private var name = ""
@@ -116,24 +117,41 @@ private struct IdentitiesView: View {
         } message: {
             Text("Saved hosts continue using this identity after it is renamed.")
         }
-        .alert("Delete SSH key?", isPresented: Binding(
+        .alert(deletionTitle, isPresented: Binding(
             get: { pendingDeletion != nil },
             set: { if !$0 { pendingDeletion = nil } }
         )) {
-            Button("Cancel", role: .cancel) { pendingDeletion = nil }
-            Button("Delete", role: .destructive) {
-                guard let key = pendingDeletion else { return }
-                pendingDeletion = nil
-                model.delete(key: key)
+            if pendingIdentityIsInUse {
+                Button("OK") { pendingDeletion = nil }
+            } else {
+                Button("Cancel", role: .cancel) { pendingDeletion = nil }
+                Button("Delete", role: .destructive) {
+                    guard let key = pendingDeletion else { return }
+                    pendingDeletion = nil
+                    model.delete(key: key)
+                }
             }
         } message: {
-            let affected = pendingDeletion.map(model.hosts(using:)) ?? []
-            if affected.isEmpty {
+            if pendingIdentityIsInUse {
+                Text("Disconnect every terminal session using this identity before deleting it.")
+            } else if affectedHosts.isEmpty {
                 Text("The private key will be permanently removed from this device.")
             } else {
-                Text("The private key will be removed. These hosts will require another identity: \(affected.map(\.name).joined(separator: ", ")).")
+                Text("The private key will be removed. These hosts will require another identity: \(affectedHosts.map(\.name).joined(separator: ", ")).")
             }
         }
+    }
+
+    private var pendingIdentityIsInUse: Bool {
+        pendingDeletion.map { sessions.isIdentityInUse($0.id) } ?? false
+    }
+
+    private var affectedHosts: [Host] {
+        pendingDeletion.map(model.hosts(using:)) ?? []
+    }
+
+    private var deletionTitle: String {
+        pendingIdentityIsInUse ? "SSH key is in use" : "Delete SSH key?"
     }
 }
 

@@ -89,6 +89,12 @@ final class TerminalSessionRegistry: ObservableObject {
         records.first { $0.id == id }
     }
 
+    func isIdentityInUse(_ identityID: UUID) -> Bool {
+        records.contains {
+            $0.host.identityID == identityID && $0.session.ownsConnectionResources
+        }
+    }
+
     func close(id: UUID) async {
         guard let index = records.firstIndex(where: { $0.id == id }) else { return }
         let record = records.remove(at: index)

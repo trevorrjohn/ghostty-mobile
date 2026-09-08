@@ -40,7 +40,7 @@ The registry respects iOS suspension limits rather than imitating Android foregr
 
 The build script installs a checksum-verified XCFramework for the shared pinned Ghostty revision. `GhosttyTerminalEngine` confines C API ownership and converts render state into Swift values.
 
-The current adapter supports feed, resize, UTF-8 text encoding, mode-aware named-key and paste encoding, bounded custom actions containing up to eight ordered key events, bounded scrollback, Unicode-aware history search with cyclic previous/next navigation, word/range/semantic-output selection, bounded OSC 8 hyperlink lookup, plain-text formatting, and styled snapshots. Imported SSH identities use stable UUID host references with migration from unambiguous legacy names; Settings supports inspection, collision-safe rename, affected-host deletion warnings, and OpenSSH public-key sharing when metadata is derivable. Advanced selection interactions, effects, graphics, and archive capabilities remain parity work.
+The current adapter supports feed, resize, UTF-8 text encoding, mode-aware named-key and paste encoding, bounded custom actions containing up to eight ordered key events, bounded scrollback, Unicode-aware history search with cyclic previous/next navigation, word/range/semantic-output selection, bounded OSC 8 hyperlink lookup, plain-text formatting, and styled snapshots. Imported SSH identities use stable UUID host references with migration from unambiguous legacy names; Settings supports inspection, collision-safe rename, affected-host deletion warnings, active-session deletion guards, and OpenSSH public-key sharing when metadata is derivable. Advanced selection interactions, effects, graphics, and archive capabilities remain parity work.
 
 ## SFTP
 
