@@ -55,7 +55,7 @@ Production rollout does not begin until every item marked **Launch blocker** is 
 
 - [ ] **Launch blocker:** Complete the runtime dependency inventory from the final release AAB, including native and transitive dependencies.
 - [ ] **Launch blocker:** Verify license compatibility and preserve every required copyright, license, and NOTICE statement.
-- [ ] **Launch blocker:** Add an in-app Open source licenses screen reachable from Settings without a network connection.
+- [x] Add an in-app Open source licenses screen reachable from Settings without a network connection.
 - [ ] **Launch blocker:** Include Ghostty attribution without implying endorsement or trademark permission.
 - [ ] **Launch blocker:** Choose the license for this repository/application and add a root `LICENSE` file before presenting the source distribution as open source.
 - [ ] Generate and archive an SBOM for the exact release artifact.
@@ -65,7 +65,7 @@ Production rollout does not begin until every item marked **Launch blocker** is 
 ## Functional Validation
 
 - [x] Debug unit tests, lint, APK assembly, and Android-test APK assembly pass in the current development environment.
-- [x] A local unsigned release APK assembles successfully.
+- [x] A local release build assembles successfully when the environment-backed signing configuration is supplied.
 - [ ] **Launch blocker:** Run `testDebugUnitTest`, `lintDebug`, `assembleRelease`, and release-focused checks from a clean clone in CI.
 - [ ] **Launch blocker:** Run connected tests on API 29 and API 36 emulators plus at least one supported physical Pixel.
 - [ ] **Launch blocker:** Validate arm64 physical-device and x86_64 emulator artifacts.

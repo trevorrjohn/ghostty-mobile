@@ -37,7 +37,7 @@ A user can:
 10. Open a separate terminal for the same saved host without ending the file browser.
 11. Save favorite remote folders and reopen recently visited folders for a saved host across file-browser connections.
 12. Fuzzy-filter the current directory and sort folders/files by name, last-updated time, last-accessed time, or size.
-13. Open a bounded regular file with an installed Android viewer without first choosing a durable download destination.
+13. On Android, open a bounded regular file with an installed viewer without first choosing a durable download destination; other platforms require an equivalent separately validated preview or handoff flow before claiming this outcome.
 
 ## Entry Points
 
