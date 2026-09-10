@@ -47,6 +47,11 @@ class HardwareKeyActionTest {
     }
 
     @Test
+    fun ctrlKeyUsesPrintableTextInsteadOfControlCode() {
+        assertEquals("b", hardwareKeyText(unicodeChar = 0x02))
+    }
+
+    @Test
     fun dedicatedClipboardKeysAreHandledLocally() {
         assertEquals(HardwareClipboardAction.COPY, hardwareClipboardAction(KeyEvent.KEYCODE_COPY))
         assertEquals(HardwareClipboardAction.PASTE, hardwareClipboardAction(KeyEvent.KEYCODE_PASTE))

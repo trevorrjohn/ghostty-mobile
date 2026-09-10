@@ -30,6 +30,7 @@ import android.os.Build
 import android.os.Looper
 import android.content.pm.PackageManager
 import android.provider.OpenableColumns
+import android.provider.Settings
 import android.text.InputType
 import android.text.Editable
 import android.text.TextWatcher
@@ -122,6 +123,7 @@ import dev.ghostty.connect.terminal.ghosttyKeyAction
 import dev.ghostty.connect.terminal.HardwareKeyModifierState
 import dev.ghostty.connect.terminal.HardwareClipboardAction
 import dev.ghostty.connect.terminal.hardwareClipboardAction
+import dev.ghostty.connect.terminal.hardwareKeyText
 import dev.ghostty.connect.terminal.isModifierEligibleImeCommit
 import dev.ghostty.connect.terminal.sessionDisplayId
 import dev.ghostty.connect.terminal.nextSessionId
@@ -206,9 +208,11 @@ class MainActivity : Activity() {
     private val sftpSortDescending = mutableMapOf<String, Boolean>()
     private val sftpShowHidden = mutableSetOf<String>()
     private val sftpKeepSearchFocused = mutableSetOf<String>()
+    private var sftpShowingRecent = false
     private var lastOpenedSftpUri: String? = null
     private var activeSftpPreviewUri: Uri? = null
     private var activeSftpPreviewBrowserId: String? = null
+    private var pendingApkInstall: Pair<String, String>? = null
     private var selectedSessionId: String? = null
     private var terminalStatus: TextView? = null
     private var terminalTitle = ""
@@ -1157,6 +1161,16 @@ class MainActivity : Activity() {
     @Deprecated("Activity result callback retained without an AndroidX dependency")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == REQUEST_APK_INSTALL_PERMISSION) {
+            val pending = pendingApkInstall
+            pendingApkInstall = null
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O || packageManager.canRequestPackageInstalls()) {
+                pending?.let { (browserId, uri) -> openSftpUri(browserId, uri) }
+            } else {
+                toast("Allow Seance Shell to install unknown apps, then open the APK again.")
+            }
+            return
+        }
         if (resultCode != RESULT_OK) {
             if (requestCode == CREATE_DOWNLOAD_DOCUMENT) pendingDownloadRequest = null
             if (requestCode == OPEN_UPLOAD_DOCUMENT) pendingUploadRequest = null
@@ -2909,6 +2923,17 @@ class MainActivity : Activity() {
             marginStart = dp(8)
         })
         toolbar.addView(navigationRow)
+        toolbar.addView(LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            addView(barButton("Files", !sftpShowingRecent) {
+                sftpShowingRecent = false
+                renderFileBrowser(state)
+            }, LinearLayout.LayoutParams(0, dp(44), 1f).apply { marginEnd = dp(4) })
+            addView(barButton("Recent", sftpShowingRecent) {
+                sftpShowingRecent = true
+                renderFileBrowser(state)
+            }, LinearLayout.LayoutParams(0, dp(44), 1f).apply { marginStart = dp(4) })
+        }.margins(top = 8))
         val content = vertical(16).apply { setBackgroundColor(browserBackground) }
         state.error?.takeUnless { it == state.transfer?.message }?.let {
             content.addView(label(it, 13f, Color.rgb(255, 145, 145)).margins(top = 5))
@@ -2973,8 +2998,85 @@ class MainActivity : Activity() {
             }
             content.addView(transferCard.margins(bottom = 12))
         }
-        updateDirectoryList()
-        content.addView(list)
+        if (sftpShowingRecent) {
+            hostId?.let { id ->
+                val currentPath = state.path
+                if (currentPath != null) {
+                    val isFavorite = currentPath in favorites
+                    content.addView(compactButton(
+                        if (isFavorite) "Remove current folder from favorites" else "Add current folder to favorites",
+                    ) {
+                        runCatching {
+                            if (isFavorite) sftpFavoriteStore.remove(id, currentPath)
+                            else sftpFavoriteStore.add(id, currentPath)
+                        }.onSuccess {
+                            toast(if (isFavorite) "Removed from favorites." else "Added to favorites.")
+                            renderFileBrowser(state)
+                        }.onFailure { toast(it.message ?: "Could not update favorites.") }
+                    })
+                }
+                if (favorites.isNotEmpty()) {
+                    content.addView(label("Favorites", 15f, primary, Typeface.BOLD).margins(top = 16, bottom = 4))
+                    favorites.forEach { path ->
+                        val row = LinearLayout(this).apply {
+                            orientation = LinearLayout.HORIZONTAL
+                            gravity = Gravity.CENTER_VERTICAL
+                        }
+                        row.addView(compactButton(path, state.connected) {
+                            val current = sftpService?.state(state.browserId)
+                            val available = current?.connected == true && current.status in setOf("Ready", "Empty") &&
+                                current.transfer?.status != SftpTransferStatus.RUNNING
+                            if (!available) {
+                                toast("Reconnect to open a favorite folder.")
+                                return@compactButton
+                            }
+                            clearSftpSearch(state.browserId)
+                            releaseSftpSearchFocus()
+                            sftpService?.openPath(state.browserId, path)
+                        }, LinearLayout.LayoutParams(0, dp(44), 1f))
+                        row.addView(compactButton("Remove") {
+                            runCatching { sftpFavoriteStore.remove(id, path) }
+                                .onSuccess { renderFileBrowser(state) }
+                                .onFailure { toast(it.message ?: "Could not remove favorite.") }
+                        }, LinearLayout.LayoutParams(-2, dp(44)).apply { marginStart = dp(6) })
+                        content.addView(row.margins(bottom = 4))
+                    }
+                }
+            }
+            val recent = recentFolders.filterNot { it in favorites }
+            content.addView(label("Recent folders", 15f, primary, Typeface.BOLD).margins(top = 16, bottom = 4))
+            if (recent.isEmpty()) {
+                content.addView(label("No recent folders yet.", 14f, secondary))
+            } else {
+                recent.forEach { path ->
+                    content.addView(compactButton(path, state.connected) {
+                        val current = sftpService?.state(state.browserId)
+                        val available = current?.connected == true && current.status in setOf("Ready", "Empty") &&
+                            current.transfer?.status != SftpTransferStatus.RUNNING
+                        if (!available) {
+                            toast("Reconnect to open a recent folder.")
+                            return@compactButton
+                        }
+                        clearSftpSearch(state.browserId)
+                        releaseSftpSearchFocus()
+                        sftpService?.openPath(state.browserId, path)
+                    }.margins(top = 4))
+                }
+            }
+            if (recentFolders.isNotEmpty() && hostId != null) {
+                content.addView(compactButton("Clear recent folders") {
+                    runCatching { sftpRecentFolderStore.clear(hostId) }
+                        .onSuccess {
+                            toast("Recent folders cleared.")
+                            renderFileBrowser(state)
+                        }
+                        .onFailure { toast(it.message ?: "Could not clear recent folders.") }
+                }.margins(top = 10))
+            }
+        } else {
+            updateDirectoryList()
+            content.addView(list)
+        }
         root.addView(toolbar)
         root.addView(ScrollView(this).apply {
             setBackgroundColor(browserBackground)
@@ -3066,10 +3168,6 @@ class MainActivity : Activity() {
     }
 
     private fun openRemoteFile(browserId: String, entry: SftpEntry) {
-        if (entry.name.endsWith(".apk", ignoreCase = true)) {
-            toast("APK files cannot be opened here. Download the file instead.")
-            return
-        }
         if (entry.size != null && entry.size > MAX_OPEN_FILE_BYTES) {
             toast("This file is too large to open directly. Download it instead.")
             return
@@ -3094,8 +3192,18 @@ class MainActivity : Activity() {
         val uri = Uri.parse(uriString)
         val mimeType = contentResolver.getType(uri) ?: "application/octet-stream"
         if (mimeType == "application/vnd.android.package-archive") {
-            toast("APK files cannot be opened here. Download the file instead.")
-            return false
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && !packageManager.canRequestPackageInstalls()) {
+                pendingApkInstall = browserId to uriString
+                return runCatching {
+                    startActivityForResult(
+                        Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:$packageName")),
+                        REQUEST_APK_INSTALL_PERMISSION,
+                    )
+                }.onFailure {
+                    pendingApkInstall = null
+                    toast("Open Settings and allow Seance Shell to install unknown apps.")
+                }.isSuccess
+            }
         }
         val intent = Intent(Intent.ACTION_VIEW).apply {
             setDataAndType(uri, mimeType)
@@ -3633,7 +3741,7 @@ class MainActivity : Activity() {
             onInput = { input ->
                 val modifierEligible = isModifierEligibleImeCommit(input)
                 val key = input.singleOrNull()?.takeIf { modifierEligible }?.let { character ->
-                    if (character.isLetterOrDigit()) character.uppercase() else "UNIDENTIFIED"
+                    if (character.isLetterOrDigit()) character.lowercase() else "UNIDENTIFIED"
                 } ?: "UNIDENTIFIED"
                 val modifiers = if (modifierEligible) ghosttyModifierBits(activeModifiers) else 0
                 sessionService?.send(sessionId, terminal.encodeKey(key, input, modifiers))
@@ -4039,9 +4147,8 @@ class MainActivity : Activity() {
         }
         val action = ghosttyKeyAction(event.action, event.repeatCount) ?: return false
         val key = logicalKey ?: androidKeyName(event.keyCode) ?: return false
-        val codepoint = event.unicodeChar
         val text = if (logicalKey == null) {
-            codepoint.takeIf { it > 31 && it != 127 }?.let { String(Character.toChars(it)) }.orEmpty()
+            hardwareKeyText(event)
         } else {
             ""
         }
@@ -4644,6 +4751,7 @@ class MainActivity : Activity() {
         const val NOTIFICATION_PERMISSION = 1002
         const val CREATE_DOWNLOAD_DOCUMENT = 1003
         const val OPEN_UPLOAD_DOCUMENT = 1004
+        const val REQUEST_APK_INSTALL_PERMISSION = 1005
         const val CREATE_TERMINAL_ARCHIVE = 1006
         const val GHOSTTY_MOD_SHIFT = 1 shl 0
         const val GHOSTTY_MOD_CTRL = 1 shl 1

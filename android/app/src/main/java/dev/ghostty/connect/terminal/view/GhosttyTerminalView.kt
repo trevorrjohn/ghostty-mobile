@@ -1425,7 +1425,7 @@ class GhosttyTerminalView(
 
             override fun performEditorAction(actionCode: Int): Boolean {
                 if (!inputBuffer.isOpen) return false
-                inputBuffer.flush()
+                inputBuffer.discardComposing()
                 onSpecialKey("ENTER")
                 return true
             }
@@ -1605,7 +1605,12 @@ internal class TerminalImeInputBuffer(
         if (closed || beforeLength < 0 || afterLength < 0 ||
             beforeLength > MAX_DELETE_KEYS || afterLength > MAX_DELETE_KEYS
         ) return false
-        flushPending()
+        if (composingText.isEmpty() && pendingText.isNotEmpty()) {
+            composingText = pendingText
+            pendingText = ""
+            pendingGeneration++
+            cursor = composingText.length
+        }
         if (composingText.isNotEmpty()) {
             val localBefore = if (codePoints) {
                 minOf(beforeLength, composingText.codePointCount(0, cursor))
@@ -1640,6 +1645,14 @@ internal class TerminalImeInputBuffer(
             composingText = ""
             cursor = 0
         }
+    }
+
+    fun discardComposing() {
+        if (closed) return
+        composingText = ""
+        pendingText = ""
+        cursor = 0
+        pendingGeneration++
     }
 
     fun textBeforeCursor(length: Int): CharSequence {

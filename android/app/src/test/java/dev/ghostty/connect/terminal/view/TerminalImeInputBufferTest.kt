@@ -40,6 +40,17 @@ class TerminalImeInputBufferTest {
     }
 
     @Test
+    fun editorActionCanDiscardCompositionWithoutEmittingIt() {
+        buffer.setComposing("j")
+        buffer.finishComposing()
+        buffer.discardComposing()
+
+        assertEquals(emptyList<String>(), input)
+        buffer.flush()
+        assertEquals(emptyList<String>(), input)
+    }
+
+    @Test
     fun surroundingDeletionUsesExactLengths() {
         buffer.deleteSurrounding(beforeLength = 0, afterLength = 0)
         buffer.deleteSurrounding(beforeLength = 2, afterLength = 1)
@@ -91,6 +102,17 @@ class TerminalImeInputBufferTest {
         runScheduledActions()
 
         assertEquals(listOf("hello"), input)
+    }
+
+    @Test
+    fun deletionEditsFinishedCompositionBeforeItIsSent() {
+        buffer.setComposing("teh")
+        buffer.finishComposing()
+        assertTrue(buffer.deleteSurrounding(beforeLength = 1, afterLength = 0))
+        buffer.flush()
+
+        assertEquals(listOf("te"), input)
+        assertEquals(emptyList<String>(), specialKeys)
     }
 
     @Test

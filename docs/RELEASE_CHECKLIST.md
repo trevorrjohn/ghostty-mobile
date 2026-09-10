@@ -45,7 +45,7 @@ Production rollout does not begin until every item marked **Launch blocker** is 
 - [ ] **Launch blocker:** Validate unknown-key trust, trust reuse, changed-key blocking, concurrent approvals, removal, and normalization against a live OpenSSH server.
 - [ ] **Launch blocker:** Validate password, unencrypted key, encrypted key, keyboard-interactive, wrong credential, cancellation, and retry paths against disposable servers.
 - [ ] **Launch blocker:** Confirm every exported Android component is intentional and protected.
-- [x] `REQUEST_INSTALL_PACKAGES` and in-app APK installation were removed; APKs remain available through explicit document downloads.
+- [ ] Review `REQUEST_INSTALL_PACKAGES` and in-app APK installation policy before public release.
 - [ ] **Launch blocker:** Publish a plain-language privacy policy at a stable HTTPS URL.
 - [ ] **Launch blocker:** Complete the Play Data safety form from verified behavior, not intended behavior.
 - [ ] Verify no hostnames, usernames, paths, terminal contents, credentials, keys, clipboard contents, or screenshots enter logs, diagnostics, analytics, notifications, or feedback context.
