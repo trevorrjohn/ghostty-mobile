@@ -6,11 +6,15 @@ final class TerminalSessionModel: ObservableObject {
     @Published private(set) var snapshot: TerminalSnapshot?
     @Published private(set) var pendingHostTrust: HostTrustRequest?
     @Published private(set) var pendingClipboardWrite: TerminalClipboardWriteRequest?
+    @Published private(set) var pendingRemoteNotification: TerminalRemoteNotificationRequest?
+    @Published private(set) var progress: TerminalProgressReport?
 
     private let engine: (any TerminalEngine)?
     private let transportFactory: () -> any SSHTransport
     private let keyProvider: @MainActor (UUID) -> StoredKey?
     private let clipboardWriter: @MainActor (TerminalClipboardWrite) -> Void
+    private let bellHandler: @MainActor () -> Void
+    private let notificationWriter: @MainActor (TerminalRemoteNotification) async -> Void
     private var transport: (any SSHTransport)?
     private var outputTask: Task<Void, Never>?
     private var writeTask: Task<Void, Never>?
@@ -19,6 +23,8 @@ final class TerminalSessionModel: ObservableObject {
     private var cleanupTask: (id: UUID, task: Task<Void, Never>)?
     private var retryTask: Task<Void, Never>?
     private var stableConnectionTask: Task<Void, Never>?
+    private var notificationTask: Task<Void, Never>?
+    private var notificationQueue: [TerminalRemoteNotification] = []
     private var requestedDimensions: TerminalDimensions?
     private var appliedDimensions: TerminalDimensions?
     private var connectionAttemptID: UUID?
@@ -42,12 +48,16 @@ final class TerminalSessionModel: ObservableObject {
         engineFactory: () throws -> any TerminalEngine = { try TerminalEngineFactory.make() },
         keyProvider: @escaping @MainActor (UUID) -> StoredKey? = { _ in nil },
         clipboardWriter: @escaping @MainActor (TerminalClipboardWrite) -> Void = { _ in },
+        bellHandler: @escaping @MainActor () -> Void = {},
+        notificationWriter: @escaping @MainActor (TerminalRemoteNotification) async -> Void = { _ in },
         retrySleep: @escaping @Sendable (UInt64) async throws -> Void = { try await Task.sleep(nanoseconds: $0) },
         stableConnectionNanoseconds: UInt64 = 30_000_000_000
     ) {
         self.transportFactory = transportFactory
         self.keyProvider = keyProvider
         self.clipboardWriter = clipboardWriter
+        self.bellHandler = bellHandler
+        self.notificationWriter = notificationWriter
         self.retrySleep = retrySleep
         self.stableConnectionNanoseconds = stableConnectionNanoseconds
         do {
@@ -119,30 +129,20 @@ final class TerminalSessionModel: ObservableObject {
                 state = .verifyingHost
             }
         }
-        outputTask = Task { [weak self] in
-            guard let self else { return }
-            do {
-                for try await data in transport.output {
-                    guard connectionAttemptID == attemptID else { return }
-                    engine.feed(data)
-                    handleClipboardWrites(engine.drainClipboardWrites(), policy: host.remoteClipboard, attemptID: attemptID)
-                    snapshot = try engine.snapshot()
-                }
-                await finishAttempt(attemptID: attemptID, transport: transport, failure: nil)
-            } catch {
-                await finishAttempt(
-                    attemptID: attemptID,
-                    transport: transport,
-                    failure: SSHFailureClassifier.classify(error, destination: host.destination)
-                )
-            }
-        }
-
         do {
             try await transport.connect(to: host, credential: credential)
             guard connectionAttemptID == attemptID else {
                 await transport.disconnect()
                 return
+            }
+            if let startupCommand = try StartupCommand.normalized(host.startupCommand) {
+                var startupInput = Data(startupCommand.utf8)
+                startupInput.append(0x0d)
+                try await transport.write(startupInput)
+                guard connectionAttemptID == attemptID else {
+                    await transport.disconnect()
+                    return
+                }
             }
             if isReconnect && hasConnectedShell {
                 engine.feed(Data("\r\n\u{1b}[2m[Connected with a new SSH shell]\u{1b}[0m\r\n".utf8))
@@ -150,6 +150,25 @@ final class TerminalSessionModel: ObservableObject {
             }
             hasConnectedShell = true
             state = .connected
+            outputTask = Task { [weak self] in
+                guard let self else { return }
+                do {
+                    for try await data in transport.output {
+                        guard connectionAttemptID == attemptID else { return }
+                        engine.feed(data)
+                        let effects = engine.drainEffects()
+                        handleEffects(effects, host: host, transport: transport, attemptID: attemptID)
+                        snapshot = try engine.snapshot()
+                    }
+                    await finishAttempt(attemptID: attemptID, transport: transport, failure: nil)
+                } catch {
+                    await finishAttempt(
+                        attemptID: attemptID,
+                        transport: transport,
+                        failure: SSHFailureClassifier.classify(error, destination: host.destination)
+                    )
+                }
+            }
             reconnectPending = false
             if host.retryEnabled,
                host.authenticationType == .sshKey,
@@ -195,6 +214,16 @@ final class TerminalSessionModel: ObservableObject {
               request.connectionAttemptID == connectionAttemptID else { return }
         pendingClipboardWrite = nil
         if accepted { clipboardWriter(request.write) }
+    }
+
+    func answerRemoteNotification(requestID: UUID, accepted: Bool) {
+        guard let request = pendingRemoteNotification,
+              request.id == requestID,
+              request.connectionAttemptID == connectionAttemptID else { return }
+        pendingRemoteNotification = nil
+        if accepted {
+            scheduleNotification(request.notification, attemptID: request.connectionAttemptID)
+        }
     }
 
     func send(_ event: TerminalInputEvent) {
@@ -420,6 +449,11 @@ final class TerminalSessionModel: ObservableObject {
         pendingHostTrust?.answer(accepted: false)
         pendingHostTrust = nil
         pendingClipboardWrite = nil
+        pendingRemoteNotification = nil
+        notificationTask?.cancel()
+        notificationTask = nil
+        notificationQueue.removeAll(keepingCapacity: true)
+        progress = nil
         await closeTransport(transport)
         guard shouldRetry, lifecycleGeneration == generation else { return }
         if !reconnectPending {
@@ -450,6 +484,11 @@ final class TerminalSessionModel: ObservableObject {
         pendingHostTrust?.answer(accepted: false)
         pendingHostTrust = nil
         pendingClipboardWrite = nil
+        pendingRemoteNotification = nil
+        notificationTask?.cancel()
+        notificationTask = nil
+        notificationQueue.removeAll(keepingCapacity: true)
+        progress = nil
         if let transport {
             await closeTransport(transport)
         } else if let cleanupTask {
@@ -485,6 +524,60 @@ final class TerminalSessionModel: ObservableObject {
                     connectionAttemptID: attemptID
                 )
             }
+        }
+    }
+
+    private func handleEffects(
+        _ effects: TerminalEffects,
+        host: Host,
+        transport: any SSHTransport,
+        attemptID: UUID
+    ) {
+        guard connectionAttemptID == attemptID else { return }
+        handleClipboardWrites(effects.clipboardWrites, policy: host.remoteClipboard, attemptID: attemptID)
+        if effects.bells > 0 { bellHandler() }
+        if let report = effects.progress {
+            progress = report.state == .remove ? nil : report
+        }
+        for notification in effects.notifications {
+            switch host.remoteNotifications {
+            case .allow:
+                scheduleNotification(notification, attemptID: attemptID)
+            case .block:
+                continue
+            case .ask:
+                guard pendingRemoteNotification == nil else { continue }
+                pendingRemoteNotification = TerminalRemoteNotificationRequest(
+                    id: UUID(),
+                    notification: notification,
+                    connectionAttemptID: attemptID
+                )
+            }
+        }
+        if !effects.ptyWrite.isEmpty {
+            enqueueWrite(
+                effects.ptyWrite,
+                transport: transport,
+                attemptID: attemptID,
+                destination: activeDestination ?? "the remote host"
+            )
+        }
+    }
+
+    private func scheduleNotification(_ notification: TerminalRemoteNotification, attemptID: UUID) {
+        guard connectionAttemptID == attemptID,
+              notificationQueue.count < 10 else { return }
+        notificationQueue.append(notification)
+        guard notificationTask == nil else { return }
+        notificationTask = Task { [weak self] in
+            guard let self else { return }
+            while !Task.isCancelled,
+                  connectionAttemptID == attemptID,
+                  !notificationQueue.isEmpty {
+                let next = notificationQueue.removeFirst()
+                await notificationWriter(next)
+            }
+            notificationTask = nil
         }
     }
 

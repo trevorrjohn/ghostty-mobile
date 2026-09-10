@@ -26,6 +26,7 @@ data class Host(
     val retryEnabled: Boolean = true,
     val retryMaxAttempts: Int = DEFAULT_RETRY_ATTEMPTS,
     val retryBackoff: RetryBackoff = RetryBackoff.BALANCED,
+    val startupCommand: String? = null,
 ) {
     init {
         require(retryMaxAttempts in MIN_RETRY_ATTEMPTS..MAX_RETRY_ATTEMPTS) {
@@ -33,6 +34,9 @@ data class Host(
         }
         require(authenticationType != AuthenticationType.TAILSCALE_SSH || port == 22) {
             "Tailscale SSH uses port 22."
+        }
+        require(startupCommand == normalizeStartupCommand(startupCommand)) {
+            "Startup command must be normalized, single-line, and at most $MAX_STARTUP_COMMAND_BYTES UTF-8 bytes."
         }
     }
 
@@ -45,6 +49,20 @@ data class Host(
 const val MIN_RETRY_ATTEMPTS = 1
 const val MAX_RETRY_ATTEMPTS = 10
 const val DEFAULT_RETRY_ATTEMPTS = 5
+const val MAX_STARTUP_COMMAND_BYTES = 1_024
+
+fun normalizeStartupCommand(value: String?): String? {
+    if (value == null) return null
+    require(value.none { it.code < 32 || it.code == 127 }) {
+        "Startup command must be one line without control characters."
+    }
+    val normalized = value.trim()
+    if (normalized.isEmpty()) return null
+    require(normalized.toByteArray(Charsets.UTF_8).size <= MAX_STARTUP_COMMAND_BYTES) {
+        "Startup command is limited to $MAX_STARTUP_COMMAND_BYTES UTF-8 bytes."
+    }
+    return normalized
+}
 
 fun Host.duplicate(newId: String, existingNames: Collection<String>): Host {
     val baseName = "$name copy"

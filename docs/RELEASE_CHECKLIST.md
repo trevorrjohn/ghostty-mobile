@@ -6,7 +6,7 @@
 - Product name: `Seance Shell`.
 - Rejected candidates: `RelayTTY` has an exact-name terminal-project collision; `Specter Shell` has substantial software, SSH, cybersecurity, and trademark crowding.
 - Current application ID: `fail.founder.terminal`.
-- Initial version: `0.1.0` (`versionCode` 1).
+- Initial version: `0.1.0` (`versionCode` 2; version code 1 was consumed during Play App Signing setup).
 - Release owner: Unassigned.
 - Target release date: Unassigned.
 
@@ -22,7 +22,7 @@ Production rollout does not begin until every item marked **Launch blocker** is 
 - [ ] **Launch blocker:** Complete formal trademark and confusingly similar-name clearance for `Seance Shell` before public distribution.
 - [x] The product name does not imply endorsement by Ghostty; Ghostty is identified separately as the terminal engine.
 - [x] The public app name is locked as `Seance Shell` for release assets and store copy.
-- [ ] **Launch blocker:** Decide whether `fail.founder.terminal` is the permanent Play application ID. It cannot be changed for the existing listing after launch.
+- [x] `fail.founder.terminal` is the permanent Play application ID. It cannot be changed for the existing listing after launch.
 - [x] Replace the old product display name in Android, iOS, website copy, accessibility labels, exports, notifications, and user-facing documentation.
 - [ ] Produce final launcher, adaptive, monochrome, notification, and store icons.
 
@@ -71,7 +71,7 @@ Production rollout does not begin until every item marked **Launch blocker** is 
 - [ ] **Launch blocker:** Validate arm64 physical-device and x86_64 emulator artifacts.
 - [ ] **Launch blocker:** Verify native libraries and the packaged AAB satisfy Android 16 KB page-size requirements.
 - [ ] **Launch blocker:** Run the disposable live SSH/SFTP suite from the release commit.
-- [ ] Validate host creation, edit, duplicate, deletion, identity migration, trust removal, and process restart.
+- [ ] Validate host creation, edit, duplicate, deletion, startup-command persistence and once-per-shell execution, identity migration, trust removal, and process restart.
 - [ ] Validate terminal Unicode, colors, cursor, resize, scrollback, selection, copy, safe paste, search, links, and shell integration.
 - [ ] Validate software keyboards from Gboard and one materially different IME.
 - [ ] Validate hardware keyboard letters, punctuation, Ctrl, Alt/AltGr, Shift, navigation, function, numpad, and lock keys.
@@ -101,9 +101,10 @@ Production rollout does not begin until every item marked **Launch blocker** is 
 
 - [ ] **Launch blocker:** Add CI for unit tests, lint, debug assembly, release assembly, and deterministic native-artifact verification.
 - [x] Configure release builds for environment-backed signing and add a fail-closed build/verification script.
-- [x] Create the Play upload keystore and owner-only local credential file outside the repository.
-- [ ] **Launch blocker:** Move the upload key and credentials into a recoverable secure vault, verify recovery, and delete the local plaintext environment file.
-- [ ] **Launch blocker:** Enroll in Play App Signing and securely retain the upload key and recovery material.
+- [x] Create the Play upload keystore and store its credentials in the recoverable 1Password vault without a persistent local plaintext environment file.
+- [ ] Verify upload-key recovery from a separate authorized development machine before production rollout.
+- [ ] **Launch blocker:** Complete the Play Console upload-key reset from the unavailable certificate with SHA-1 ending `49:ED` to the vaulted certificate with SHA-1 ending `FF:23`, then verify a signed AAB upload.
+- [ ] **Launch blocker:** Confirm Play App Signing enrollment and archive both the app-signing and upload certificate fingerprints.
 - [ ] **Launch blocker:** Produce a signed AAB from a tagged, clean commit and record SHA-256 checksums.
 - [ ] **Launch blocker:** Verify the release build installs, upgrades, launches, connects, and preserves encrypted data from the latest internal build.
 - [ ] Decide minification/resource shrinking policy and test the resulting release artifact.

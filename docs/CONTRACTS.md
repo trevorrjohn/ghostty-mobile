@@ -4,12 +4,13 @@ These contracts define shared behavior, not a shared programming language API. K
 
 ## Host Profile
 
-A host profile has a stable ID, display name, hostname, port, username, authentication choice, optional identity reference, and ask/allow/block policy for remote clipboard and notification requests.
+A host profile has a stable ID, display name, hostname, port, username, authentication choice, optional identity reference, optional startup command, and ask/allow/block policy for remote clipboard and notification requests.
 
 - Host trust is keyed by normalized hostname and port, not display name.
 - Duplicating a profile creates a new ID and unique display name.
 - Organization metadata never changes trust or identity matching.
 - Profiles never contain passwords, passphrases, OTPs, or challenge answers.
+- A startup command is one optional line of at most 1,024 UTF-8 bytes. It contains no control characters, is not a credential field, and runs once in every new interactive shell, including reconnects.
 
 An imported identity may require platform user authentication for every new connection attempt. This policy belongs to the identity so no host can bypass it. Protected identities do not permit unattended reconnect, and platform implementations must not retain unlocked private-key material between attempts.
 
@@ -49,6 +50,7 @@ disconnect()
 - It exposes host-trust and keyboard-interactive challenges as side channels.
 - It does not parse terminal state, render UI, or make consent decisions.
 - Disconnect and cancellation are idempotent.
+- When configured, the startup command plus one carriage return is written to the new interactive PTY before the session accepts user input. It is not terminal-mode encoded, locally echoed, or run for SFTP.
 
 ## Terminal Engine
 

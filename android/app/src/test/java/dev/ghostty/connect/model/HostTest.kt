@@ -20,6 +20,7 @@ class HostTest {
             retryEnabled = false,
             retryMaxAttempts = 8,
             retryBackoff = RetryBackoff.CONSERVATIVE,
+            startupCommand = "tmux attach || tmux",
         )
 
         val duplicate = host.duplicate("duplicate", listOf(host.name))
@@ -60,6 +61,29 @@ class HostTest {
     @Test(expected = IllegalArgumentException::class)
     fun retryAttemptLimitIsBounded() {
         Host(id = "host", hostname = "example.com", username = "ghost", retryMaxAttempts = 11)
+    }
+
+    @Test
+    fun startupCommandIsNormalizedBoundedAndDuplicated() {
+        assertEquals(null, normalizeStartupCommand("   "))
+        assertEquals("tmux attach || tmux", normalizeStartupCommand("  tmux attach || tmux  "))
+        assertEquals("tmux", Host(
+            id = "host",
+            hostname = "example.com",
+            username = "ghost",
+            startupCommand = "tmux",
+        ).duplicate("copy", emptyList()).startupCommand)
+        assertEquals("a".repeat(1_024), normalizeStartupCommand("a".repeat(1_024)))
+    }
+
+    @Test(expected = IllegalArgumentException::class)
+    fun startupCommandRejectsMultipleLines() {
+        normalizeStartupCommand("tmux\nwhoami")
+    }
+
+    @Test(expected = IllegalArgumentException::class)
+    fun startupCommandRejectsMoreThanMaximumBytes() {
+        normalizeStartupCommand("a".repeat(1_025))
     }
 
     @Test

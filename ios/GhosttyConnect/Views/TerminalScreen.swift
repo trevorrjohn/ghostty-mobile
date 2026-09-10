@@ -274,6 +274,18 @@ struct TerminalScreen: View {
                 }
             )
         }
+        .alert(item: remoteNotificationBinding) { request in
+            Alert(
+                title: Text("Remote Notification Request"),
+                message: Text("The remote terminal wants to show a system notification."),
+                primaryButton: .default(Text("Allow Once")) {
+                    session.answerRemoteNotification(requestID: request.id, accepted: true)
+                },
+                secondaryButton: .cancel(Text("Block")) {
+                    session.answerRemoteNotification(requestID: request.id, accepted: false)
+                }
+            )
+        }
         .overlay(alignment: .bottom) {
             if let selection = contextualSelection {
                 selectionActionStrip(selection)
@@ -294,6 +306,14 @@ struct TerminalScreen: View {
     private var remoteClipboardBinding: Binding<TerminalClipboardWriteRequest?> {
         Binding {
             session.pendingClipboardWrite
+        } set: { _ in
+            // Keep the request pending until one of the explicit policy actions answers it.
+        }
+    }
+
+    private var remoteNotificationBinding: Binding<TerminalRemoteNotificationRequest?> {
+        Binding {
+            session.pendingRemoteNotification
         } set: { _ in
             // Keep the request pending until one of the explicit policy actions answers it.
         }
@@ -430,9 +450,20 @@ struct TerminalScreen: View {
                 : "Reconnecting in \(delaySeconds)s (attempt \(attempt) of \(maxAttempts))..."
         case .verifyingHost: "Waiting for host key approval..."
         case .authenticating: "Authenticating..."
-        case .connected: "Connected to \(host.destination)"
+        case .connected:
+            (["Connected to \(host.destination)"] + remoteMetadata).joined(separator: " | ")
         case .failed(let failure): failure.message
         }
+    }
+
+    private var remoteMetadata: [String] {
+        guard let snapshot = session.snapshot else { return [] }
+        let progress = session.progress.map(terminalProgressDisplay)
+        return [snapshot.title, snapshot.workingDirectory.map(terminalWorkingDirectoryDisplay), progress]
+            .compactMap { value in
+                guard let value, !value.isEmpty else { return nil }
+                return value
+            }
     }
 
     private var hostTrustBinding: Binding<HostTrustRequest?> {
@@ -653,6 +684,22 @@ struct TerminalScreen: View {
         if isLocked(item) { return "Locked" }
         if isActive(item) { return "One use" }
         return ""
+    }
+}
+
+func terminalWorkingDirectoryDisplay(_ value: String) -> String {
+    guard let url = URL(string: value), url.isFileURL else { return value }
+    if let host = url.host, !host.isEmpty { return "\(host):\(url.path)" }
+    return url.path
+}
+
+func terminalProgressDisplay(_ report: TerminalProgressReport) -> String {
+    switch report.state {
+    case .remove: return ""
+    case .set: return report.percent.map { "Progress \($0)%" } ?? "In progress"
+    case .error: return report.percent.map { "Failed at \($0)%" } ?? "Failed"
+    case .indeterminate: return "In progress"
+    case .paused: return report.percent.map { "Paused at \($0)%" } ?? "Paused"
     }
 }
 

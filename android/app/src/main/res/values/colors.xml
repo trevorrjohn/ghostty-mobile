@@ -6,5 +6,5 @@
     <color name="text_secondary">#AEB6C6</color>
     <color name="accent">#8BE9B3</color>
     <color name="terminal">#0A0C10</color>
+    <color name="launcher_background">#0A0C10</color>
 </resources>
-

@@ -56,6 +56,49 @@ final class TerminalInputSessionTests: XCTestCase {
         await session.disconnect()
     }
 
+    func testStartupCommandIsWrittenBeforeSessionConnects() async throws {
+        let transport = LifecycleTransport()
+        let session = TerminalSessionModel(
+            transportFactory: { transport },
+            engineFactory: { InputTestEngine() }
+        )
+        var host = testHost()
+        host.startupCommand = "tmux attach || tmux"
+
+        await session.connect(to: host, secret: "password")
+
+        XCTAssertEqual(session.state, .connected)
+        let writes = await transport.recordedWrites()
+        XCTAssertEqual(writes, [Data("tmux attach || tmux\r".utf8)])
+        await session.disconnect()
+    }
+
+    func testStartupCommandPrecedesBufferedPtyResponse() async throws {
+        let transport = LifecycleTransport()
+        let engine = InputTestEngine()
+        engine.effects = TerminalEffects(ptyWrite: Data("response".utf8))
+        transport.yieldOutput(Data("startup output".utf8))
+        let session = TerminalSessionModel(
+            transportFactory: { transport },
+            engineFactory: { engine }
+        )
+        var host = testHost()
+        host.startupCommand = "tmux attach || tmux"
+
+        await session.connect(to: host, secret: "password")
+
+        let responded = await waitUntil {
+            await transport.recordedWrites().count == 2
+        }
+        XCTAssertTrue(responded)
+        let writes = await transport.recordedWrites()
+        XCTAssertEqual(writes, [
+            Data("tmux attach || tmux\r".utf8),
+            Data("response".utf8),
+        ])
+        await session.disconnect()
+    }
+
     func testPasteUsesTerminalEncodingAndOrderedWriteQueue() async throws {
         let recorder = InputRecorder()
         let transport = RecordingInputTransport(recorder: recorder)
@@ -170,6 +213,89 @@ final class TerminalInputSessionTests: XCTestCase {
         session.answerClipboardWrite(requestID: requestID, accepted: true)
         XCTAssertTrue(writes.isEmpty)
         XCTAssertNil(session.pendingClipboardWrite)
+    }
+
+    func testRemoteEffectsApplyPolicyAndRoutePtyResponse() async throws {
+        let transport = LifecycleTransport()
+        let engine = InputTestEngine()
+        var bells = 0
+        var notifications: [TerminalRemoteNotification] = []
+        let session = TerminalSessionModel(
+            transportFactory: { transport },
+            engineFactory: { engine },
+            bellHandler: { bells += 1 },
+            notificationWriter: { notifications.append($0) }
+        )
+        var host = testHost()
+        host.remoteNotifications = .allow
+        await session.connect(to: host, secret: "password")
+
+        let notification = TerminalRemoteNotification(title: "Build", body: "Complete")
+        engine.effects = TerminalEffects(
+            bells: 2,
+            notifications: [notification],
+            progress: TerminalProgressReport(state: .paused, percent: 80),
+            ptyWrite: Data("response".utf8)
+        )
+        transport.yieldOutput(Data("output".utf8))
+
+        let applied = await waitUntil {
+            await transport.recordedWrites() == [Data("response".utf8)]
+        }
+        XCTAssertTrue(applied)
+        XCTAssertEqual(bells, 1)
+        XCTAssertEqual(notifications, [notification])
+        XCTAssertEqual(session.progress, TerminalProgressReport(state: .paused, percent: 80))
+        await session.disconnect()
+    }
+
+    func testAllowedRemoteNotificationBurstIsDeliveredInOrder() async throws {
+        let transport = LifecycleTransport()
+        let engine = InputTestEngine()
+        var notifications: [TerminalRemoteNotification] = []
+        let session = TerminalSessionModel(
+            transportFactory: { transport },
+            engineFactory: { engine },
+            notificationWriter: { notifications.append($0) }
+        )
+        var host = testHost()
+        host.remoteNotifications = .allow
+        await session.connect(to: host, secret: "password")
+
+        let first = TerminalRemoteNotification(title: "First", body: "One")
+        let second = TerminalRemoteNotification(title: "Second", body: "Two")
+        engine.effects = TerminalEffects(notifications: [first, second])
+        transport.yieldOutput(Data("output".utf8))
+
+        let delivered = await waitUntil { notifications == [first, second] }
+        XCTAssertTrue(delivered)
+        await session.disconnect()
+    }
+
+    func testRemoteNotificationPromptCannotApplyAfterDisconnect() async throws {
+        let transport = LifecycleTransport()
+        let engine = InputTestEngine()
+        var notifications: [TerminalRemoteNotification] = []
+        let session = TerminalSessionModel(
+            transportFactory: { transport },
+            engineFactory: { engine },
+            notificationWriter: { notifications.append($0) }
+        )
+        var host = testHost()
+        host.remoteNotifications = .ask
+        await session.connect(to: host, secret: "password")
+
+        engine.effects = TerminalEffects(
+            notifications: [TerminalRemoteNotification(title: "Remote", body: "Message")]
+        )
+        transport.yieldOutput(Data("output".utf8))
+        let prompted = await waitUntil { session.pendingRemoteNotification != nil }
+        XCTAssertTrue(prompted)
+        let requestID = try XCTUnwrap(session.pendingRemoteNotification?.id)
+
+        await session.disconnect()
+        session.answerRemoteNotification(requestID: requestID, accepted: true)
+        XCTAssertTrue(notifications.isEmpty)
     }
 
     func testCleanRemoteCloseDisconnectsAndClosesTransport() async throws {
@@ -518,7 +644,7 @@ private final class LifecycleTransport: SSHTransport {
     func connect(to host: Host, credential: SSHCredential) async throws {
         if let connectError { throw connectError }
     }
-    func write(_ data: Data) async throws { try await state.write() }
+    func write(_ data: Data) async throws { try await state.write(data) }
     func resize(columns: Int, rows: Int, pixelWidth: Int, pixelHeight: Int) async throws {}
 
     func disconnect() async {
@@ -540,6 +666,7 @@ private final class LifecycleTransport: SSHTransport {
     func waitForDisconnectStart() async { await state.waitForDisconnectStart() }
     func allowDisconnect() async { await state.allowDisconnect() }
     func disconnectCount() async -> Int { await state.disconnectCount }
+    func recordedWrites() async -> [Data] { await state.recordedWrites() }
 }
 
 private actor LifecycleTransportState {
@@ -551,18 +678,22 @@ private actor LifecycleTransportState {
     private var writeContinuation: CheckedContinuation<Void, Error>?
     private var disconnectContinuation: CheckedContinuation<Void, Never>?
     private(set) var disconnectCount = 0
+    private var writes: [Data] = []
 
     init(hangWrites: Bool, delayDisconnect: Bool) {
         self.hangWrites = hangWrites
         self.delayDisconnect = delayDisconnect
     }
 
-    func write() async throws {
+    func write(_ data: Data) async throws {
         guard !disconnected else { throw SSHTransportError.sessionClosed }
+        writes.append(data)
         guard hangWrites else { return }
         writeStarted = true
         try await withCheckedThrowingContinuation { writeContinuation = $0 }
     }
+
+    func recordedWrites() -> [Data] { writes }
 
     func disconnect() async {
         disconnectCount += 1
@@ -609,6 +740,7 @@ private final class LifecycleTransportFactory: @unchecked Sendable {
 private final class InputTestEngine: TerminalEngine {
     var searchResult = false
     var clipboardWrites: [TerminalClipboardWrite] = []
+    var effects = TerminalEffects()
     private(set) var searchQuery: String?
     private(set) var searchDirection: TerminalSearchDirection?
 
@@ -616,6 +748,12 @@ private final class InputTestEngine: TerminalEngine {
     func drainClipboardWrites() -> [TerminalClipboardWrite] {
         defer { clipboardWrites.removeAll(keepingCapacity: true) }
         return clipboardWrites
+    }
+    func drainEffects() -> TerminalEffects {
+        var result = effects
+        result.clipboardWrites.append(contentsOf: drainClipboardWrites())
+        effects = TerminalEffects()
+        return result
     }
     func resize(columns: Int, rows: Int) {}
 

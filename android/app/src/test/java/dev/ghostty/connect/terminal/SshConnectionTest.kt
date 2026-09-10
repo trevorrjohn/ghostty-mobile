@@ -1,6 +1,7 @@
 package dev.ghostty.connect.terminal
 
 import dev.ghostty.connect.model.Host
+import java.io.ByteArrayOutputStream
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
@@ -11,6 +12,16 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class SshConnectionTest {
+    @Test
+    fun startupCommandWritesUtf8CarriageReturnAndFlushes() {
+        val output = RecordingOutputStream()
+
+        writeStartupCommand(output, "printf 'héllo'")
+
+        assertEquals("printf 'héllo'\r", output.toByteArray().toString(Charsets.UTF_8))
+        assertTrue(output.flushed)
+    }
+
     @Test
     fun disconnectInterruptsSetupAndFinishesCredentialCleanup() {
         val setupStarted = CountDownLatch(1)
@@ -111,6 +122,15 @@ class SshConnectionTest {
     }
 
     private fun testHost() = Host(id = "host", hostname = "example.com", username = "user")
+
+    private class RecordingOutputStream : ByteArrayOutputStream() {
+        var flushed = false
+
+        override fun flush() {
+            flushed = true
+            super.flush()
+        }
+    }
 
     private class RecordingCallbacks : SshConnection.Callbacks {
         val connectedCount = AtomicInteger()

@@ -164,6 +164,49 @@ final class GhosttyTerminalEngineTests: XCTestCase {
         XCTAssertEqual(snapshot.cells.count, 35)
     }
 
+    func testSnapshotIncludesRemoteTitleAndWorkingDirectory() throws {
+        guard TerminalEngineFactory.isAvailable else {
+            throw XCTSkip("GhosttyVt XCFramework is not installed")
+        }
+
+        let engine = try TerminalEngineFactory.make(columns: 20, rows: 4)
+        engine.feed(Data("\u{1b}]0;deploy\u{7}\u{1b}]7;file:///srv/app\u{7}".utf8))
+
+        let snapshot = try engine.snapshot()
+        XCTAssertEqual(snapshot.title, "deploy")
+        XCTAssertEqual(snapshot.workingDirectory, "file:///srv/app")
+    }
+
+    func testEmptyRemoteMetadataClearsSnapshotValues() throws {
+        guard TerminalEngineFactory.isAvailable else {
+            throw XCTSkip("GhosttyVt XCFramework is not installed")
+        }
+
+        let engine = try TerminalEngineFactory.make(columns: 20, rows: 4)
+        engine.feed(Data("\u{1b}]2;deploy\u{7}\u{1b}]7;file:///srv/app\u{7}".utf8))
+        engine.feed(Data("\u{1b}]2;\u{7}\u{1b}]7;\u{7}".utf8))
+
+        let snapshot = try engine.snapshot()
+        XCTAssertNil(snapshot.title)
+        XCTAssertNil(snapshot.workingDirectory)
+    }
+
+    func testDrainsBellProgressNotificationAndPtyResponseEffects() throws {
+        guard TerminalEngineFactory.isAvailable else {
+            throw XCTSkip("GhosttyVt XCFramework is not installed")
+        }
+
+        let engine = try TerminalEngineFactory.make(columns: 20, rows: 4)
+        engine.feed(Data("\u{7}\u{1b}]9;Build complete\u{7}\u{1b}]9;4;1;42\u{7}\u{1b}[5n".utf8))
+
+        let effects = engine.drainEffects()
+        XCTAssertEqual(effects.bells, 1)
+        XCTAssertEqual(effects.notifications, [TerminalRemoteNotification(title: "", body: "Build complete")])
+        XCTAssertEqual(effects.progress, TerminalProgressReport(state: .set, percent: 42))
+        XCTAssertEqual(effects.ptyWrite, Data("\u{1b}[0n".utf8))
+        XCTAssertEqual(engine.drainEffects(), TerminalEffects())
+    }
+
     func testScrollsRetainedHistoryAndReturnsToLiveOutput() throws {
         guard TerminalEngineFactory.isAvailable else {
             throw XCTSkip("GhosttyVt XCFramework is not installed")

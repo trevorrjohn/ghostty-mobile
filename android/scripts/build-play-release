@@ -10,6 +10,46 @@ readonly required_variables=(
   SEANCE_UPLOAD_KEY_ALIAS
   SEANCE_UPLOAD_KEY_PASSWORD
 )
+readonly onepassword_vault="${SEANCE_UPLOAD_1PASSWORD_VAULT:-Private}"
+readonly onepassword_keystore="${SEANCE_UPLOAD_1PASSWORD_KEYSTORE:-Seance Shell Android Upload Keystore}"
+readonly onepassword_credentials="${SEANCE_UPLOAD_1PASSWORD_CREDENTIALS:-Seance Shell Android Upload Signing}"
+readonly expected_upload_sha256="B25B252DAA850718AB2622B2539C205E8F84C845320C29479B6E722A06A0968C"
+temporary_signing_directory=""
+
+cleanup() {
+  if [[ -n "$temporary_signing_directory" ]]; then
+    rm -rf "$temporary_signing_directory"
+  fi
+}
+trap cleanup EXIT
+
+configured_variables=0
+for variable in "${required_variables[@]}"; do
+  if [[ -n "${!variable:-}" ]]; then
+    configured_variables=$((configured_variables + 1))
+  fi
+done
+
+if [[ "$configured_variables" -eq 0 ]]; then
+  command -v op >/dev/null 2>&1 || {
+    printf 'Error: signing variables are unset and 1Password CLI is unavailable.\n' >&2
+    exit 1
+  }
+
+  temporary_signing_directory="$(mktemp -d "${TMPDIR:-/tmp}/seance-play-signing.XXXXXX")"
+  export SEANCE_UPLOAD_STORE_FILE="$temporary_signing_directory/seance-shell-upload.jks"
+  op document get "$onepassword_keystore" \
+    --vault "$onepassword_vault" \
+    --out-file "$SEANCE_UPLOAD_STORE_FILE" >/dev/null
+  export SEANCE_UPLOAD_KEY_ALIAS
+  SEANCE_UPLOAD_KEY_ALIAS="$(op item get "$onepassword_credentials" --vault "$onepassword_vault" --fields username --reveal)"
+  export SEANCE_UPLOAD_STORE_PASSWORD
+  SEANCE_UPLOAD_STORE_PASSWORD="$(op item get "$onepassword_credentials" --vault "$onepassword_vault" --fields password --reveal)"
+  export SEANCE_UPLOAD_KEY_PASSWORD="$SEANCE_UPLOAD_STORE_PASSWORD"
+elif [[ "$configured_variables" -ne "${#required_variables[@]}" ]]; then
+  printf 'Error: either set all signing variables or leave all unset to use 1Password.\n' >&2
+  exit 1
+fi
 
 for variable in "${required_variables[@]}"; do
   if [[ -z "${!variable:-}" ]]; then
@@ -33,7 +73,17 @@ command -v keytool >/dev/null 2>&1 || {
 }
 
 "$android_dir/gradlew" --no-daemon clean testDebugUnitTest lintDebug bundleRelease
-jarsigner -verify "$bundle"
+verification="$(LC_ALL=C jarsigner -verify -verbose -certs "$bundle")"
+if [[ "$verification" == *"unsigned entries"* ]]; then
+  printf 'Error: bundle contains entries not covered by its signature.\n' >&2
+  exit 1
+fi
+printf '%s\n' "$verification"
+actual_upload_sha256="$(keytool -printcert -jarfile "$bundle" | sed -n 's/^[[:space:]]*SHA256: //p' | tr -d ':')"
+if [[ "$actual_upload_sha256" != "$expected_upload_sha256" ]]; then
+  printf 'Error: bundle signer SHA-256 does not match the approved Play upload certificate.\n' >&2
+  exit 1
+fi
 keytool -printcert -jarfile "$bundle"
 sha256sum "$bundle"
 

@@ -26,7 +26,7 @@ This document maps the shared [architecture](../ARCHITECTURE.md) to Android and 
 
 ## Session Lifecycle
 
-The foreground service, not the activity, owns live transports and Ghostty terminals. Activities attach listeners while visible, preserve the selected runtime session across recreation, and may be recreated without terminating sessions. Each runtime session ID is independent from its saved host ID; same-host sessions expose distinct IDs and monotonic durations.
+The foreground service, not the activity, owns live transports and Ghostty terminals. Activities attach listeners while visible, preserve the selected runtime session across recreation, and may be recreated without terminating sessions. Each runtime session ID is independent from its saved host ID; same-host sessions expose distinct IDs and monotonic durations. An optional bounded host startup command is written and flushed once after each interactive shell starts but before the connected callback enables user input; SFTP never runs it.
 
 The service is `START_NOT_STICKY`. Process death ends live SSH transports. Each connection setup worker is explicitly owned and cancellation closes SSHJ resources, interrupts prompt waits, and finishes credential cleanup before a retry starts. A generation-owned default-network callback follows Wi-Fi, cellular, Ethernet, and VPN routing, pauses retries while the app's route is unavailable or blocked, and ignores stale callback registrations. Automatic reconnect uses a bounded per-host attempt and backoff policy, requires reusable credentials, and creates a new shell; tmux or screen is required for remote process continuity. Exhausted retries remain available through notification or in-app reauthentication without silently discarding the session.
 
@@ -53,7 +53,7 @@ Tailscale SSH is an explicit credential-free host mode using SSH `none` authenti
 - `InputConnection`, hardware keys, configurable volume-button and modifier controls, paste safety, and Ghostty mode-aware encoding.
 
 The UI consumes immutable snapshots. Terminal parsing and SSH I/O do not run on the main thread, and the client does not locally echo input.
-Connected terminals render full-bleed with immersive system bars and a transient hostname overlay so application chrome does not reduce the PTY viewport. Tapping the terminal reveals the hostname, and tapping the hostname opens terminal controls; connection and retry failures remain visible.
+Connected terminals render full-bleed with immersive system bars when the activity owns a full window. Multi-window and desktop-caption modes retain visible system insets rather than placing terminal rows beneath window decorations. A compact transient control overlays the top-right corner without reducing the PTY viewport; its menu identifies the destination and exposes terminal actions, while connection and retry failures remain visible.
 
 ## Build
 
@@ -71,7 +71,14 @@ The keystore is not a release credential and must not be committed to this publi
 
 ### Play release signing
 
-Google Play uploads use a dedicated upload key, never the shared debug key. Keep the keystore outside the repository, retain a recovery copy in a secure vault, and provide signing values only through the process environment:
+Google Play uploads use a dedicated upload key, never the shared debug key. The release script retrieves the Seance Shell upload keystore and signing credentials from the 1Password Private vault into a temporary directory and removes the local copy when the build finishes. Install and authenticate the 1Password CLI, then run:
+
+```sh
+cd android
+./scripts/build-play-release
+```
+
+Set `SEANCE_UPLOAD_1PASSWORD_VAULT`, `SEANCE_UPLOAD_1PASSWORD_KEYSTORE`, or `SEANCE_UPLOAD_1PASSWORD_CREDENTIALS` only when the team stores the items under different names. A noninteractive release environment may instead provide all four signing values through the process environment:
 
 ```sh
 export SEANCE_UPLOAD_STORE_FILE="$HOME/.android/seance-shell-upload.jks"
@@ -80,16 +87,9 @@ export SEANCE_UPLOAD_KEY_ALIAS="upload"
 export SEANCE_UPLOAD_KEY_PASSWORD="..."
 ```
 
-For the locally generated initial key, these exports are stored in `~/.android/seance-shell-upload.env`; load them with `source ~/.android/seance-shell-upload.env`. That file contains plaintext signing credentials protected only by owner-only filesystem permissions. Move the keystore and credentials into the secure vault, verify recovery from a separate copy, and delete the local environment file before treating release signing as operationally ready.
+Do not persist these values in Gradle files, shell history, CI configuration plaintext, or the repository. Enroll the first signed AAB in Play App Signing so Google protects the distinct app-signing key; retain this upload key to authorize future releases.
 
-Build and verify the signed Android App Bundle with:
-
-```sh
-cd android
-./scripts/build-play-release
-```
-
-The script runs unit tests, lint, a clean release bundle build, JAR signature and signer-certificate verification, and SHA-256 hashing. It writes `app/build/outputs/bundle/release/app-release.aab`. Release builds intentionally fail when the signing environment is absent; do not add credentials to Gradle files, shell history, or the repository.
+The script runs unit tests, lint, a clean release bundle build, JAR signature and signer-certificate verification, and SHA-256 hashing. It writes `app/build/outputs/bundle/release/app-release.aab`. Release builds fail closed when neither complete signing environment variables nor the expected 1Password items are available.
 
 Initialize the Ghostty submodule, then run:
 

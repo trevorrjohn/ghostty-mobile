@@ -46,7 +46,7 @@ Android currently composes the app in `MainActivity`. iOS uses `GhosttyConnectAp
 
 ### Product State
 
-Product models describe hosts, authentication choice, selected identity, remote permission policy, terminal settings, and user-visible session summaries. Shared behavior is defined in [CONTRACTS.md](CONTRACTS.md); storage representation is platform-specific.
+Product models describe hosts, authentication choice, selected identity, bounded startup command, remote permission policy, terminal settings, and user-visible session summaries. Shared behavior is defined in [CONTRACTS.md](CONTRACTS.md); storage representation is platform-specific.
 
 ### Session Coordinator
 
@@ -104,6 +104,8 @@ platform input
 ```
 
 Visible input comes from remote PTY echo. Local echo would duplicate characters and expose input when a remote program disables echo.
+
+An optional per-host startup command is bootstrap input rather than terminal interaction. It is written once directly to each new interactive PTY before user input is enabled, never fed into Ghostty for local echo, and never used by SFTP.
 
 ### Resize
 

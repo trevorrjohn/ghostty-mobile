@@ -1,27 +1,35 @@
 package dev.ghostty.connect.terminal
 
+import android.content.Context
 import android.net.ConnectivityManager
 import android.net.DnsResolver
 import android.os.CancellationSignal
-import android.content.Context
 import dev.ghostty.connect.BuildConfig
 import dev.ghostty.connect.data.SshKeyStore
 import dev.ghostty.connect.model.Host
+import java.io.OutputStream
+import java.net.InetAddress
+import java.net.UnknownHostException
+import java.util.concurrent.CancellationException
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executor
+import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicBoolean
 import net.schmizz.sshj.SSHClient
 import net.schmizz.sshj.connection.ConnectionException
 import net.schmizz.sshj.connection.channel.direct.Session
 import net.schmizz.sshj.connection.channel.direct.Signal
-import java.net.InetAddress
-import java.net.UnknownHostException
-import java.util.concurrent.CountDownLatch
-import java.util.concurrent.Executors
-import java.util.concurrent.CancellationException
-import java.util.concurrent.atomic.AtomicBoolean
-import java.util.concurrent.Executor
 import kotlin.concurrent.thread
 
 internal fun interface SshConnector {
     fun connect(host: Host, credential: CharArray, unlockedPrivateKey: ByteArray?, ownClient: (SSHClient) -> Unit): SSHClient
+}
+
+internal fun writeStartupCommand(output: OutputStream, command: String?) {
+    command ?: return
+    output.write(command.toByteArray(Charsets.UTF_8))
+    output.write('\r'.code)
+    output.flush()
 }
 
 internal class AndroidHostResolver(context: Context) {
@@ -117,6 +125,7 @@ class SshConnection internal constructor(
                 setOptionalEnvironment(activeSession, "TERM_PROGRAM_VERSION", BuildConfig.VERSION_NAME)
                 activeSession.allocatePTY("xterm-256color", columns, rows, pixelWidth, pixelHeight, emptyMap())
                 val activeShell = ownShell(activeSession.startShell())
+                writeStartupCommand(activeShell.outputStream, host.startupCommand)
                 callbacks.connected()
                 thread(name = "ssh-stderr", isDaemon = true) {
                     val errorBuffer = ByteArray(4096)

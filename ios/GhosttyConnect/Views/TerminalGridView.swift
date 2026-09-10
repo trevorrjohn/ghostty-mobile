@@ -44,13 +44,14 @@ struct TerminalGridView: View {
         ZStack(alignment: .topLeading) {
             Canvas { context, _ in
                 drawCells(in: &context)
-                drawCursor(in: &context)
             }
             .frame(
                 width: CGFloat(snapshot.columns) * cellWidth,
                 height: CGFloat(snapshot.rows) * cellHeight
             )
             .background(Color(snapshot.background))
+
+            cursorLayer
 
             TerminalInteractionOverlay(
                 cellWidth: cellWidth,
@@ -69,6 +70,31 @@ struct TerminalGridView: View {
         }
         .background(Color(snapshot.background))
         .accessibilityLabel("Terminal contents")
+    }
+
+    @ViewBuilder
+    private var cursorLayer: some View {
+        if let cursor = snapshot.cursor, cursor.visible, cursor.blinking {
+            TimelineView(.periodic(from: .now, by: 0.5)) { timeline in
+                Canvas { context, _ in
+                    if TerminalCursorBlinkPhase.isVisible(at: timeline.date) {
+                        drawCursor(in: &context)
+                    }
+                }
+            }
+            .frame(
+                width: CGFloat(snapshot.columns) * cellWidth,
+                height: CGFloat(snapshot.rows) * cellHeight
+            )
+            .allowsHitTesting(false)
+        } else {
+            Canvas { context, _ in drawCursor(in: &context) }
+                .frame(
+                    width: CGFloat(snapshot.columns) * cellWidth,
+                    height: CGFloat(snapshot.rows) * cellHeight
+                )
+                .allowsHitTesting(false)
+        }
     }
 
     private func drawCells(in context: inout GraphicsContext) {
@@ -123,6 +149,12 @@ struct TerminalGridView: View {
         case .hollowBlock:
             context.stroke(Path(rect.insetBy(dx: 0.5, dy: 0.5)), with: .color(color), lineWidth: 1)
         }
+    }
+}
+
+enum TerminalCursorBlinkPhase {
+    static func isVisible(at date: Date) -> Bool {
+        date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 1) < 0.5
     }
 }
 
@@ -182,6 +214,22 @@ struct TerminalSelectionAutoscrollState {
     }
 }
 
+struct TerminalScrollAccumulator {
+    private(set) var remainder: CGFloat = 0
+
+    mutating func consume(points: CGFloat, cellHeight: CGFloat) -> Int {
+        guard cellHeight > 0 else { return 0 }
+        remainder += points
+        let rows = Int(remainder / cellHeight)
+        remainder -= CGFloat(rows) * cellHeight
+        return rows
+    }
+
+    mutating func reset() {
+        remainder = 0
+    }
+}
+
 struct TerminalSelectionHandleDragState {
     private var endpoint: TerminalSelectionEndpoint?
     private var opposite: TerminalSelectionPoint?
@@ -235,6 +283,10 @@ private struct TerminalInteractionOverlay: UIViewRepresentable {
         doubleTap.numberOfTapsRequired = 2
         let pan = UIPanGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.pan(_:)))
         pan.maximumNumberOfTouches = 1
+        pan.allowedTouchTypes = [NSNumber(value: UITouch.TouchType.direct.rawValue)]
+        pan.allowedScrollTypesMask = []
+        let wheel = UIPanGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.wheel(_:)))
+        wheel.allowedScrollTypesMask = [.continuous, .discrete]
         let pinch = UIPinchGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.pinch(_:)))
         let longPress = UILongPressGestureRecognizer(
             target: context.coordinator,
@@ -242,10 +294,11 @@ private struct TerminalInteractionOverlay: UIViewRepresentable {
         )
         longPress.minimumPressDuration = 0.5
         longPress.numberOfTouchesRequired = 1
-        for recognizer in [tap, doubleTap, pan, pinch, longPress] {
+        for recognizer in [tap, doubleTap, pan, wheel, pinch, longPress] {
             recognizer.delegate = context.coordinator
         }
         context.coordinator.panRecognizer = pan
+        context.coordinator.wheelRecognizer = wheel
         context.coordinator.longPressRecognizer = longPress
         context.coordinator.installSelectionHandles(in: view)
         tap.require(toFail: longPress)
@@ -253,6 +306,7 @@ private struct TerminalInteractionOverlay: UIViewRepresentable {
         view.addGestureRecognizer(tap)
         view.addGestureRecognizer(doubleTap)
         view.addGestureRecognizer(pan)
+        view.addGestureRecognizer(wheel)
         view.addGestureRecognizer(pinch)
         view.addGestureRecognizer(longPress)
         return view
@@ -266,6 +320,7 @@ private struct TerminalInteractionOverlay: UIViewRepresentable {
     final class Coordinator: NSObject, UIGestureRecognizerDelegate {
         var parent: TerminalInteractionOverlay
         weak var panRecognizer: UIPanGestureRecognizer?
+        weak var wheelRecognizer: UIPanGestureRecognizer?
         weak var longPressRecognizer: UILongPressGestureRecognizer?
         private var pinchStartFontSize: Double?
         private var selectionDrag = TerminalSelectionDragState()
@@ -276,6 +331,10 @@ private struct TerminalInteractionOverlay: UIViewRepresentable {
         private let startHandle = TerminalSelectionHandleView()
         private let endHandle = TerminalSelectionHandleView()
         private var handleDrag = TerminalSelectionHandleDragState()
+        private var scrollAccumulator = TerminalScrollAccumulator()
+        private var inertiaDisplayLink: CADisplayLink?
+        private var inertiaVelocity: CGFloat = 0
+        private var inertiaTimestamp: CFTimeInterval?
 
         init(parent: TerminalInteractionOverlay) {
             self.parent = parent
@@ -283,6 +342,7 @@ private struct TerminalInteractionOverlay: UIViewRepresentable {
 
         deinit {
             selectionAutoscrollTimer?.invalidate()
+            inertiaDisplayLink?.invalidate()
         }
 
         @objc func tap() {
@@ -302,12 +362,71 @@ private struct TerminalInteractionOverlay: UIViewRepresentable {
                 recognizer.setTranslation(.zero, in: recognizer.view)
                 return
             }
-            guard recognizer.state == .changed else { return }
+            switch recognizer.state {
+            case .began:
+                stopInertia()
+                scrollAccumulator.reset()
+            case .changed:
+                consumeScroll(recognizer)
+            case .ended:
+                consumeScroll(recognizer)
+                guard !UIAccessibility.isReduceMotionEnabled else { return }
+                startInertia(velocity: -recognizer.velocity(in: recognizer.view).y)
+            case .cancelled, .failed:
+                scrollAccumulator.reset()
+            default:
+                break
+            }
+        }
+
+        @objc func wheel(_ recognizer: UIPanGestureRecognizer) {
+            if recognizer.state == .began { stopInertia() }
+            if recognizer.state == .changed || recognizer.state == .ended {
+                consumeScroll(recognizer)
+            }
+            if recognizer.state == .ended || recognizer.state == .cancelled || recognizer.state == .failed {
+                scrollAccumulator.reset()
+            }
+        }
+
+        private func consumeScroll(_ recognizer: UIPanGestureRecognizer) {
             let translation = recognizer.translation(in: recognizer.view)
-            let rowDelta = Int(-translation.y / parent.cellHeight)
-            guard rowDelta != 0 else { return }
-            parent.onScrollRows(rowDelta)
             recognizer.setTranslation(.zero, in: recognizer.view)
+            let rows = scrollAccumulator.consume(points: -translation.y, cellHeight: parent.cellHeight)
+            if rows != 0 { parent.onScrollRows(rows) }
+        }
+
+        private func startInertia(velocity: CGFloat) {
+            guard abs(velocity) >= parent.cellHeight * 2 else {
+                scrollAccumulator.reset()
+                return
+            }
+            inertiaVelocity = velocity
+            inertiaTimestamp = nil
+            let displayLink = CADisplayLink(target: self, selector: #selector(inertiaTick(_:)))
+            displayLink.add(to: .main, forMode: .common)
+            inertiaDisplayLink = displayLink
+        }
+
+        @objc private func inertiaTick(_ displayLink: CADisplayLink) {
+            defer { inertiaTimestamp = displayLink.timestamp }
+            guard let previous = inertiaTimestamp else { return }
+            let elapsed = min(0.05, displayLink.timestamp - previous)
+            let rows = scrollAccumulator.consume(
+                points: inertiaVelocity * elapsed,
+                cellHeight: parent.cellHeight
+            )
+            if rows != 0 { parent.onScrollRows(rows) }
+            inertiaVelocity *= pow(0.92, elapsed * 60)
+            if abs(inertiaVelocity) < parent.cellHeight { stopInertia() }
+        }
+
+        private func stopInertia() {
+            inertiaDisplayLink?.invalidate()
+            inertiaDisplayLink = nil
+            inertiaTimestamp = nil
+            inertiaVelocity = 0
+            scrollAccumulator.reset()
         }
 
         @objc func pinch(_ recognizer: UIPinchGestureRecognizer) {
@@ -469,6 +588,7 @@ private struct TerminalInteractionOverlay: UIViewRepresentable {
         }
 
         func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
+            if gestureRecognizer === wheelRecognizer { return false }
             return !(touch.view is TerminalSelectionHandleView)
         }
     }

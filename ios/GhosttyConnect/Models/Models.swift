@@ -42,6 +42,7 @@ struct Host: Codable, Identifiable, Hashable {
     var retryEnabled = true
     var retryMaxAttempts = 5
     var retryBackoff = RetryBackoff.balanced
+    var startupCommand = ""
 
     var name: String { alias.trimmingCharacters(in: .whitespaces).isEmpty ? hostname : alias }
     var destination: String { "\(username)@\(hostname):\(port)" }
@@ -59,7 +60,8 @@ struct Host: Codable, Identifiable, Hashable {
         allowSftpDelete: Bool? = nil,
         retryEnabled: Bool = true,
         retryMaxAttempts: Int = 5,
-        retryBackoff: RetryBackoff = .balanced
+        retryBackoff: RetryBackoff = .balanced,
+        startupCommand: String = ""
     ) {
         self.id = id
         self.alias = alias
@@ -74,12 +76,14 @@ struct Host: Codable, Identifiable, Hashable {
         self.retryEnabled = retryEnabled
         self.retryMaxAttempts = min(10, max(1, retryMaxAttempts))
         self.retryBackoff = retryBackoff
+        self.startupCommand = startupCommand
     }
 
     private enum CodingKeys: String, CodingKey {
         case id, alias, hostname, port, username, authenticationType, identityID, keyName
         case remoteClipboard, remoteNotifications, allowSftpDelete
         case retryEnabled, retryMaxAttempts, retryBackoff
+        case startupCommand
     }
 
     init(from decoder: Decoder) throws {
@@ -98,6 +102,8 @@ struct Host: Codable, Identifiable, Hashable {
         retryEnabled = try values.decodeIfPresent(Bool.self, forKey: .retryEnabled) ?? true
         retryMaxAttempts = min(10, max(1, try values.decodeIfPresent(Int.self, forKey: .retryMaxAttempts) ?? 5))
         retryBackoff = try values.decodeIfPresent(RetryBackoff.self, forKey: .retryBackoff) ?? .balanced
+        startupCommand = try values.decodeIfPresent(String.self, forKey: .startupCommand) ?? ""
+        _ = try StartupCommand.normalized(startupCommand)
     }
 
     func encode(to encoder: Encoder) throws {
@@ -116,6 +122,7 @@ struct Host: Codable, Identifiable, Hashable {
         try values.encode(retryEnabled, forKey: .retryEnabled)
         try values.encode(retryMaxAttempts, forKey: .retryMaxAttempts)
         try values.encode(retryBackoff, forKey: .retryBackoff)
+        try values.encodeIfPresent(try StartupCommand.normalized(startupCommand), forKey: .startupCommand)
     }
 
     mutating func migrateIdentityReference(to id: UUID) {
@@ -137,6 +144,32 @@ struct Host: Codable, Identifiable, Hashable {
         }
         duplicate.alias = candidate
         return duplicate
+    }
+}
+
+enum StartupCommand {
+    static let maximumUTF8Bytes = 1_024
+
+    static func normalized(_ value: String) throws -> String? {
+        guard !value.unicodeScalars.contains(where: { $0.value < 32 || $0.value == 127 }) else {
+            throw ValidationError.controlCharacter
+        }
+        let normalized = value.trimmingCharacters(in: .whitespaces)
+        guard !normalized.isEmpty else { return nil }
+        guard normalized.utf8.count <= maximumUTF8Bytes else { throw ValidationError.tooLong }
+        return normalized
+    }
+
+    enum ValidationError: LocalizedError {
+        case controlCharacter
+        case tooLong
+
+        var errorDescription: String? {
+            switch self {
+            case .controlCharacter: "Startup command must be one line without control characters."
+            case .tooLong: "Startup command is limited to \(StartupCommand.maximumUTF8Bytes) UTF-8 bytes."
+            }
+        }
     }
 }
 

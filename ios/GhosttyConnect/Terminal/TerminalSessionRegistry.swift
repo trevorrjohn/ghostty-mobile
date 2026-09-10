@@ -55,21 +55,29 @@ final class TerminalSessionRegistry: ObservableObject {
     private let sessionFactory: (@MainActor () -> TerminalSessionModel)?
     private let keyProvider: @MainActor (UUID) -> StoredKey?
     private let clipboardWriter: @MainActor (TerminalClipboardWrite) -> Void
+    private let bellHandler: @MainActor () -> Void
+    private let notificationWriter: @MainActor (TerminalRemoteNotification, String) async -> Void
     private let networkMonitor: (any NetworkPathMonitoring)?
     private var backgroundGeneration = 0
     private var backgroundDisconnectTask: Task<Void, Never>?
     private var networkAvailability = NetworkAvailability.unknown
+    private var closingRecords: [UUID: TerminalSessionRecord] = [:]
+    private var closingTasks: [UUID: Task<Void, Never>] = [:]
 
     init(
         sessionFactory: (@MainActor () -> TerminalSessionModel)? = nil,
         networkMonitor: (any NetworkPathMonitoring)? = DefaultNetworkPathMonitor(),
         keyProvider: @escaping @MainActor (UUID) -> StoredKey? = { _ in nil },
-        clipboardWriter: @escaping @MainActor (TerminalClipboardWrite) -> Void = { _ in }
+        clipboardWriter: @escaping @MainActor (TerminalClipboardWrite) -> Void = { _ in },
+        bellHandler: @escaping @MainActor () -> Void = {},
+        notificationWriter: @escaping @MainActor (TerminalRemoteNotification, String) async -> Void = { _, _ in }
     ) {
         self.sessionFactory = sessionFactory
         self.networkMonitor = networkMonitor
         self.keyProvider = keyProvider
         self.clipboardWriter = clipboardWriter
+        self.bellHandler = bellHandler
+        self.notificationWriter = notificationWriter
         networkMonitor?.start { [weak self] availability in
             Task { @MainActor in self?.setNetworkAvailability(availability) }
         }
@@ -81,11 +89,17 @@ final class TerminalSessionRegistry: ObservableObject {
 
     @discardableResult
     func create(for host: Host) -> UUID {
+        let id = UUID()
+        let sessionLabel = "Session \(id.uuidString.prefix(4).uppercased())"
         let session = sessionFactory?() ?? TerminalSessionModel(
             keyProvider: keyProvider,
-            clipboardWriter: clipboardWriter
+            clipboardWriter: clipboardWriter,
+            bellHandler: bellHandler,
+            notificationWriter: { [notificationWriter] notification in
+                await notificationWriter(notification, sessionLabel)
+            }
         )
-        let record = TerminalSessionRecord(host: host, session: session)
+        let record = TerminalSessionRecord(id: id, host: host, session: session)
         record.session.setNetworkAvailability(networkAvailability)
         records.append(record)
         return record.id
@@ -96,15 +110,24 @@ final class TerminalSessionRegistry: ObservableObject {
     }
 
     func isIdentityInUse(_ identityID: UUID) -> Bool {
-        records.contains {
+        (records + Array(closingRecords.values)).contains {
             $0.host.identityID == identityID && $0.session.ownsConnectionResources
         }
     }
 
     func close(id: UUID) async {
+        if let task = closingTasks[id] {
+            await task.value
+            return
+        }
         guard let index = records.firstIndex(where: { $0.id == id }) else { return }
         let record = records.remove(at: index)
-        await record.session.disconnect()
+        closingRecords[id] = record
+        let task = Task { await record.session.disconnect() }
+        closingTasks[id] = task
+        await task.value
+        closingTasks[id] = nil
+        closingRecords[id] = nil
     }
 
     @discardableResult

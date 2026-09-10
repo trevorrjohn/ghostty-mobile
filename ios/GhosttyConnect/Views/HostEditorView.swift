@@ -50,6 +50,19 @@ struct HostEditorView: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
+                Section("Startup") {
+                    TextField("Command (optional)", text: $host.startupCommand, axis: .horizontal)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                    Text("Runs once in each new interactive shell, including reconnects. Do not place credentials here.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    if let startupCommandError {
+                        Text(startupCommandError)
+                            .font(.caption)
+                            .foregroundStyle(.red)
+                    }
+                }
                 Section("Remote requests") {
                     permissionPicker("Clipboard", selection: $host.remoteClipboard)
                     permissionPicker("Notifications", selection: $host.remoteNotifications)
@@ -79,10 +92,29 @@ struct HostEditorView: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Save") { model.save(host: host); dismiss() }
-                        .disabled(host.hostname.trimmingCharacters(in: .whitespaces).isEmpty || host.username.trimmingCharacters(in: .whitespaces).isEmpty || !(1...65535).contains(host.port) || (host.authenticationType == .sshKey && host.identityID == nil))
+                    Button("Save") {
+                        host.startupCommand = (try? StartupCommand.normalized(host.startupCommand)) ?? ""
+                        model.save(host: host)
+                        dismiss()
+                    }
+                    .disabled(
+                        host.hostname.trimmingCharacters(in: .whitespaces).isEmpty
+                            || host.username.trimmingCharacters(in: .whitespaces).isEmpty
+                            || !(1...65535).contains(host.port)
+                            || (host.authenticationType == .sshKey && host.identityID == nil)
+                            || startupCommandError != nil
+                    )
                 }
             }
+        }
+    }
+
+    private var startupCommandError: String? {
+        do {
+            _ = try StartupCommand.normalized(host.startupCommand)
+            return nil
+        } catch {
+            return error.localizedDescription
         }
     }
 

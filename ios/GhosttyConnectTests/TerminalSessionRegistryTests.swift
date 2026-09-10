@@ -104,6 +104,56 @@ final class TerminalSessionRegistryTests: XCTestCase {
         await session.disconnect()
         XCTAssertFalse(registry.isIdentityInUse(identityID))
     }
+
+    func testClosingRecordKeepsIdentityInUseUntilTransportTeardownCompletes() async {
+        let identityID = UUID()
+        let key = StoredKey(id: identityID, name: "test", data: Data("key".utf8), requiresPassphrase: false)
+        let transport = BlockingRegistryTestTransport()
+        let session = TerminalSessionModel(transportFactory: { transport })
+        let registry = TerminalSessionRegistry(sessionFactory: { session }, networkMonitor: nil)
+        let host = Host(
+            hostname: "example.com",
+            username: "tj",
+            authenticationType: .sshKey,
+            identityID: identityID
+        )
+        let sessionID = registry.create(for: host)
+        await session.connect(to: host, secret: nil, key: key)
+
+        let close = Task { await registry.close(id: sessionID) }
+        await transport.waitForDisconnectStart()
+
+        XCTAssertNil(registry.record(id: sessionID))
+        XCTAssertTrue(registry.isIdentityInUse(identityID))
+        await transport.allowDisconnect()
+        await close.value
+        XCTAssertFalse(registry.isIdentityInUse(identityID))
+    }
+
+    func testConcurrentCloseCallersAwaitTheSameTeardown() async {
+        let transport = BlockingRegistryTestTransport()
+        let session = TerminalSessionModel(transportFactory: { transport })
+        let registry = TerminalSessionRegistry(sessionFactory: { session }, networkMonitor: nil)
+        let host = Host(hostname: "example.com", username: "tj")
+        let sessionID = registry.create(for: host)
+        await session.connect(to: host, secret: "password")
+
+        let first = Task { await registry.close(id: sessionID) }
+        await transport.waitForDisconnectStart()
+        var secondCompleted = false
+        let second = Task {
+            await registry.close(id: sessionID)
+            secondCompleted = true
+        }
+        try? await Task.sleep(nanoseconds: 10_000_000)
+        XCTAssertFalse(secondCompleted)
+
+        await transport.allowDisconnect()
+        await first.value
+        await second.value
+        XCTAssertTrue(secondCompleted)
+        XCTAssertFalse(session.ownsConnectionResources)
+    }
 }
 
 private final class RegistryTestTransport: SSHTransport {

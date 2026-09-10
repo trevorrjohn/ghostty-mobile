@@ -3,6 +3,22 @@ import UIKit
 @testable import GhosttyConnect
 
 final class TerminalInteractionTests: XCTestCase {
+    func testScrollAccumulatorPreservesSubrowMovement() {
+        var accumulator = TerminalScrollAccumulator()
+        XCTAssertEqual(accumulator.consume(points: 5, cellHeight: 12), 0)
+        XCTAssertEqual(accumulator.consume(points: 8, cellHeight: 12), 1)
+        XCTAssertEqual(accumulator.remainder, 1, accuracy: 0.001)
+        XCTAssertEqual(accumulator.consume(points: -7, cellHeight: 12), 0)
+        XCTAssertEqual(accumulator.consume(points: -8, cellHeight: 12), -1)
+        XCTAssertEqual(accumulator.remainder, -2, accuracy: 0.001)
+    }
+
+    func testScrollAccumulatorResetDropsRemainder() {
+        var accumulator = TerminalScrollAccumulator()
+        _ = accumulator.consume(points: 7, cellHeight: 12)
+        accumulator.reset()
+        XCTAssertEqual(accumulator.remainder, 0)
+    }
     func testNormalizesKeyboardInputForPTY() {
         XCTAssertEqual(TerminalInputEncoder.encode("hello\n"), "hello\r")
         XCTAssertEqual(TerminalInputEncoder.encode("one\r\ntwo\n"), "one\rtwo\r")

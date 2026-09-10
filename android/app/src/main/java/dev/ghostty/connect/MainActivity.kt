@@ -16,6 +16,7 @@ import android.content.ServiceConnection
 import android.content.ClipboardManager
 import android.content.ClipData
 import android.content.res.ColorStateList
+import android.content.res.Configuration
 import android.graphics.Color
 import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.StateListDrawable
@@ -38,6 +39,7 @@ import android.view.Gravity
 import android.view.DragEvent
 import android.view.KeyEvent
 import android.view.HapticFeedbackConstants
+import android.view.TouchDelegate
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowInsets
@@ -67,6 +69,10 @@ import dev.ghostty.connect.data.DiagnosticStore
 import dev.ghostty.connect.data.HostStore
 import dev.ghostty.connect.data.KeyboardBarStore
 import dev.ghostty.connect.data.KnownHostStore
+import dev.ghostty.connect.data.MAX_PRIVATE_KEY_BYTES
+import dev.ghostty.connect.data.decodePrivateKeyText
+import dev.ghostty.connect.data.privateKeyImportBytes
+import dev.ghostty.connect.data.readPrivateKeyBytes
 import dev.ghostty.connect.data.SshKeyStore
 import dev.ghostty.connect.data.SftpFavoriteStore
 import dev.ghostty.connect.data.SftpRecentFolderStore
@@ -102,6 +108,7 @@ import dev.ghostty.connect.model.TerminalThemes
 import dev.ghostty.connect.model.TrustedHost
 import dev.ghostty.connect.model.SshIdentity
 import dev.ghostty.connect.model.SshDestination
+import dev.ghostty.connect.model.normalizeStartupCommand
 import dev.ghostty.connect.sftp.SftpBrowserService
 import dev.ghostty.connect.sftp.SftpBrowserState
 import dev.ghostty.connect.sftp.SftpEntry
@@ -135,7 +142,6 @@ import net.schmizz.sshj.connection.channel.direct.Signal
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
-import java.io.ByteArrayOutputStream
 import java.util.UUID
 import java.util.concurrent.Executors
 import javax.crypto.Cipher
@@ -169,9 +175,11 @@ class MainActivity : Activity() {
         val credential: CharArray,
         val unlockedPrivateKey: ByteArray?,
     )
+    private data class PendingKeyImport(val name: String, val privateKey: CharArray)
     private data class RetainedConnections(
         val terminal: PendingConnection?,
         val browser: PendingBrowserConnection?,
+        val keyImport: PendingKeyImport?,
     )
     private data class PendingDownloadRequest(
         val browserId: String,
@@ -186,6 +194,12 @@ class MainActivity : Activity() {
         val note: EditText,
         val expected: EditText,
         val sessionId: String?,
+    )
+
+    private data class KeyImportViews(
+        val name: EditText,
+        val privateKey: EditText,
+        val status: TextView,
     )
 
     private var pendingConnection: PendingConnection? = null
@@ -236,6 +250,7 @@ class MainActivity : Activity() {
     private var terminalAtBottom = true
     private var terminalMouseTracking = false
     private var terminalImmersive = false
+    private var terminalCaptionBarVisible = false
     private var biometricCancellation: CancellationSignal? = null
     private var biometricCleanup: (() -> Unit)? = null
     private var settingsVisible = false
@@ -246,6 +261,7 @@ class MainActivity : Activity() {
     private val hostSessionStatusViews = mutableMapOf<String, TextView>()
     private val hostSessionRetryButtons = mutableMapOf<String, View>()
     private var feedbackDraftViews: FeedbackDraftViews? = null
+    private var keyImportViews: KeyImportViews? = null
     private var terminalSearchQuery = ""
     private val activeModifiers = mutableSetOf<KeyboardModifier>()
     private val lockedModifiers = mutableSetOf<KeyboardModifier>()
@@ -521,17 +537,26 @@ class MainActivity : Activity() {
             val bars = if (android.os.Build.VERSION.SDK_INT >= 30) {
                 imeVisible = insets.isVisible(WindowInsets.Type.ime())
                 val ime = insets.getInsets(WindowInsets.Type.ime())
-                if (terminalView != null && terminalImmersive) {
-                    android.graphics.Insets.of(0, 0, 0, ime.bottom)
-                } else {
-                    val system = insets.getInsets(WindowInsets.Type.systemBars())
-                    android.graphics.Insets.of(
-                        maxOf(system.left, ime.left),
-                        maxOf(system.top, ime.top),
-                        maxOf(system.right, ime.right),
-                        maxOf(system.bottom, ime.bottom),
-                    )
+                val caption = insets.getInsets(WindowInsets.Type.captionBar())
+                val captionVisible = insets.isVisible(WindowInsets.Type.captionBar()) &&
+                    (caption.left > 0 || caption.top > 0 || caption.right > 0 || caption.bottom > 0)
+                if (terminalCaptionBarVisible != captionVisible) {
+                    terminalCaptionBarVisible = captionVisible
+                    view.post(::applyTerminalSystemBars)
                 }
+                val system = insets.getInsets(WindowInsets.Type.systemBars())
+                val cutout = insets.getInsets(WindowInsets.Type.displayCutout())
+                val content = terminalContentInsets(
+                    immersive = terminalView != null && usesTerminalImmersiveInsets(
+                        requested = terminalImmersive,
+                        inMultiWindowMode = isInMultiWindowMode,
+                        captionBarVisible = captionVisible,
+                    ),
+                    systemBars = TerminalWindowInsets(system.left, system.top, system.right, system.bottom),
+                    ime = TerminalWindowInsets(ime.left, ime.top, ime.right, ime.bottom),
+                    displayCutout = TerminalWindowInsets(cutout.left, cutout.top, cutout.right, cutout.bottom),
+                )
+                android.graphics.Insets.of(content.left, content.top, content.right, content.bottom)
             } else {
                 @Suppress("DEPRECATION")
                 android.graphics.Insets.of(
@@ -581,9 +606,11 @@ class MainActivity : Activity() {
         shouldBindSession = requestedSessionId != null || SshSessionService.active
         selectedBrowserId = intent?.getStringExtra(SftpBrowserService.EXTRA_BROWSER_ID)
             ?: savedInstanceState?.getString(STATE_BROWSER_ID)
+        var retainedKeyImport: PendingKeyImport? = null
         (lastNonConfigurationInstance as? RetainedConnections)?.let { retained ->
             pendingConnection = retained.terminal
             pendingBrowserConnection = retained.browser
+            retainedKeyImport = retained.keyImport
         }
         if (pendingConnection != null) shouldBindSession = true
         pendingDownloadRequest = savedInstanceState?.getString(STATE_DOWNLOAD_BROWSER)?.let { browserId ->
@@ -621,6 +648,13 @@ class MainActivity : Activity() {
             savedScreen == SCREEN_SETTINGS -> showKeyboardSettings()
             else -> showHosts(disconnect = false)
         }
+        retainedKeyImport?.let { draft ->
+            try {
+                showKeyImportDialog(initialName = draft.name, initialKey = draft.privateKey)
+            } finally {
+                draft.privateKey.fill('\u0000')
+            }
+        }
         allowSingleSessionAutoOpen = savedInstanceState == null && selectedSessionId == null
         runCatching { feedbackStore.loadDraft() }.getOrNull()?.let { draft ->
             showFeedbackDialog(
@@ -641,6 +675,12 @@ class MainActivity : Activity() {
         if (savedInstanceState == null && intent?.action == ACTION_QUICK_CONNECT) {
             mainHandler.post(::showQuickConnect)
         }
+    }
+
+    override fun onMultiWindowModeChanged(isInMultiWindowMode: Boolean, newConfig: Configuration) {
+        super.onMultiWindowModeChanged(isInMultiWindowMode, newConfig)
+        applyTerminalSystemBars()
+        window.decorView.requestApplyInsets()
     }
 
     override fun onStart() {
@@ -848,8 +888,7 @@ class MainActivity : Activity() {
             root.addView(card.margins(bottom = 16))
         }
         root.addView(button(if (hosts.isEmpty()) "Add your first host" else "Add host") { showHostEditor() })
-        root.addView(button("Import SSH key", secondary) { openKeyPicker() }.margins(top = 10))
-        root.addView(button("Paste private key", secondary) { showPasteKeyDialog() }.margins(top = 10))
+        root.addView(button("Add SSH key", secondary) { showKeyImportDialog() }.margins(top = 10))
         root.addView(button("Manage SSH identities", secondary) { showSshIdentities() }.margins(top = 10))
         root.addView(button("Record feedback", secondary) { showFeedbackDialog("Hosts") }.margins(top = 10))
         root.addView(button("Settings", secondary) { showKeyboardSettings() }.margins(top = 10))
@@ -898,6 +937,17 @@ class MainActivity : Activity() {
         val port = field("Port", existing?.port?.toString() ?: "22", InputType.TYPE_CLASS_NUMBER)
         listOf(alias, hostname, username, port).forEach { root.addView(it.margins(bottom = 12)) }
 
+        root.addView(label("Startup", 14f, secondary).margins(top = 6, bottom = 6))
+        val startupCommand = field("Command (optional)", existing?.startupCommand.orEmpty()).apply {
+            isSingleLine = true
+        }
+        root.addView(startupCommand.margins(bottom = 6))
+        root.addView(label(
+            "Runs once in each new interactive shell, including reconnects. Do not place credentials here.",
+            12f,
+            secondary,
+        ).margins(bottom = 12))
+
         root.addView(label("Authentication", 14f, secondary).margins(top = 6, bottom = 6))
         val authenticationTypes = AuthenticationType.entries
         val authenticationChoices = listOf("Password", "SSH key", "Tailscale SSH")
@@ -933,7 +983,7 @@ class MainActivity : Activity() {
             setBackgroundColor(raised)
             setSelection(editorIdentityIds.indexOf(existing?.identityId).coerceAtLeast(0))
         }.also { editorKeySelection = it }
-        val addKey = button("Add SSH key", secondary) { openKeyPicker() }
+        val addKey = button("Add SSH key", secondary) { showKeyImportDialog() }
         fun updateKeyControls() {
             val visible = if (authentication.selectedItemPosition == 1) View.VISIBLE else View.GONE
             keySelection.visibility = visible
@@ -1038,6 +1088,12 @@ class MainActivity : Activity() {
                 return@button
             }
             val authenticationType = authenticationTypes[authentication.selectedItemPosition]
+            val normalizedStartupCommand = runCatching {
+                normalizeStartupCommand(startupCommand.text.toString())
+            }.getOrElse {
+                toast(it.message ?: "Enter a valid single-line startup command.")
+                return@button
+            }
             if (authenticationType == AuthenticationType.TAILSCALE_SSH && destination.port != 22) {
                 toast("Tailscale SSH uses port 22.")
                 return@button
@@ -1065,11 +1121,11 @@ class MainActivity : Activity() {
                 retryEnabled = retryEnabled.isChecked,
                 retryMaxAttempts = retryAttempts.selectedItemPosition + MIN_RETRY_ATTEMPTS,
                 retryBackoff = retryBackoffs[retryBackoff.selectedItemPosition],
+                startupCommand = normalizedStartupCommand,
             ))
             editingHostId = null
             showHosts()
         })
-        root.addView(button("Paste a private key", secondary) { showPasteKeyDialog() }.margins(top = 8))
         existing?.takeUnless { isDuplicate }?.let { host ->
             root.addView(button("Delete host", secondary) {
                 val deleted = runCatching {
@@ -1092,70 +1148,108 @@ class MainActivity : Activity() {
         }, IMPORT_KEY)
     }
 
-    private fun showPasteKeyDialog() {
+    private fun showKeyImportDialog(initialName: String = "", initialKey: CharArray? = null) {
         val form = vertical(16)
-        val name = field("Key name", "")
+        form.addView(label(
+            "Paste an OpenSSH, PEM, or PKCS#8 private key. Encrypted keys request their passphrase only when connecting.",
+            13f,
+            secondary,
+        ).margins(bottom = 8))
+        form.addView(label("SSH connections support OpenSSH Ed25519 and RSA keys.", 12f, secondary).margins(bottom = 12))
+        val name = field("Key name", initialName)
+        form.addView(name.margins(bottom = 10))
+        form.addView(label("Private key", 13f, secondary).margins(bottom = 4))
         val privateKey = EditText(this).apply {
             hint = "-----BEGIN OPENSSH PRIVATE KEY-----"
+            contentDescription = "Private key"
+            importantForAutofill = View.IMPORTANT_FOR_AUTOFILL_NO_EXCLUDE_DESCENDANTS
             setHintTextColor(secondary)
             setTextColor(primary)
             typeface = Typeface.MONOSPACE
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
+            imeOptions = android.view.inputmethod.EditorInfo.IME_FLAG_NO_PERSONALIZED_LEARNING
             minLines = 8
             gravity = Gravity.TOP
             setBackgroundColor(raised)
             setPadding(dp(12), dp(12), dp(12), dp(12))
         }
-        val encryptionStatus = label("", 13f, secondary)
+        val encryptionStatus = label("", 13f, secondary).apply {
+            accessibilityLiveRegion = View.ACCESSIBILITY_LIVE_REGION_POLITE
+        }
         var generatedName = ""
         privateKey.addTextChangedListener(object : TextWatcher {
             override fun beforeTextChanged(value: CharSequence?, start: Int, count: Int, after: Int) = Unit
             override fun onTextChanged(value: CharSequence?, start: Int, before: Int, count: Int) = Unit
             override fun afterTextChanged(value: Editable?) {
-                val keyBytes = value.toString().trim().toByteArray()
-                if (keyBytes.isEmpty()) {
-                    encryptionStatus.text = ""
-                    return
-                }
-                val details = keyStore.inspect(keyBytes)
-                if (name.text.isBlank() || name.text.toString() == generatedName) {
-                    generatedName = details.suggestedName
-                    name.setText(generatedName)
-                }
-                encryptionStatus.text = if (details.requiresPassphrase) {
-                    "Encrypted key · passphrase required when connecting"
-                } else {
-                    "No key passphrase detected"
+                val text = value.toString()
+                val keyBytes = text.toByteArray()
+                try {
+                    if (keyBytes.isEmpty()) {
+                        encryptionStatus.text = ""
+                        return
+                    }
+                    if (keyBytes.size > MAX_PRIVATE_KEY_BYTES) {
+                        encryptionStatus.setTextColor(Color.RED)
+                        encryptionStatus.text = "Private key is too large"
+                        return
+                    }
+                    if (!text.contains("PRIVATE KEY")) {
+                        encryptionStatus.setTextColor(secondary)
+                        encryptionStatus.text = "Paste or choose a private key"
+                        return
+                    }
+                    val details = keyStore.inspect(keyBytes)
+                    if (name.text.isBlank() || name.text.toString() == generatedName) {
+                        generatedName = details.suggestedName
+                        name.setText(generatedName)
+                    }
+                    encryptionStatus.text = if (details.requiresPassphrase) {
+                        "Encrypted key · passphrase required when connecting"
+                    } else {
+                        "No key passphrase detected"
+                    }
+                    encryptionStatus.setTextColor(secondary)
+                } finally {
+                    keyBytes.fill(0)
                 }
             }
         })
-        form.addView(name.margins(bottom = 10))
-        form.addView(privateKey, LinearLayout.LayoutParams(-1, dp(260)))
+        initialKey?.takeIf { it.isNotEmpty() }?.let { privateKey.setText(it, 0, it.size) }
+        form.addView(privateKey, LinearLayout.LayoutParams(-1, dp(220)))
+        form.addView(button("Choose file", secondary) { openKeyPicker() }.margins(top = 10))
         form.addView(encryptionStatus.margins(top = 8))
         val dialog = AlertDialog.Builder(this)
-            .setTitle("Paste private key")
+            .setTitle("Add SSH key")
             .setView(form)
             .setNegativeButton("Cancel", null)
-            .setPositiveButton("Save", null)
+            .setPositiveButton("Import", null)
             .create()
+        keyImportViews = KeyImportViews(name, privateKey, encryptionStatus)
+        dialog.setOnDismissListener {
+            privateKey.text.clear()
+            if (keyImportViews?.privateKey === privateKey) keyImportViews = null
+        }
         dialog.setOnShowListener {
             dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
                 try {
-                    val value = privateKey.text.toString().trim()
-                    require(value.contains("PRIVATE KEY")) { "Paste a PEM or OpenSSH private key" }
-                    val bytes = (value + "\n").toByteArray()
-                    val savedName = name.text.toString().trim().ifBlank { keyStore.inspect(bytes).suggestedName }
-                    val identity = keyStore.import(savedName, bytes)
-                    privateKey.text.clear()
+                    val bytes = privateKeyImportBytes(privateKey.text.toString())
+                    val identity = try {
+                        val savedName = name.text.toString().trim().ifBlank { keyStore.inspect(bytes).suggestedName }
+                        keyStore.import(savedName, bytes)
+                    } finally {
+                        bytes.fill(0)
+                    }
                     dialog.dismiss()
                     toast("Private key saved")
                     finishIdentityImport(identity)
                 } catch (error: Exception) {
-                    toast(error.message ?: "Could not save key")
+                    encryptionStatus.setTextColor(Color.RED)
+                    encryptionStatus.text = error.message ?: "Could not save key"
                 }
             }
         }
         dialog.show()
+        dialog.window?.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
     }
 
     @Deprecated("Activity result callback retained without an AndroidX dependency")
@@ -1200,28 +1294,25 @@ class MainActivity : Activity() {
             return
         }
         if (requestCode != IMPORT_KEY) return
+        val importViews = keyImportViews ?: run {
+            toast("Key import form is no longer open")
+            return
+        }
         try {
             val bytes = contentResolver.openInputStream(uri)?.use { input ->
-                val output = ByteArrayOutputStream()
-                val buffer = ByteArray(8192)
-                var total = 0
-                while (true) {
-                    val count = input.read(buffer)
-                    if (count < 0) break
-                    total += count
-                    require(total <= MAX_PRIVATE_KEY_BYTES) { "Private key is too large" }
-                    output.write(buffer, 0, count)
-                }
-                output.toByteArray()
+                readPrivateKeyBytes(input)
             } ?: error("Could not read key")
-            val text = bytes.toString(Charsets.UTF_8)
-            require(text.contains("PRIVATE KEY")) { "Select a private SSH key file" }
-            val displayName = uri.lastPathSegment?.substringAfterLast('/')?.takeLast(80) ?: "SSH key"
-            val identity = keyStore.import(displayName, bytes)
-            toast("Imported ${identity.name}")
-            finishIdentityImport(identity)
+            try {
+                val text = decodePrivateKeyText(bytes)
+                require(text.contains("PRIVATE KEY")) { "Select a private SSH key file" }
+                importViews.privateKey.setText(text)
+                importViews.status.setTextColor(secondary)
+            } finally {
+                bytes.fill(0)
+            }
         } catch (error: Exception) {
-            toast(error.message ?: "Could not import key")
+            importViews.status.setTextColor(Color.RED)
+            importViews.status.text = error.message ?: "Could not load key"
         }
     }
 
@@ -1707,8 +1798,7 @@ class MainActivity : Activity() {
             14f,
             secondary,
         ).margins(top = 8, bottom = 16))
-        root.addView(button("Import private key") { openKeyPicker() })
-        root.addView(button("Paste private key", secondary) { showPasteKeyDialog() }.margins(top = 8, bottom = 18))
+        root.addView(button("Add SSH key") { showKeyImportDialog() }.margins(bottom = 18))
 
         val identitiesAndHosts = runCatching { keyStore.identities() to hostStore.loadAll() }.getOrElse { error ->
             root.addView(label("SSH identities could not be read: ${error.message ?: "unknown error"}", 14f, Color.RED))
@@ -3570,19 +3660,25 @@ class MainActivity : Activity() {
         val root = vertical(0)
         terminalTitle = host.name
         val status = label("Connecting…", 11f, accent).also { terminalStatus = it }
-        val toolbar = vertical(6).apply { setBackgroundColor(Color.TRANSPARENT) }
-        val titleRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER }
-        val hostname = label(host.hostname, 13f, primary, Typeface.BOLD).apply {
+        val toolbar = vertical(8).apply {
+            setBackgroundColor(Color.TRANSPARENT)
+            setPadding(0, 0, dp(8), 0)
+        }
+        val titleRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL or Gravity.END
+        }
+        val hostname = ImageButton(this).apply {
             contentDescription = "${host.hostname}. Terminal controls"
-            gravity = Gravity.CENTER
-            maxLines = 1
-            ellipsize = android.text.TextUtils.TruncateAt.END
-            setPadding(dp(12), dp(6), dp(12), dp(6))
-            background = roundedBackground(Color.argb(230, 26, 29, 36), 14)
+            setImageResource(android.R.drawable.ic_menu_more)
+            setColorFilter(primary)
+            setPadding(dp(7), dp(7), dp(7), dp(7))
+            background = roundedBackground(Color.argb(230, 26, 29, 36), 12)
             elevation = dp(6).toFloat()
             setOnClickListener { anchor ->
                 revealTerminalChrome(sessionId, autoHide = false)
                 PopupMenu(this@MainActivity, anchor).apply {
+                    menu.add(host.destination).isEnabled = false
                     menu.add(if (terminalView?.isLocalSelectionMode == true) "Done selecting" else "Select text").apply {
                         isEnabled = terminalView?.isEnabled == true
                     }
@@ -3694,8 +3790,16 @@ class MainActivity : Activity() {
                 }
             }
         }
-        titleRow.addView(hostname, LinearLayout.LayoutParams(-2, dp(36)))
+        titleRow.addView(hostname, LinearLayout.LayoutParams(dp(32), dp(32)))
         toolbar.addView(titleRow)
+        toolbar.post {
+            val target = Rect()
+            hostname.getDrawingRect(target)
+            toolbar.offsetDescendantRectToMyCoords(hostname, target)
+            val expansion = dp(8)
+            target.inset(-expansion, -expansion)
+            toolbar.touchDelegate = TouchDelegate(target, hostname)
+        }
         toolbar.addView(status)
         toolbar.addView(vertical(10).apply {
             setBackgroundColor(surface)
@@ -3858,6 +3962,17 @@ class MainActivity : Activity() {
 
     private fun setTerminalSystemBarsHidden(hidden: Boolean) {
         terminalImmersive = hidden
+        applyTerminalSystemBars()
+        window.decorView.requestApplyInsets()
+    }
+
+    @Suppress("DEPRECATION")
+    private fun applyTerminalSystemBars() {
+        val hidden = usesTerminalImmersiveInsets(
+            requested = terminalImmersive,
+            inMultiWindowMode = isInMultiWindowMode,
+            captionBarVisible = terminalCaptionBarVisible,
+        )
         if (Build.VERSION.SDK_INT >= 30) {
             window.insetsController?.let { controller ->
                 if (hidden) {
@@ -3883,7 +3998,6 @@ class MainActivity : Activity() {
                 View.SYSTEM_UI_FLAG_LAYOUT_STABLE
             }
         }
-        window.decorView.requestApplyInsets()
     }
 
     private fun scheduleShellIntegrationNotice(sessionId: String) {
@@ -4487,14 +4601,28 @@ class MainActivity : Activity() {
             pendingBrowserConnection?.credential?.fill('\u0000')
             pendingBrowserConnection?.unlockedPrivateKey?.fill(0)
             pendingBrowserConnection = null
+            keyImportViews?.privateKey?.text?.clear()
         }
         previewTerminal?.close()
         diagnosticExecutor.shutdown()
         super.onDestroy()
     }
 
-    @Deprecated("Retains only transient credential handoffs across configuration changes")
-    override fun onRetainNonConfigurationInstance(): Any? = RetainedConnections(pendingConnection, pendingBrowserConnection)
+    @Deprecated("Retains only transient secrets across configuration changes")
+    override fun onRetainNonConfigurationInstance(): Any? {
+        val retained = RetainedConnections(
+            terminal = pendingConnection,
+            browser = pendingBrowserConnection,
+            keyImport = keyImportViews?.let { views ->
+                val editable = views.privateKey.text
+                val privateKey = CharArray(editable.length)
+                editable.getChars(0, editable.length, privateKey, 0)
+                PendingKeyImport(views.name.text.toString(), privateKey)
+            },
+        )
+        keyImportViews?.privateKey?.text?.clear()
+        return retained
+    }
 
     private fun renderBrowserEntries(
         list: LinearLayout,
@@ -4763,7 +4891,6 @@ class MainActivity : Activity() {
         private const val SHELL_INTEGRATION_NOTICE_DELAY_MS = 15_000L
         private const val TERMINAL_CHROME_VISIBLE_MS = 2_000L
         private const val TERMINAL_CHROME_FADE_DURATION_MS = 300L
-        private const val MAX_PRIVATE_KEY_BYTES = 1024 * 1024
         private const val MAX_OPEN_FILE_BYTES = 25L * 1024 * 1024
         private const val STATE_SCREEN = "screen"
         private const val STATE_SESSION_ID = "session_id"

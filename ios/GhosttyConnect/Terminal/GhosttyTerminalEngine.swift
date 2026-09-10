@@ -2,11 +2,19 @@
 import Foundation
 import GhosttyVt
 
-private final class GhosttyClipboardWriteQueue {
+private final class GhosttyEffectQueue {
     private static let maximumPendingWrites = 8
+    private static let maximumPendingNotifications = 8
     private static let maximumTextBytes = 1_048_576
+    private static let maximumNotificationTitleBytes = 256
+    private static let maximumNotificationBodyBytes = 4_096
+    private static let maximumPtyWriteBytes = 65_536
     private let lock = NSLock()
     private var writes: [TerminalClipboardWrite] = []
+    private var bells = 0
+    private var notifications: [TerminalRemoteNotification] = []
+    private var progress: TerminalProgressReport?
+    private var ptyWrite = Data()
 
     func capture(_ request: UnsafePointer<GhosttyClipboardWrite>) -> GhosttyClipboardWriteResult {
         guard request.pointee.size >= MemoryLayout<GhosttyClipboardWrite>.size else {
@@ -47,6 +55,65 @@ private final class GhosttyClipboardWriteQueue {
         return result
     }
 
+    func captureBell() {
+        lock.lock()
+        defer { lock.unlock() }
+        bells = min(10, bells + 1)
+    }
+
+    func captureNotification(_ request: UnsafePointer<GhosttyTerminalDesktopNotification>) {
+        guard request.pointee.size >= MemoryLayout<GhosttyTerminalDesktopNotification>.size,
+              let title = Self.string(request.pointee.title, maximumBytes: Self.maximumNotificationTitleBytes),
+              let body = Self.string(request.pointee.body, maximumBytes: Self.maximumNotificationBodyBytes) else { return }
+        lock.lock()
+        defer { lock.unlock() }
+        guard notifications.count < Self.maximumPendingNotifications else { return }
+        notifications.append(TerminalRemoteNotification(title: title, body: body))
+    }
+
+    func captureProgress(_ request: UnsafePointer<GhosttyTerminalProgressReport>) {
+        guard request.pointee.size >= MemoryLayout<GhosttyTerminalProgressReport>.size else { return }
+        let state: TerminalProgressState
+        switch request.pointee.state {
+        case GHOSTTY_TERMINAL_PROGRESS_STATE_REMOVE: state = .remove
+        case GHOSTTY_TERMINAL_PROGRESS_STATE_SET: state = .set
+        case GHOSTTY_TERMINAL_PROGRESS_STATE_ERROR: state = .error
+        case GHOSTTY_TERMINAL_PROGRESS_STATE_INDETERMINATE: state = .indeterminate
+        case GHOSTTY_TERMINAL_PROGRESS_STATE_PAUSE: state = .paused
+        default: return
+        }
+        let value = Int(request.pointee.progress)
+        lock.lock()
+        progress = TerminalProgressReport(state: state, percent: (0...100).contains(value) ? value : nil)
+        lock.unlock()
+    }
+
+    func capturePtyWrite(_ bytes: UnsafePointer<UInt8>?, count: Int) {
+        guard count > 0, let bytes else { return }
+        lock.lock()
+        defer { lock.unlock() }
+        guard count <= Self.maximumPtyWriteBytes - ptyWrite.count else { return }
+        ptyWrite.append(bytes, count: count)
+    }
+
+    func drainEffects() -> TerminalEffects {
+        lock.lock()
+        defer { lock.unlock() }
+        let result = TerminalEffects(
+            clipboardWrites: writes,
+            bells: bells,
+            notifications: notifications,
+            progress: progress,
+            ptyWrite: ptyWrite
+        )
+        writes.removeAll(keepingCapacity: true)
+        bells = 0
+        notifications.removeAll(keepingCapacity: true)
+        progress = nil
+        ptyWrite.removeAll(keepingCapacity: true)
+        return result
+    }
+
     private func append(_ write: TerminalClipboardWrite) -> GhosttyClipboardWriteResult {
         lock.lock()
         defer { lock.unlock() }
@@ -62,14 +129,40 @@ private final class GhosttyClipboardWriteQueue {
         guard let pointer = value.ptr else { return Data() }
         return Data(bytes: pointer, count: value.len)
     }
+
+    private static func string(_ value: GhosttyString, maximumBytes: Int) -> String? {
+        guard value.len <= maximumBytes, let data = data(value) else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
 }
 
 private let ghosttyClipboardWriteCallback: GhosttyTerminalClipboardWriteFn = { _, userdata, request in
     guard let userdata, let request else { return GHOSTTY_CLIPBOARD_WRITE_RESULT_INVALID_DATA }
-    return Unmanaged<GhosttyClipboardWriteQueue>.fromOpaque(userdata).takeUnretainedValue().capture(request)
+    return Unmanaged<GhosttyEffectQueue>.fromOpaque(userdata).takeUnretainedValue().capture(request)
+}
+
+private let ghosttyBellCallback: GhosttyTerminalBellFn = { _, userdata in
+    guard let userdata else { return }
+    Unmanaged<GhosttyEffectQueue>.fromOpaque(userdata).takeUnretainedValue().captureBell()
+}
+
+private let ghosttyNotificationCallback: GhosttyTerminalDesktopNotificationFn = { _, userdata, request in
+    guard let userdata, let request else { return }
+    Unmanaged<GhosttyEffectQueue>.fromOpaque(userdata).takeUnretainedValue().captureNotification(request)
+}
+
+private let ghosttyProgressCallback: GhosttyTerminalProgressReportFn = { _, userdata, request in
+    guard let userdata, let request else { return }
+    Unmanaged<GhosttyEffectQueue>.fromOpaque(userdata).takeUnretainedValue().captureProgress(request)
+}
+
+private let ghosttyWritePtyCallback: GhosttyTerminalWritePtyFn = { _, userdata, bytes, count in
+    guard let userdata else { return }
+    Unmanaged<GhosttyEffectQueue>.fromOpaque(userdata).takeUnretainedValue().capturePtyWrite(bytes, count: count)
 }
 
 final class GhosttyTerminalEngine: TerminalEngine {
+    private static let maximumMetadataBytes = 4_096
     private let terminal: GhosttyTerminal
     private let formatter: GhosttyFormatter
     private let renderState: GhosttyRenderState
@@ -77,7 +170,7 @@ final class GhosttyTerminalEngine: TerminalEngine {
     private let rowCells: GhosttyRenderStateRowCells
     private let keyEncoder: GhosttyKeyEncoder
     private let keyEvent: GhosttyKeyEvent
-    private let clipboardWrites: GhosttyClipboardWriteQueue
+    private let effects: GhosttyEffectQueue
     private let lock = NSLock()
     private var searchState: SearchState?
 
@@ -107,7 +200,7 @@ final class GhosttyTerminalEngine: TerminalEngine {
     }
 
     init(columns: Int, rows: Int) throws {
-        let clipboardWrites = GhosttyClipboardWriteQueue()
+        let effects = GhosttyEffectQueue()
         var terminal: GhosttyTerminal?
         let result = ghostty_terminal_new(
             nil,
@@ -120,16 +213,25 @@ final class GhosttyTerminalEngine: TerminalEngine {
         }
 
         let clipboardCallback = unsafeBitCast(ghosttyClipboardWriteCallback, to: UnsafeRawPointer.self)
+        let bellCallback = unsafeBitCast(ghosttyBellCallback, to: UnsafeRawPointer.self)
+        let notificationCallback = unsafeBitCast(ghosttyNotificationCallback, to: UnsafeRawPointer.self)
+        let progressCallback = unsafeBitCast(ghosttyProgressCallback, to: UnsafeRawPointer.self)
+        let writePtyCallback = unsafeBitCast(ghosttyWritePtyCallback, to: UnsafeRawPointer.self)
         guard ghostty_terminal_set(
             terminal,
             GHOSTTY_TERMINAL_OPT_USERDATA,
-            Unmanaged.passUnretained(clipboardWrites).toOpaque()
+            Unmanaged.passUnretained(effects).toOpaque()
         ) == GHOSTTY_SUCCESS,
         ghostty_terminal_set(
             terminal,
             GHOSTTY_TERMINAL_OPT_CLIPBOARD_WRITE,
             clipboardCallback
-        ) == GHOSTTY_SUCCESS else {
+        ) == GHOSTTY_SUCCESS,
+        ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_BELL, bellCallback) == GHOSTTY_SUCCESS,
+        ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_DESKTOP_NOTIFICATION, notificationCallback) == GHOSTTY_SUCCESS,
+        ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_PROGRESS_REPORT, progressCallback) == GHOSTTY_SUCCESS,
+        ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_WRITE_PTY, writePtyCallback) == GHOSTTY_SUCCESS
+        else {
             ghostty_terminal_free(terminal)
             throw TerminalEngineError.initializationFailed
         }
@@ -213,7 +315,7 @@ final class GhosttyTerminalEngine: TerminalEngine {
         self.rowCells = rowCells
         self.keyEncoder = keyEncoder
         self.keyEvent = keyEvent
-        self.clipboardWrites = clipboardWrites
+        self.effects = effects
     }
 
     deinit {
@@ -241,7 +343,11 @@ final class GhosttyTerminalEngine: TerminalEngine {
     }
 
     func drainClipboardWrites() -> [TerminalClipboardWrite] {
-        clipboardWrites.drain()
+        effects.drain()
+    }
+
+    func drainEffects() -> TerminalEffects {
+        effects.drainEffects()
     }
 
     func resize(columns: Int, rows: Int) {
@@ -764,6 +870,21 @@ final class GhosttyTerminalEngine: TerminalEngine {
             )
             : nil
 
+        var nativeTitle = GhosttyString()
+        let titleResult = ghostty_terminal_get(terminal, GHOSTTY_TERMINAL_DATA_TITLE, &nativeTitle)
+        guard titleResult == GHOSTTY_SUCCESS || titleResult == GHOSTTY_NO_VALUE else {
+            throw TerminalEngineError.snapshotFailed
+        }
+        var nativeWorkingDirectory = GhosttyString()
+        let workingDirectoryResult = ghostty_terminal_get(terminal, GHOSTTY_TERMINAL_DATA_PWD, &nativeWorkingDirectory)
+        guard workingDirectoryResult == GHOSTTY_SUCCESS || workingDirectoryResult == GHOSTTY_NO_VALUE else {
+            throw TerminalEngineError.snapshotFailed
+        }
+        let title = titleResult == GHOSTTY_SUCCESS ? Self.metadataString(nativeTitle) : nil
+        let workingDirectory = workingDirectoryResult == GHOSTTY_SUCCESS
+            ? Self.metadataString(nativeWorkingDirectory)
+            : nil
+
         var cursorColor = foreground
         var hasCursorColor = false
         if ghostty_render_state_get(renderState, GHOSTTY_RENDER_STATE_DATA_COLOR_CURSOR_HAS_VALUE, &hasCursorColor) == GHOSTTY_SUCCESS,
@@ -832,8 +953,17 @@ final class GhosttyTerminalEngine: TerminalEngine {
                 isAtBottom: viewportActive
             ),
             hasSelection: selectionResult == GHOSTTY_SUCCESS,
+            title: title,
+            workingDirectory: workingDirectory,
             selectionEndpoints: selectionEndpoints
         )
+    }
+
+    private static func metadataString(_ value: GhosttyString) -> String? {
+        guard value.len > 0,
+              value.len <= maximumMetadataBytes,
+              let pointer = value.ptr else { return nil }
+        return String(data: Data(bytes: pointer, count: value.len), encoding: .utf8)
     }
 
     private func viewportSelectionPoint(_ reference: GhosttyGridRef) -> TerminalSelectionPoint? {

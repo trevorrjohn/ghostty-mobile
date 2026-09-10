@@ -2,6 +2,16 @@ import XCTest
 @testable import GhosttyConnect
 
 final class HostDuplicationTests: XCTestCase {
+    func testStartupCommandValidationAndDuplication() throws {
+        XCTAssertNil(try StartupCommand.normalized("   "))
+        XCTAssertEqual(try StartupCommand.normalized("  tmux attach || tmux  "), "tmux attach || tmux")
+        XCTAssertThrowsError(try StartupCommand.normalized("tmux\nwhoami"))
+        XCTAssertNoThrow(try StartupCommand.normalized(String(repeating: "a", count: 1_024)))
+        XCTAssertThrowsError(try StartupCommand.normalized(String(repeating: "a", count: 1_025)))
+
+        let host = Host(hostname: "example.com", username: "tj", startupCommand: "tmux")
+        XCTAssertEqual(host.duplicated(existingNames: []).startupCommand, "tmux")
+    }
     func testDuplicatesHostConfigurationWithNewIdentity() {
         let identityID = UUID()
         let host = Host(

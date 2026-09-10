@@ -207,6 +207,7 @@ enum SSHCredential {
 protocol TerminalEngine: AnyObject {
     func feed(_ data: Data)
     func drainClipboardWrites() -> [TerminalClipboardWrite]
+    func drainEffects() -> TerminalEffects
     func resize(columns: Int, rows: Int)
     func encode(event: TerminalInputEvent) throws -> Data
     func isPasteSafe(_ text: String) -> Bool
@@ -227,6 +228,39 @@ protocol TerminalEngine: AnyObject {
 
 extension TerminalEngine {
     func drainClipboardWrites() -> [TerminalClipboardWrite] { [] }
+    func drainEffects() -> TerminalEffects { TerminalEffects() }
+}
+
+struct TerminalEffects: Equatable {
+    var clipboardWrites: [TerminalClipboardWrite] = []
+    var bells = 0
+    var notifications: [TerminalRemoteNotification] = []
+    var progress: TerminalProgressReport?
+    var ptyWrite = Data()
+}
+
+struct TerminalRemoteNotification: Equatable, Sendable {
+    let title: String
+    let body: String
+}
+
+struct TerminalRemoteNotificationRequest: Identifiable, Equatable {
+    let id: UUID
+    let notification: TerminalRemoteNotification
+    let connectionAttemptID: UUID
+}
+
+struct TerminalProgressReport: Equatable, Sendable {
+    let state: TerminalProgressState
+    let percent: Int?
+}
+
+enum TerminalProgressState: Equatable, Sendable {
+    case remove
+    case set
+    case error
+    case indeterminate
+    case paused
 }
 
 enum TerminalClipboardWrite: Equatable, Sendable {
@@ -257,6 +291,8 @@ struct TerminalSnapshot: Equatable {
     let cursor: TerminalCursor?
     let viewport: TerminalViewport
     let hasSelection: Bool
+    var title: String? = nil
+    var workingDirectory: String? = nil
     var selectionEndpoints: TerminalSelectionEndpoints? = nil
 
     func cell(column: Int, row: Int) -> TerminalCell? {

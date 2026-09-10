@@ -5,6 +5,7 @@ import dev.ghostty.connect.model.AuthenticationType
 import dev.ghostty.connect.model.DEFAULT_RETRY_ATTEMPTS
 import dev.ghostty.connect.model.Host
 import dev.ghostty.connect.model.RetryBackoff
+import dev.ghostty.connect.model.normalizeStartupCommand
 import org.json.JSONArray
 import org.json.JSONObject
 import java.util.UUID
@@ -70,6 +71,7 @@ class HostStore(context: Context, private val keyStore: SshKeyStore) {
                 put("retryEnabled", host.retryEnabled)
                 put("retryMaxAttempts", host.retryMaxAttempts)
                 put("retryBackoff", host.retryBackoff.name)
+                put("startupCommand", host.startupCommand ?: JSONObject.NULL)
             })
         }
     }.toString().toByteArray()
@@ -121,6 +123,9 @@ class HostStore(context: Context, private val keyStore: SshKeyStore) {
                     retryBackoff = RetryBackoff.valueOf(
                         value.optString("retryBackoff", RetryBackoff.BALANCED.name),
                     ),
+                    startupCommand = normalizeStartupCommand(value.optString("startupCommand").takeIf {
+                        !value.isNull("startupCommand") && it.isNotBlank()
+                    }),
                 ))
             }
         }
