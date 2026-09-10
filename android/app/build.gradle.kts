@@ -38,6 +38,12 @@ configure<ApplicationExtension> {
     }
 
     signingConfigs {
+        getByName("debug") {
+            storeFile = rootProject.file("debug.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
         create("release") {
             storeFile = file(providers.environmentVariable("SEANCE_UPLOAD_STORE_FILE").getOrElse("missing-seance-shell-upload.jks"))
             storePassword = providers.environmentVariable("SEANCE_UPLOAD_STORE_PASSWORD").getOrElse("")

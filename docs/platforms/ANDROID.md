@@ -53,7 +53,7 @@ Tailscale SSH is an explicit credential-free host mode using SSH `none` authenti
 - `InputConnection`, hardware keys, configurable volume-button and modifier controls, paste safety, and Ghostty mode-aware encoding.
 
 The UI consumes immutable snapshots. Terminal parsing and SSH I/O do not run on the main thread, and the client does not locally echo input.
-Connected terminals render full-bleed with immersive system bars when the activity owns a full window. Multi-window and desktop-caption modes retain visible system insets rather than placing terminal rows beneath window decorations. A compact transient control overlays the top-right corner without reducing the PTY viewport; its menu identifies the destination and exposes terminal actions, while connection and retry failures remain visible.
+Connected terminals use a continuous terminal-theme background through the cutout area with immersive system bars when the activity owns a full window. Terminal rows and header controls remain inside cutout-safe content bounds; multi-window and desktop-caption modes also retain visible system insets. A fixed first menu control sits outside the keyboard row's horizontally scrolling keys and opens a scrollable modal with trusted destination, session status, separately labeled remote title, and terminal actions. When the keyboard row is hidden, a transient top-right floating menu provides the same actions without reserving PTY space. Connection failures and retry controls remain visible independently of menu placement, and modal dispatch checks the originating runtime session before acting.
 
 ## Build
 
@@ -63,7 +63,7 @@ Install the shared debug keystore once on every development computer:
 ./scripts/install-android-debug-keystore
 ```
 
-The installer exits successfully when the expected key is already present at `~/.android/debug.keystore`. Otherwise it retrieves the key from the legacy-named `Ghostty Mobile Android Debug Keystore` document in your 1Password Private vault, verifies its certificate fingerprint and private-key entry, and installs it with owner-only permissions. Set `GHOSTTY_DEBUG_KEYSTORE_VAULT` when a team keeps the document in a shared vault instead.
+The installer exits successfully when the expected key is already present at `android/debug.keystore` in this checkout. Otherwise it retrieves the key from the legacy-named `Ghostty Mobile Android Debug Keystore` document in your 1Password Private vault, verifies its certificate fingerprint and private-key entry, and installs it with owner-only permissions. Gradle uses this Git-ignored project-local file only for this app's debug builds; the global `~/.android/debug.keystore` and other Android apps are unchanged. Set `GHOSTTY_DEBUG_KEYSTORE_VAULT` when a team keeps the document in a shared vault instead.
 
 The script explains how to install or authenticate 1Password CLI when `op` is unavailable. It refuses to overwrite a different existing key unless `--replace` is supplied. Replacement creates a timestamped backup; apps signed with the previous key must be uninstalled before installing the shared-key build.
 

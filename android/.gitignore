@@ -5,4 +5,7 @@ build/
 app/build/
 app/.cxx/
 local.properties
+debug.keystore
+debug.keystore.*
+.debug.keystore.*
 *.iml

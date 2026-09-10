@@ -39,7 +39,6 @@ import android.view.Gravity
 import android.view.DragEvent
 import android.view.KeyEvent
 import android.view.HapticFeedbackConstants
-import android.view.TouchDelegate
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowInsets
@@ -230,8 +229,10 @@ class MainActivity : Activity() {
     private var selectedSessionId: String? = null
     private var terminalStatus: TextView? = null
     private var terminalTitle = ""
+    private var terminalBackgroundColor = Color.BLACK
     private var terminalRetryButton: Button? = null
     private var terminalChrome: View? = null
+    private var terminalFloatingMenu: View? = null
     private var terminalChromeFadeRunnable: Runnable? = null
     private var terminalView: GhosttyTerminalView? = null
     private var shellIntegrationNotice: View? = null
@@ -558,15 +559,17 @@ class MainActivity : Activity() {
                 )
                 android.graphics.Insets.of(content.left, content.top, content.right, content.bottom)
             } else {
+                val cutout = insets.displayCutout
                 @Suppress("DEPRECATION")
                 android.graphics.Insets.of(
-                    insets.systemWindowInsetLeft,
-                    insets.systemWindowInsetTop,
-                    insets.systemWindowInsetRight,
-                    insets.systemWindowInsetBottom,
+                    maxOf(insets.systemWindowInsetLeft, cutout?.safeInsetLeft ?: 0),
+                    maxOf(insets.systemWindowInsetTop, cutout?.safeInsetTop ?: 0),
+                    maxOf(insets.systemWindowInsetRight, cutout?.safeInsetRight ?: 0),
+                    maxOf(insets.systemWindowInsetBottom, cutout?.safeInsetBottom ?: 0),
                 )
             }
             view.setPadding(bars.left, bars.top, bars.right, bars.bottom)
+            view.setBackgroundColor(if (terminalView != null) terminalBackgroundColor else surface)
             updateModifierBarVisibility()
             insets
         }
@@ -765,6 +768,7 @@ class MainActivity : Activity() {
         terminalChrome = null
         terminalView?.setLocalSelectionMode(false)
         terminalView = null
+        terminalFloatingMenu = null
         shellIntegrationNotice = null
         cancelShellIntegrationNotice()
         editorKeySelection = null
@@ -3657,7 +3661,8 @@ class MainActivity : Activity() {
         feedbackVisible = false
         trustedHostsVisible = false
         browserVisible = false
-        val root = vertical(0)
+        terminalBackgroundColor = terminal.snapshot().background
+        val root = vertical(0).apply { setBackgroundColor(terminalBackgroundColor) }
         terminalTitle = host.name
         val status = label("Connecting…", 11f, accent).also { terminalStatus = it }
         val toolbar = vertical(8).apply {
@@ -3668,138 +3673,111 @@ class MainActivity : Activity() {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL or Gravity.END
         }
+        fun showControls() {
+            if (selectedSessionId != sessionId || sessionService !== service ||
+                service.terminal(sessionId) !== terminal || terminalView == null
+            ) return
+            revealTerminalChrome(sessionId, autoHide = false)
+            val content = vertical(16)
+            content.addView(label(host.destination, 16f, primary, Typeface.BOLD).apply {
+                setTextIsSelectable(true)
+            })
+            content.addView(label("Session $sessionId", 12f, secondary).margins(top = 8))
+            content.addView(label(service.status(sessionId).orEmpty(), 14f, secondary).margins(top = 8))
+            if (terminalTitle.isNotBlank() && terminalTitle != host.name) {
+                content.addView(label("Remote title: $terminalTitle", 14f, secondary).margins(top = 8))
+            }
+            val dialog = AlertDialog.Builder(this)
+                .setTitle(host.name)
+                .setView(scroll(content))
+                .setNegativeButton("Close", null)
+                .create()
+            val selectionAction = if (terminalView?.isLocalSelectionMode == true) "Done selecting" else "Select text"
+            val actions = listOf(
+                selectionAction, "Sessions", "Duplicate session", "Browse files",
+                "Export encrypted archive", "Disconnect", "Paste", "Copy latest output",
+                "Previous prompt", "Next prompt", "Search scrollback", "Shell integration setup",
+                "Record feedback", "Send interrupt signal", "Send terminate signal",
+            )
+            actions.forEach { action ->
+                content.addView(compactButton(action, action != selectionAction || terminalView?.isEnabled == true) {
+                    dialog.dismiss()
+                    // Modal actions must never target a replacement or another selected session.
+                    if (selectedSessionId != sessionId || sessionService !== service ||
+                        service.terminal(sessionId) !== terminal || terminalView == null
+                    ) return@compactButton
+                    when (action) {
+                        "Select text", "Done selecting" -> {
+                            terminalView?.let { view ->
+                                if (!view.isEnabled) return@compactButton
+                                val enabled = !view.isLocalSelectionMode
+                                view.setLocalSelectionMode(enabled)
+                                if (enabled) {
+                                    toast("Local selection on. Double-tap text, then drag the handles to adjust.")
+                                }
+                            }
+                        }
+                        "Sessions" -> showHosts(disconnect = false)
+                        "Duplicate session" -> requestCredentialAndConnect(host)
+                        "Browse files" -> {
+                            val savedHost = hostStore.loadAll().firstOrNull { it.id == host.id }
+                            if (savedHost == null) {
+                                toast("This saved host was removed. Return to host management to browse files.")
+                            } else if (savedHost.authenticationType == AuthenticationType.SSH_KEY &&
+                                savedHost.identityId?.let(keyStore::identity) == null
+                            ) {
+                                toast("The selected SSH identity is unavailable. Edit the saved host first.")
+                            } else {
+                                requestCredentialAndBrowse(savedHost)
+                            }
+                        }
+                        "Export encrypted archive" -> showTerminalArchiveDialog(sessionId)
+                        "Disconnect" -> {
+                            service.disconnect(sessionId)
+                            showHosts(disconnect = false)
+                        }
+                        "Paste" -> pasteFromClipboard(service)
+                        "Copy latest output" -> {
+                            if (terminal.selectLatestOutput()) {
+                                terminalView?.refresh()
+                                writeClipboard(terminal.selectedText())
+                                toast("Latest output copied")
+                            } else toast("No command output found")
+                        }
+                        "Previous prompt" -> {
+                            if (!terminal.jumpPrompt(-1)) toast("No previous prompt")
+                            terminalView?.refresh()
+                        }
+                        "Next prompt" -> {
+                            if (!terminal.jumpPrompt(1)) toast("No next prompt")
+                            terminalView?.refresh()
+                        }
+                        "Search scrollback" -> showScrollbackSearch(terminal)
+                        "Shell integration setup" -> showShellIntegrationSetup()
+                        "Record feedback" -> showFeedbackDialog("Terminal", sessionId)
+                        "Send interrupt signal" -> service.signal(sessionId, Signal.INT)
+                        "Send terminate signal" -> service.signal(sessionId, Signal.TERM)
+                    }
+                }, LinearLayout.LayoutParams(-1, dp(48)).apply { topMargin = dp(8) })
+            }
+            dialog.setOnDismissListener {
+                if (selectedSessionId != sessionId || terminalView == null) return@setOnDismissListener
+                revealTerminalChrome(sessionId, autoHide = terminalView?.isLocalSelectionMode != true)
+            }
+            dialog.show()
+        }
         val hostname = ImageButton(this).apply {
-            contentDescription = "${host.hostname}. Terminal controls"
+            contentDescription = "Terminal info and actions"
             setImageResource(android.R.drawable.ic_menu_more)
             setColorFilter(primary)
             setPadding(dp(7), dp(7), dp(7), dp(7))
             background = roundedBackground(Color.argb(230, 26, 29, 36), 12)
             elevation = dp(6).toFloat()
-            setOnClickListener { anchor ->
-                revealTerminalChrome(sessionId, autoHide = false)
-                PopupMenu(this@MainActivity, anchor).apply {
-                    menu.add(host.destination).isEnabled = false
-                    menu.add(if (terminalView?.isLocalSelectionMode == true) "Done selecting" else "Select text").apply {
-                        isEnabled = terminalView?.isEnabled == true
-                    }
-                    menu.add("Sessions")
-                    menu.add("Duplicate session")
-                    menu.add("Browse files")
-                    menu.add("Export encrypted archive")
-                    menu.add("Disconnect")
-                    menu.add("Paste")
-                    menu.add("Copy latest output")
-                    menu.add("Previous prompt")
-                    menu.add("Next prompt")
-                    menu.add("Search scrollback")
-                    menu.add("Shell integration setup")
-                    menu.add("Record feedback")
-                    menu.add("Send interrupt signal")
-                    menu.add("Send terminate signal")
-                    setOnMenuItemClickListener { item ->
-                        when (item.title) {
-                            "Select text", "Done selecting" -> {
-                                terminalView?.let { view ->
-                                    val enabled = !view.isLocalSelectionMode
-                                    view.setLocalSelectionMode(enabled)
-                                    if (enabled) {
-                                        toast("Local selection on. Double-tap text, then drag the handles to adjust.")
-                                    }
-                                }
-                                true
-                            }
-                            "Sessions" -> {
-                                showHosts(disconnect = false)
-                                true
-                            }
-                            "Duplicate session" -> {
-                                requestCredentialAndConnect(host)
-                                true
-                            }
-                            "Browse files" -> {
-                                val savedHost = hostStore.loadAll().firstOrNull { it.id == host.id }
-                                if (savedHost == null) {
-                                    toast("This saved host was removed. Return to host management to browse files.")
-                                } else if (savedHost.authenticationType == AuthenticationType.SSH_KEY &&
-                                    savedHost.identityId?.let(keyStore::identity) == null
-                                ) {
-                                    toast("The selected SSH identity is unavailable. Edit the saved host first.")
-                                } else {
-                                    requestCredentialAndBrowse(savedHost)
-                                }
-                                true
-                            }
-                            "Export encrypted archive" -> {
-                                showTerminalArchiveDialog(sessionId)
-                                true
-                            }
-                            "Disconnect" -> {
-                                service.disconnect(sessionId)
-                                showHosts(disconnect = false)
-                                true
-                            }
-                            "Paste" -> {
-                                pasteFromClipboard(service)
-                                true
-                            }
-                            "Copy latest output" -> {
-                                if (terminal.selectLatestOutput()) {
-                                    terminalView?.refresh()
-                                    writeClipboard(terminal.selectedText())
-                                    toast("Latest output copied")
-                                } else toast("No command output found")
-                                true
-                            }
-                            "Previous prompt" -> {
-                                if (!terminal.jumpPrompt(-1)) toast("No previous prompt")
-                                terminalView?.refresh()
-                                true
-                            }
-                            "Next prompt" -> {
-                                if (!terminal.jumpPrompt(1)) toast("No next prompt")
-                                terminalView?.refresh()
-                                true
-                            }
-                            "Search scrollback" -> {
-                                showScrollbackSearch(terminal)
-                                true
-                            }
-                            "Shell integration setup" -> {
-                                showShellIntegrationSetup()
-                                true
-                            }
-                            "Record feedback" -> {
-                                showFeedbackDialog("Terminal", sessionId)
-                                true
-                            }
-                            "Send interrupt signal" -> {
-                                service.signal(sessionId, Signal.INT)
-                                true
-                            }
-                            "Send terminate signal" -> {
-                                service.signal(sessionId, Signal.TERM)
-                                true
-                            }
-                            else -> false
-                        }
-                    }
-                    setOnDismissListener {
-                        revealTerminalChrome(sessionId, autoHide = terminalView?.isLocalSelectionMode != true)
-                    }
-                    show()
-                }
-            }
+            setOnClickListener { showControls() }
         }
-        titleRow.addView(hostname, LinearLayout.LayoutParams(dp(32), dp(32)))
+        terminalFloatingMenu = titleRow
+        titleRow.addView(hostname, LinearLayout.LayoutParams(dp(48), dp(48)))
         toolbar.addView(titleRow)
-        toolbar.post {
-            val target = Rect()
-            hostname.getDrawingRect(target)
-            toolbar.offsetDescendantRectToMyCoords(hostname, target)
-            val expansion = dp(8)
-            target.inset(-expansion, -expansion)
-            toolbar.touchDelegate = TouchDelegate(target, hostname)
-        }
         toolbar.addView(status)
         toolbar.addView(vertical(10).apply {
             setBackgroundColor(surface)
@@ -3920,11 +3898,11 @@ class MainActivity : Activity() {
             onTextSizeChanged = terminalThemeStore::saveFontSize
         }.also { terminalView = it }
         root.addView(FrameLayout(this).apply {
-            setBackgroundColor(surface)
+            setBackgroundColor(terminalBackgroundColor)
             addView(view, FrameLayout.LayoutParams(-1, -1))
             addView(toolbar.also { terminalChrome = it }, FrameLayout.LayoutParams(-1, -2, Gravity.TOP))
         }, LinearLayout.LayoutParams(-1, 0, 1f))
-        root.addView(createModifierBar().also { modifierBar = it })
+        root.addView(createModifierBar(::showControls).also { modifierBar = it })
         setContentView(root)
         view.refresh()
         updateModifierBarVisibility()
@@ -3968,6 +3946,13 @@ class MainActivity : Activity() {
 
     @Suppress("DEPRECATION")
     private fun applyTerminalSystemBars() {
+        window.attributes = window.attributes.apply {
+            layoutInDisplayCutoutMode = if (Build.VERSION.SDK_INT >= 30) {
+                WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
+            } else {
+                WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+            }
+        }
         val hidden = usesTerminalImmersiveInsets(
             requested = terminalImmersive,
             inMultiWindowMode = isInMultiWindowMode,
@@ -4065,17 +4050,28 @@ class MainActivity : Activity() {
             .show()
     }
 
-    private fun createModifierBar(): View {
+    private fun createModifierBar(onMenu: () -> Unit): View {
         val row = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             setBackgroundColor(raised)
             setPadding(dp(6), dp(5), dp(6), dp(5))
         }.also { modifierBarRow = it }
         renderModifierBarItems()
-        return HorizontalScrollView(this).apply {
-            isHorizontalScrollBarEnabled = false
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
             setBackgroundColor(raised)
-            addView(row, ViewGroup.LayoutParams(-2, dp(50)))
+            addView(ImageButton(this@MainActivity).apply {
+                contentDescription = "Terminal info and actions"
+                setImageResource(android.R.drawable.ic_menu_more)
+                setColorFilter(primary)
+                setBackgroundColor(Color.TRANSPARENT)
+                setOnClickListener { onMenu() }
+            }, LinearLayout.LayoutParams(dp(48), dp(50)))
+            addView(HorizontalScrollView(this@MainActivity).apply {
+                isHorizontalScrollBarEnabled = false
+                addView(row, ViewGroup.LayoutParams(-2, dp(50)))
+            }, LinearLayout.LayoutParams(0, dp(50), 1f))
         }
     }
 
@@ -4451,11 +4447,15 @@ class MainActivity : Activity() {
     }
 
     private fun updateModifierBarVisibility() {
-        modifierBar?.visibility = if (keyboardBarConfig.enabled && imeVisible && terminalAtBottom) {
+        val rowVisible = keyboardBarConfig.enabled && imeVisible && terminalAtBottom
+        val revealFallback = !rowVisible && terminalFloatingMenu?.visibility == View.GONE
+        modifierBar?.visibility = if (rowVisible) {
             View.VISIBLE
         } else {
             View.GONE
         }
+        terminalFloatingMenu?.visibility = if (rowVisible) View.GONE else View.VISIBLE
+        if (revealFallback && terminalView != null) selectedSessionId?.let { revealTerminalChrome(it) }
     }
 
     private fun showAllKeyboardKeys() {
