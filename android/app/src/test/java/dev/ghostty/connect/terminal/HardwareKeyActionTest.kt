@@ -48,7 +48,15 @@ class HardwareKeyActionTest {
 
     @Test
     fun ctrlKeyUsesPrintableTextInsteadOfControlCode() {
-        assertEquals("b", hardwareKeyText(unicodeChar = 0x02))
+        assertEquals("b", hardwareKeyText(unicodeChar = 0x02, isCtrlPressed = true))
+    }
+
+    @Test
+    fun unmodifiedControlCharactersDoNotBecomeLetters() {
+        assertEquals("", hardwareKeyText(unicodeChar = '\n'.code))
+        assertEquals("", hardwareKeyText(unicodeChar = '\r'.code))
+        assertEquals("", hardwareKeyText(unicodeChar = '\t'.code))
+        assertEquals("", hardwareKeyText(unicodeChar = 0x08))
     }
 
     @Test

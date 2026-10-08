@@ -13,24 +13,30 @@ internal fun ghosttyKeyAction(action: Int, repeatCount: Int): Int? = when {
 internal fun isModifierEligibleImeCommit(text: String): Boolean =
     text.codePointCount(0, text.length) == 1 && text.firstOrNull()?.code in 0x20..0x7e
 
-internal fun hardwareKeyText(unicodeChar: Int, unmodifiedUnicodeChar: Int = 0): String =
+internal fun hardwareKeyText(unicodeChar: Int, unmodifiedUnicodeChar: Int = 0, isCtrlPressed: Boolean = false): String =
     (if (unicodeChar > 31 && unicodeChar != 127) unicodeChar else
         unmodifiedUnicodeChar.takeIf { it > 31 && it != 127 } ?:
-            (unicodeChar.takeIf { it in 1..26 }?.let { 'a'.code + it - 1 } ?: 0))
+            (unicodeChar.takeIf { isCtrlPressed && it in 1..26 }?.let { 'a'.code + it - 1 } ?: 0))
         .takeIf { it > 31 && it != 127 }
         ?.let { String(Character.toChars(it)) }
         .orEmpty()
 
-internal fun hardwareKeyText(event: KeyEvent): String = hardwareKeyText(
-    unicodeChar = event.unicodeChar,
-    unmodifiedUnicodeChar = if (event.isCtrlPressed) {
-        event.getUnicodeChar(event.metaState and KeyEvent.META_CTRL_MASK.inv())
-    } else if (event.unicodeChar in 1..26) {
-        'a'.code + event.unicodeChar - 1
-    } else {
-        0
-    },
-)
+internal fun hardwareKeyText(event: KeyEvent): String {
+    // Named control keys carry their identity, never printable text derived from LF/CR/TAB.
+    when (event.keyCode) {
+        KeyEvent.KEYCODE_ENTER, KeyEvent.KEYCODE_NUMPAD_ENTER, KeyEvent.KEYCODE_TAB,
+        KeyEvent.KEYCODE_DEL, KeyEvent.KEYCODE_FORWARD_DEL, KeyEvent.KEYCODE_ESCAPE -> return ""
+    }
+    return hardwareKeyText(
+        unicodeChar = event.unicodeChar,
+        unmodifiedUnicodeChar = if (event.isCtrlPressed) {
+            event.getUnicodeChar(event.metaState and KeyEvent.META_CTRL_MASK.inv())
+        } else {
+            0
+        },
+        isCtrlPressed = event.isCtrlPressed,
+    )
+}
 
 internal enum class HardwareClipboardAction { COPY, PASTE }
 
