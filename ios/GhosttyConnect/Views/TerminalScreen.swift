@@ -36,7 +36,9 @@ struct TerminalScreen: View {
         let theme = TerminalTheme.theme(id: model.settings.themeID)
         let terminalFontSize = transientFontSize ?? model.settings.fontSize
         VStack(spacing: 0) {
-            statusBar
+            if session.state != .connected || !remoteMetadata.isEmpty {
+                statusBar
+            }
             if let snapshot = session.snapshot {
                 GeometryReader { proxy in
                     ZStack(alignment: .bottomTrailing) {
@@ -180,28 +182,6 @@ struct TerminalScreen: View {
         .navigationTitle(host.name)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar(.hidden, for: .tabBar)
-        .toolbar {
-            ToolbarItemGroup(placement: .topBarTrailing) {
-                Image(systemName: record.textMode ? "text.cursor" : "keyboard")
-                .frame(minWidth: 44, minHeight: 44)
-                .contentShape(Rectangle())
-                .gesture(LongPressGesture(minimumDuration: 0.5).exclusively(before: TapGesture())
-                    .onEnded { result in
-                        switch result {
-                        case .first(true): showingInputModes = true
-                        case .second: keyboardFocused.toggle()
-                        default: break
-                        }
-                    })
-                .accessibilityAddTraits(.isButton)
-                .accessibilityAction { keyboardFocused.toggle() }
-                .accessibilityAction(named: "Change input mode") { showingInputModes = true }
-                .accessibilityLabel(keyboardFocused ? "Hide Keyboard" : "Show Keyboard")
-                .accessibilityHint("Hold to choose Direct input or Text mode")
-                .disabled(session.state != .connected)
-
-            }
-        }
         .onAppear {
             if !record.hasRequestedConnection { requestConnection(isReconnect: false) }
         }
@@ -594,7 +574,7 @@ struct TerminalScreen: View {
         case .verifyingHost: "Waiting for host key approval..."
         case .authenticating: "Authenticating..."
         case .connected:
-            (["Connected to \(host.destination)"] + remoteMetadata).joined(separator: " | ")
+            remoteMetadata.joined(separator: " | ")
         case .failed(let failure): failure.message
         }
     }
