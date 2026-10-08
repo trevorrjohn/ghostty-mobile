@@ -254,27 +254,6 @@ GhosttyKey key_from_name(const std::string& name) {
   return GHOSTTY_KEY_UNIDENTIFIED;
 }
 
-uint32_t unshifted_codepoint_from_name(const std::string& name) {
-  if (name.size() == 1) {
-    const unsigned char value = name[0];
-    if (value >= 'A' && value <= 'Z') return value - 'A' + 'a';
-    if (value >= 0x20 && value <= 0x7e) return value;
-  }
-  if (name == "SPACE") return ' ';
-  if (name == "BACKQUOTE") return '`';
-  if (name == "BACKSLASH") return '\\';
-  if (name == "BRACKET_LEFT") return '[';
-  if (name == "BRACKET_RIGHT") return ']';
-  if (name == "COMMA") return ',';
-  if (name == "EQUAL") return '=';
-  if (name == "MINUS") return '-';
-  if (name == "PERIOD") return '.';
-  if (name == "QUOTE") return '\'';
-  if (name == "SEMICOLON") return ';';
-  if (name == "SLASH") return '/';
-  return 0;
-}
-
 jbyteArray byte_array(JNIEnv* env, const char* data, size_t size) {
   jbyteArray result = env->NewByteArray(static_cast<jsize>(size));
   if (size > 0) env->SetByteArrayRegion(result, 0, static_cast<jsize>(size),
@@ -1114,8 +1093,7 @@ Java_dev_ghostty_connect_terminal_bridge_GhosttyTerminal_nativeEncodeKey(
     ghostty_key_event_set_mods(instance->key_event, static_cast<GhosttyMods>(modifiers));
     ghostty_key_event_set_consumed_mods(instance->key_event, 0);
     ghostty_key_event_set_composing(instance->key_event, false);
-    ghostty_key_event_set_unshifted_codepoint(
-        instance->key_event, unshifted_codepoint_from_name(key_name));
+    ghostty_key_event_set_unshifted_codepoint(instance->key_event, 0);
     ghostty_key_event_set_utf8(instance->key_event, utf8.data(), utf8.size());
     char buffer[128];
     size_t written = 0;

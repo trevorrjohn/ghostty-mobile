@@ -46,18 +46,6 @@ class GhosttyTerminalIntegrationTest {
     }
 
     @Test
-    fun herdrKittyModeEncodesControlPrefix() {
-        GhosttyTerminal().use { terminal ->
-            terminal.write("\u001b[>31u")
-
-            assertArrayEquals(
-                "\u001b[98;5u".toByteArray(),
-                terminal.encodeKey("b", "b", 1 shl 1),
-            )
-        }
-    }
-
-    @Test
     fun focusReportsOnlyWhenApplicationEnablesMode() {
         GhosttyTerminal().use { terminal ->
             assertTrue(terminal.encodeFocus(true).isEmpty())

@@ -1,6 +1,5 @@
 package dev.ghostty.connect.terminal.view
 
-import android.view.KeyEvent
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -49,27 +48,6 @@ class TerminalImeInputBufferTest {
         assertEquals(emptyList<String>(), input)
         buffer.flush()
         assertEquals(emptyList<String>(), input)
-    }
-
-    @Test
-    fun imeEnterKeyEventDiscardsPhantomComposition() {
-        buffer.setComposing("j")
-        buffer.finishComposing()
-
-        buffer.prepareForKeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_ENTER)
-        runScheduledActions()
-
-        assertEquals(emptyList<String>(), input)
-        assertEquals(emptyList<String>(), specialKeys)
-    }
-
-    @Test
-    fun nonEnterKeyEventFlushesComposition() {
-        buffer.setComposing("hello")
-
-        buffer.prepareForKeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DPAD_LEFT)
-
-        assertEquals(listOf("hello"), input)
     }
 
     @Test
