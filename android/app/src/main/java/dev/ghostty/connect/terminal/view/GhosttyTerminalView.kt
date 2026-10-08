@@ -80,6 +80,9 @@ class GhosttyTerminalView(
     var onScrollPositionChanged: (isAtBottom: Boolean) -> Unit = {}
     var onTextSizeChanged: (Float) -> Unit = {}
     var holdSwipeLabels: Map<HoldSwipeDirection, String> = emptyMap()
+    var onQuickNavigation: ((column: Int, row: Int, anchorRow: String) -> Unit)? = null
+    var onRequestKeyboard: (() -> Boolean)? = null
+    private var quickNavigationClaimed = false
     var onHoldSwipe: (HoldSwipeDirection, column: Int, row: Int, anchorRow: String) -> Boolean = { _, _, _, _ -> false }
     private var terminalTextSizeSp = initialTextSizeSp.coerceIn(MIN_TEXT_SIZE_SP, MAX_TEXT_SIZE_SP)
     private var terminalTextSize = sp(terminalTextSizeSp)
@@ -623,6 +626,14 @@ class GhosttyTerminalView(
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
         if (!isEnabled) return false
+        if (event.actionMasked == MotionEvent.ACTION_DOWN) quickNavigationClaimed = false
+        else if (quickNavigationClaimed) {
+            if (event.actionMasked == MotionEvent.ACTION_UP || event.actionMasked == MotionEvent.ACTION_CANCEL) {
+                quickNavigationClaimed = false
+                endTouch()
+            }
+            return true
+        }
         pointerMetaState = event.metaState
         if (!remoteMouseGesture && !remoteTwoFingerGesture && !holdSwipe.active) scaleDetector.onTouchEvent(event)
         when (event.actionMasked) {
@@ -1056,6 +1067,7 @@ class GhosttyTerminalView(
         super.performClick()
         onTap()
         if (!acceptsInput) return true
+        if (onRequestKeyboard?.invoke() == true) return true
         requestFocus()
         context.getSystemService(InputMethodManager::class.java)
             ?.showSoftInput(this, InputMethodManager.SHOW_IMPLICIT)
@@ -1133,6 +1145,14 @@ class GhosttyTerminalView(
         val rowText = snapshot.cells.subList(row * snapshot.columns, (row + 1) * snapshot.columns)
             .joinToString("") { it.text }
         holdSwipeAnchorRow = "${snapshot.scrollTotal}:${snapshot.scrollOffset}:$rowText"
+        onQuickNavigation?.let { showMenu ->
+            val column = cellColumn(holdSwipe.originX)
+            val anchor = holdSwipeAnchorRow
+            cancelHoldSwipe()
+            quickNavigationClaimed = true
+            showMenu(column, row, anchor)
+            return true
+        }
         invalidate()
         sendAccessibilityEvent(AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED)
         return true

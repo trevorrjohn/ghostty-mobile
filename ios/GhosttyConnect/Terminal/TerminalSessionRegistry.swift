@@ -9,6 +9,7 @@ final class TerminalSessionRecord: ObservableObject, Identifiable {
     let startedAt: ContinuousClock.Instant
     @Published var hasRequestedConnection = false
     @Published var searchQuery = ""
+    @Published var textMode = false
 
     private var observation: AnyCancellable?
 

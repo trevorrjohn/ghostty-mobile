@@ -18,6 +18,10 @@ class KeyboardBarTest {
         assertTrue(controlB.isVisibleForTerminalTitle("work — tmux"))
         assertTrue(controlB.isVisibleForTerminalTitle("work — shell"))
         assertEquals(listOf(controlB), config.combinations)
+        val controlIndex = config.items.indexOfFirst {
+            it.type == KeyboardBarItemType.MODIFIER && it.modifiers == setOf(KeyboardModifier.CONTROL)
+        }
+        assertEquals(config.items.indexOf(controlB) - 1, controlIndex)
     }
 
     @Test

@@ -235,6 +235,9 @@ class MainActivity : Activity() {
     private var terminalFloatingMenu: View? = null
     private var terminalChromeFadeRunnable: Runnable? = null
     private var terminalView: GhosttyTerminalView? = null
+    private val textModeSessions = mutableSetOf<String>()
+    private var textInputRow: View? = null
+    private var terminalTextInput: EditText? = null
     private var shellIntegrationNotice: View? = null
     private var shellIntegrationNoticeRunnable: Runnable? = null
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -768,6 +771,9 @@ class MainActivity : Activity() {
         terminalChrome = null
         terminalView?.setLocalSelectionMode(false)
         terminalView = null
+        terminalTextInput?.text?.clear()
+        terminalTextInput = null
+        textInputRow = null
         terminalFloatingMenu = null
         shellIntegrationNotice = null
         cancelShellIntegrationNotice()
@@ -3688,13 +3694,13 @@ class MainActivity : Activity() {
                 content.addView(label("Remote title: $terminalTitle", 14f, secondary).margins(top = 8))
             }
             val dialog = AlertDialog.Builder(this)
-                .setTitle(host.name)
+                .setTitle("Session settings · ${host.name}")
                 .setView(scroll(content))
                 .setNegativeButton("Close", null)
                 .create()
             val selectionAction = if (terminalView?.isLocalSelectionMode == true) "Done selecting" else "Select text"
             val actions = listOf(
-                selectionAction, "Sessions", "Duplicate session", "Browse files",
+                selectionAction, "Hosts", "Input mode", "Duplicate session", "Browse files",
                 "Export encrypted archive", "Disconnect", "Paste", "Copy latest output",
                 "Previous prompt", "Next prompt", "Search scrollback", "Shell integration setup",
                 "Record feedback", "Send interrupt signal", "Send terminate signal",
@@ -3717,7 +3723,8 @@ class MainActivity : Activity() {
                                 }
                             }
                         }
-                        "Sessions" -> showHosts(disconnect = false)
+                        "Hosts" -> showHosts(disconnect = false)
+                        "Input mode" -> showInputModeChooser(sessionId)
                         "Duplicate session" -> requestCredentialAndConnect(host)
                         "Browse files" -> {
                             val savedHost = hostStore.loadAll().firstOrNull { it.id == host.id }
@@ -3766,14 +3773,42 @@ class MainActivity : Activity() {
             }
             dialog.show()
         }
+        fun showQuickMenu(anchor: View) {
+            if (selectedSessionId != sessionId || sessionService !== service) return
+            PopupMenu(this, anchor).apply {
+                service.summaries().forEach { candidate ->
+                    menu.add("${candidate.hostName} · ${candidate.shortId} · ${candidate.status}").apply {
+                        isCheckable = true
+                        isChecked = candidate.sessionId == sessionId
+                        setOnMenuItemClickListener {
+                            if (selectedSessionId == sessionId && sessionService === service) {
+                                if (candidate.sessionId != sessionId) openSession(candidate.sessionId)
+                            }
+                            true
+                        }
+                    }
+                }
+                menu.add("Input mode…").setOnMenuItemClickListener {
+                    showInputModeChooser(sessionId)
+                    true
+                }
+                menu.add("Session settings…").setOnMenuItemClickListener { showControls(); true }
+                menu.add("Hosts").setOnMenuItemClickListener {
+                    if (selectedSessionId == sessionId) showHosts(disconnect = false)
+                    true
+                }
+                show()
+            }
+        }
         val hostname = ImageButton(this).apply {
-            contentDescription = "Terminal info and actions"
+            contentDescription = "Switch session and session settings"
             setImageResource(android.R.drawable.ic_menu_more)
             setColorFilter(primary)
             setPadding(dp(7), dp(7), dp(7), dp(7))
             background = roundedBackground(Color.argb(230, 26, 29, 36), 12)
             elevation = dp(6).toFloat()
-            setOnClickListener { showControls() }
+            setOnClickListener { showQuickMenu(it) }
+            setOnLongClickListener { showInputModeChooser(sessionId); true }
         }
         terminalFloatingMenu = titleRow
         titleRow.addView(hostname, LinearLayout.LayoutParams(dp(48), dp(48)))
@@ -3806,6 +3841,15 @@ class MainActivity : Activity() {
         val view = GhosttyTerminalView(this, terminal, terminalThemeStore.loadFontSize()).apply {
             isEnabled = false
             onTap = { revealTerminalChrome(sessionId) }
+            onRequestKeyboard = {
+                if (sessionId in textModeSessions) {
+                    terminalTextInput?.let { input ->
+                        input.requestFocus()
+                        getSystemService(InputMethodManager::class.java).showSoftInput(input, InputMethodManager.SHOW_IMPLICIT)
+                    }
+                    true
+                } else false
+            }
             if (keyboardBarConfig.holdSwipeEnabled) {
                 holdSwipeLabels = HoldSwipeDirection.entries.associateWith { direction ->
                     quickActionLabel(keyboardBarConfig.holdSwipeActions[direction].orEmpty())
@@ -3818,6 +3862,21 @@ class MainActivity : Activity() {
                         row,
                         anchorRow,
                     )
+                }
+                onQuickNavigation = { column, row, anchorRow ->
+                    val directions = HoldSwipeDirection.entries
+                    AlertDialog.Builder(this@MainActivity)
+                        .setTitle("Terminal actions")
+                        .setItems((listOf("Direct input", "Text mode") + directions.map {
+                            quickActionLabel(keyboardBarConfig.holdSwipeActions[it].orEmpty())
+                        }).toTypedArray()) { _, index ->
+                            if (selectedSessionId != sessionId || service.terminal(sessionId) !== terminal) return@setItems
+                            if (index < 2) setTextMode(sessionId, index == 1)
+                            else performHoldSwipeAction(sessionId,
+                                keyboardBarConfig.holdSwipeActions[directions[index - 2]].orEmpty(), column, row, anchorRow)
+                        }
+                        .setNegativeButton("Cancel", null)
+                        .show()
                 }
             }
             onInput = { input ->
@@ -3902,7 +3961,9 @@ class MainActivity : Activity() {
             addView(view, FrameLayout.LayoutParams(-1, -1))
             addView(toolbar.also { terminalChrome = it }, FrameLayout.LayoutParams(-1, -2, Gravity.TOP))
         }, LinearLayout.LayoutParams(-1, 0, 1f))
-        root.addView(createModifierBar(::showControls).also { modifierBar = it })
+        terminalTextInput?.text?.clear()
+        root.addView(createTextInputRow(sessionId, service, terminal).also { textInputRow = it })
+        root.addView(createModifierBar(::showQuickMenu).also { modifierBar = it })
         setContentView(root)
         view.refresh()
         updateModifierBarVisibility()
@@ -4050,7 +4111,7 @@ class MainActivity : Activity() {
             .show()
     }
 
-    private fun createModifierBar(onMenu: () -> Unit): View {
+    private fun createModifierBar(onMenu: (View) -> Unit): View {
         val row = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             setBackgroundColor(raised)
@@ -4062,16 +4123,114 @@ class MainActivity : Activity() {
             gravity = Gravity.CENTER_VERTICAL
             setBackgroundColor(raised)
             addView(ImageButton(this@MainActivity).apply {
-                contentDescription = "Terminal info and actions"
+                contentDescription = "Switch session and session settings"
                 setImageResource(android.R.drawable.ic_menu_more)
                 setColorFilter(primary)
                 setBackgroundColor(Color.TRANSPARENT)
-                setOnClickListener { onMenu() }
+                setOnClickListener { onMenu(it) }
+                setOnLongClickListener { selectedSessionId?.let(::showInputModeChooser); true }
             }, LinearLayout.LayoutParams(dp(48), dp(50)))
             addView(HorizontalScrollView(this@MainActivity).apply {
                 isHorizontalScrollBarEnabled = false
                 addView(row, ViewGroup.LayoutParams(-2, dp(50)))
             }, LinearLayout.LayoutParams(0, dp(50), 1f))
+        }
+    }
+
+    private fun showInputModeChooser(sessionId: String) {
+        if (selectedSessionId != sessionId || terminalView == null) return
+        val dialog = AlertDialog.Builder(this)
+            .setTitle("Input mode")
+            .setSingleChoiceItems(arrayOf("Direct input", "Text mode"), if (sessionId in textModeSessions) 1 else 0) { dialog, index ->
+                dialog.dismiss()
+                setTextMode(sessionId, index == 1)
+            }
+            .setNegativeButton("Cancel", null)
+            .create()
+        dialog.show()
+    }
+
+    private fun setTextMode(sessionId: String, enabled: Boolean) {
+        if (selectedSessionId != sessionId) return
+        if (enabled) textModeSessions += sessionId else textModeSessions -= sessionId
+        activeModifiers.clear()
+        lockedModifiers.clear()
+        renderModifierBarItems()
+        textInputRow?.visibility = if (enabled) View.VISIBLE else View.GONE
+        terminalTextInput?.text?.clear()
+        val target = if (enabled) terminalTextInput else terminalView
+        target?.requestFocus()
+        if (sessionService?.status(sessionId) == "Connected") {
+            target?.post { getSystemService(InputMethodManager::class.java).showSoftInput(target, InputMethodManager.SHOW_IMPLICIT) }
+        }
+    }
+
+    private fun createTextInputRow(sessionId: String, service: SshSessionService, terminal: GhosttyTerminal): View {
+        val input = EditText(this).apply {
+            contentDescription = "Terminal text input"
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
+            imeOptions = android.view.inputmethod.EditorInfo.IME_FLAG_NO_EXTRACT_UI or
+                android.view.inputmethod.EditorInfo.IME_FLAG_NO_PERSONALIZED_LEARNING
+            isSaveEnabled = false
+            importantForAutofill = View.IMPORTANT_FOR_AUTOFILL_NO_EXCLUDE_DESCENDANTS
+            setTextColor(primary)
+            textSize = 14f
+            minLines = 1
+            maxLines = 4
+            setPadding(dp(10), dp(6), dp(10), dp(6))
+            background = roundedBackground(surface, 8)
+            filters = arrayOf(android.text.InputFilter.LengthFilter(16_384))
+        }.also { terminalTextInput = it }
+        fun send(enter: Boolean) {
+            if (selectedSessionId != sessionId || sessionService !== service ||
+                service.terminal(sessionId) !== terminal || service.status(sessionId) != "Connected") return
+            val text = input.text.toString()
+            if (text.isEmpty() && !enter) return
+            // Encode the draft as paste (including bracketed-paste mode), followed by a distinct Enter event.
+            if (!terminal.isPasteSafe(text)) {
+                AlertDialog.Builder(this)
+                    .setTitle("Send multiple lines?")
+                    .setMessage("This text contains a newline or terminal control sequence.")
+                    .setNegativeButton("Cancel", null)
+                    .setPositiveButton("Send") { _, _ ->
+                        if (selectedSessionId == sessionId && sessionService === service &&
+                            service.terminal(sessionId) === terminal && service.status(sessionId) == "Connected" &&
+                            input.text.toString() == text) {
+                            service.send(sessionId, terminal.encodePaste(text) + if (enter) terminal.encodeKey("ENTER", "", 0) else byteArrayOf())
+                            input.text.clear()
+                        }
+                    }.show()
+            } else {
+                service.send(sessionId, terminal.encodePaste(text) + if (enter) terminal.encodeKey("ENTER", "", 0) else byteArrayOf())
+                input.text.clear()
+            }
+        }
+        val sendButton = barButton("Send + Enter") { send(true) }.apply {
+            contentDescription = "Send text and Enter. Hold for Send only or Insert newline."
+            setOnLongClickListener {
+                PopupMenu(this@MainActivity, this).apply {
+                    menu.add("Send only").setOnMenuItemClickListener { send(false); true }
+                    menu.add("Insert newline").setOnMenuItemClickListener {
+                        if (selectedSessionId == sessionId) {
+                            val start = input.selectionStart.coerceAtLeast(0)
+                            val end = input.selectionEnd.coerceAtLeast(0)
+                            input.text.replace(minOf(start, end), maxOf(start, end), "\n")
+                        }
+                        true
+                    }
+                    show()
+                }
+                true
+            }
+        }
+        return LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setBackgroundColor(raised)
+            setPadding(dp(6), dp(4), dp(6), dp(4))
+            addView(input, LinearLayout.LayoutParams(0, -2, 1f))
+            addView(sendButton, LinearLayout.LayoutParams(-2, dp(48)).apply { leftMargin = dp(6) })
+            visibility = if (sessionId in textModeSessions) View.VISIBLE else View.GONE
         }
     }
 
@@ -4478,7 +4637,15 @@ class MainActivity : Activity() {
             hardwareKeyModifiers.clear()
         }
         terminalView?.setInputEnabled(enabled)
-        if (enabled) terminalView?.requestFocus()
+        terminalTextInput?.isEnabled = enabled
+        textInputRow?.let { row ->
+            (row as ViewGroup).getChildAt(1).isEnabled = enabled
+        }
+        if (!enabled) terminalTextInput?.text?.clear()
+        if (enabled) {
+            if (selectedSessionId in textModeSessions) terminalTextInput?.requestFocus()
+            else terminalView?.requestFocus()
+        }
     }
 
     private fun isKeyboardBarItemVisible(item: KeyboardBarItem): Boolean =

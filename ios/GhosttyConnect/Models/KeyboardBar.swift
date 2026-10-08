@@ -485,7 +485,7 @@ struct KeyboardBarConfig: Codable, Equatable {
         modifiers: [.control]
     )
     static let defaultItems: [KeyboardBarItem] = [
-        .builtIn(.escape), .action(defaultControlB.id), .builtIn(.alt), .builtIn(.tab),
+        .builtIn(.escape), .builtIn(.control), .action(defaultControlB.id), .builtIn(.alt), .builtIn(.tab),
         .builtIn(.shift), .builtIn(.up), .builtIn(.down), .builtIn(.left), .builtIn(.right),
         .builtIn(.lastModifier),
     ]
@@ -620,6 +620,9 @@ struct KeyboardBarConfig: Codable, Equatable {
                 in: container,
                 debugDescription: "Unsupported keyboard bar configuration version."
             )
+        }
+        if items == Self.defaultItems.filter({ $0 != .builtIn(.control) }) {
+            items = Self.defaultItems
         }
     }
 

@@ -121,6 +121,28 @@ final class TerminalInputSessionTests: XCTestCase {
         await session.disconnect()
     }
 
+    func testDraftSubmissionKeepsBracketedPasteAndEnterInOneWrite() async throws {
+        guard TerminalEngineFactory.isAvailable else {
+            throw XCTSkip("GhosttyVt XCFramework is not installed")
+        }
+        let engine = try TerminalEngineFactory.make()
+        let transport = LifecycleTransport()
+        let session = TerminalSessionModel(transportFactory: { transport }, engineFactory: { engine })
+        await session.connect(to: testHost(), secret: "password")
+        engine.feed(Data("\u{1b}[?2004h".utf8))
+
+        session.paste("echo hello", appendEnter: true)
+        session.paste("draft only")
+        let written = await waitUntil { await transport.recordedWrites().count == 2 }
+        XCTAssertTrue(written)
+        let writes = await transport.recordedWrites()
+        XCTAssertEqual(writes, [
+            Data("\u{1b}[200~echo hello\u{1b}[201~\r".utf8),
+            Data("\u{1b}[200~draft only\u{1b}[201~".utf8),
+        ])
+        await session.disconnect()
+    }
+
     func testAllowedRemoteClipboardWriteAppliesImmediately() async throws {
         let transport = LifecycleTransport()
         let engine = InputTestEngine()

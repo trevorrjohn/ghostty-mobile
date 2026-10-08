@@ -177,6 +177,7 @@ object KeyboardBarCatalog {
 
     val defaultItems = listOf(
         keys.first { it.key == "ESCAPE" },
+        modifiers.first { it.modifiers.contains(KeyboardModifier.CONTROL) },
         controlB,
         modifiers.first { it.modifiers.contains(KeyboardModifier.ALT) },
         keys.first { it.key == "TAB" },

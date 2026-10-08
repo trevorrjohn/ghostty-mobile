@@ -259,13 +259,17 @@ final class TerminalSessionModel: ObservableObject {
         engine?.isPasteSafe(text) ?? false
     }
 
-    func paste(_ text: String) {
+    func paste(_ text: String, appendEnter: Bool = false) {
         guard let engine, let transport, let attemptID = connectionAttemptID, state == .connected else { return }
         let destination = activeDestination ?? "the remote host"
         engine.scrollToBottom()
         snapshot = try? engine.snapshot()
         let data: Data
-        do { data = try engine.encodePaste(text) }
+        do {
+            var encoded = try engine.encodePaste(text)
+            if appendEnter { encoded.append(try engine.encode(event: .key(.enter))) }
+            data = encoded
+        }
         catch {
             Task {
                 await finishAttempt(

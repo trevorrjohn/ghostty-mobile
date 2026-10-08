@@ -19,7 +19,11 @@ class KeyboardBarStore(context: Context) {
     fun load(): KeyboardBarConfig {
         if (!encryptedStore.exists(FILE_NAME)) return KeyboardBarConfig()
         val root = JSONObject(encryptedStore.read(FILE_NAME).toString(Charsets.UTF_8))
-        val items = decodeItems(root.getJSONArray("items"))
+        val storedItems = decodeItems(root.getJSONArray("items"))
+        val previousDefaults = KeyboardBarCatalog.defaultItems.filterNot {
+            it.type == KeyboardBarItemType.MODIFIER && KeyboardModifier.CONTROL in it.modifiers
+        }
+        val items = if (storedItems == previousDefaults) KeyboardBarCatalog.defaultItems else storedItems
         val combinations = decodeItems(root.optJSONArray("combinations") ?: JSONArray())
         val defaults = KeyboardBarConfig()
         val validHoldSwipeActions = HoldSwipeActions.builtIns.mapTo(mutableSetOf()) { it.first }.apply {
@@ -95,7 +99,7 @@ class KeyboardBarStore(context: Context) {
                 type = KeyboardBarItemType.valueOf(value.getString("type")),
                 key = value.optString("key").takeIf { !value.isNull("key") && it.isNotBlank() },
                 modifiers = modifiers,
-                titleContains = value.optString("titleContains").takeIf { it.isNotBlank() },
+                titleContains = value.optString("titleContains").takeIf { !value.isNull("titleContains") && it.isNotBlank() },
                 steps = steps,
             ))
         }

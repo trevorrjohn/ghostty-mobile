@@ -36,6 +36,19 @@ class KeyboardBarStoreTest {
     }
 
     @Test
+    fun previousDefaultLayoutGainsControlButCustomLayoutIsPreserved() {
+        val store = KeyboardBarStore(context)
+        val previousDefaults = KeyboardBarCatalog.defaultItems.filterNot {
+            it.type == KeyboardBarItemType.MODIFIER && KeyboardModifier.CONTROL in it.modifiers
+        }
+        store.save(KeyboardBarConfig(items = previousDefaults))
+        assertEquals(KeyboardBarCatalog.defaultItems, store.load().items)
+        val custom = listOf(KeyboardBarCatalog.controlB)
+        store.save(KeyboardBarConfig(items = custom))
+        assertEquals(custom, store.load().items)
+    }
+
+    @Test
     fun versionOneSettingsReceiveVolumeButtonDefaults() {
         encryptedStore.write(FILE_NAME, JSONObject().apply {
             put("version", 1)

@@ -4,7 +4,7 @@ import XCTest
 final class KeyboardBarTests: XCTestCase {
     func testDefaultsMatchSharedBasicOrder() {
         XCTAssertEqual(KeyboardBarConfig.defaults.items, [
-            .builtIn(.escape), .action(KeyboardBarConfig.defaultControlB.id), .builtIn(.alt), .builtIn(.tab),
+            .builtIn(.escape), .builtIn(.control), .action(KeyboardBarConfig.defaultControlB.id), .builtIn(.alt), .builtIn(.tab),
             .builtIn(.shift), .builtIn(.up), .builtIn(.down), .builtIn(.left), .builtIn(.right),
             .builtIn(.lastModifier),
         ])
@@ -21,6 +21,18 @@ final class KeyboardBarTests: XCTestCase {
         )
 
         XCTAssertEqual(decoded, config)
+    }
+
+    func testPreviousDefaultLayoutGainsControlButCustomLayoutIsPreserved() throws {
+        let previous = KeyboardBarConfig(
+            items: KeyboardBarConfig.defaultItems.filter { $0 != .builtIn(.control) },
+            actions: [KeyboardBarConfig.defaultControlB]
+        )
+        let migrated = try JSONDecoder().decode(KeyboardBarConfig.self, from: JSONEncoder().encode(previous))
+        XCTAssertEqual(migrated.items, KeyboardBarConfig.defaultItems)
+        let custom = KeyboardBarConfig(items: [.builtIn(.escape), .action(KeyboardBarConfig.defaultControlB.id)],
+                                       actions: [KeyboardBarConfig.defaultControlB])
+        XCTAssertEqual(try JSONDecoder().decode(KeyboardBarConfig.self, from: JSONEncoder().encode(custom)), custom)
     }
 
     func testMigratesVersionOneAndFiltersUnknownAndDuplicateItems() throws {

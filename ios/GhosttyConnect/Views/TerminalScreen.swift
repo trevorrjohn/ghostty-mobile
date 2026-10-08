@@ -22,6 +22,11 @@ struct TerminalScreen: View {
     @State private var showingHistorySearch = false
     @State private var historySearchMessage: String?
     @FocusState private var historySearchFocused: Bool
+    @State private var showingSessionSettings = false
+    @State private var showingInputModes = false
+    @State private var textDraft = ""
+    @State private var newlineInsertion = 0
+    @State private var pendingTextSubmission: TextSubmission?
 
     private var host: Host { record.host }
     private var session: TerminalSessionModel { record.session }
@@ -81,6 +86,9 @@ struct TerminalScreen: View {
                 }
             } else {
                 Spacer()
+            }
+            if record.textMode && session.state == .connected {
+                textInputBar
             }
             if model.keyboardBarConfig.enabled && keyboardFocused && session.state == .connected {
                 ScrollView(.horizontal, showsIndicators: false) {
@@ -146,7 +154,8 @@ struct TerminalScreen: View {
                 .opacity(session.snapshot?.viewport.isAtBottom == false ? 0 : 1)
                 .allowsHitTesting(session.snapshot?.viewport.isAtBottom != false)
             }
-            TerminalKeyboardCapture(
+            if !record.textMode {
+                TerminalKeyboardCapture(
                 isFocused: $keyboardFocused,
                 onInput: handleInput,
                 canCopy: session.snapshot?.hasSelection == true,
@@ -155,6 +164,7 @@ struct TerminalScreen: View {
             )
                 .frame(width: 1, height: 1)
                 .opacity(0.01)
+            }
         }
         .background(theme.background)
         .overlay(alignment: .top) {
@@ -165,41 +175,38 @@ struct TerminalScreen: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItemGroup(placement: .topBarTrailing) {
-                Button {
-                    keyboardFocused.toggle()
-                } label: {
-                    Image(systemName: "keyboard")
-                }
+                Image(systemName: record.textMode ? "text.cursor" : "keyboard")
+                .frame(minWidth: 44, minHeight: 44)
+                .contentShape(Rectangle())
+                .gesture(LongPressGesture(minimumDuration: 0.5).exclusively(before: TapGesture())
+                    .onEnded { result in
+                        switch result {
+                        case .first(true): showingInputModes = true
+                        case .second: keyboardFocused.toggle()
+                        default: break
+                        }
+                    })
+                .accessibilityAddTraits(.isButton)
+                .accessibilityAction { keyboardFocused.toggle() }
+                .accessibilityAction(named: "Change input mode") { showingInputModes = true }
                 .accessibilityLabel(keyboardFocused ? "Hide Keyboard" : "Show Keyboard")
+                .accessibilityHint("Hold to choose Direct input or Text mode")
                 .disabled(session.state != .connected)
 
                 Menu {
-                    if sessions.records.count > 1 {
-                        Menu("Switch Session", systemImage: "rectangle.2.swap") {
-                            ForEach(sessions.records.filter { $0.id != record.id }) { candidate in
-                                Button("\(candidate.host.name) · \(candidate.shortID)") {
+                    Section("Sessions") {
+                            ForEach(sessions.records) { candidate in
+                                Button {
+                                    textDraft = ""
                                     switchSession(candidate.id)
+                                } label: {
+                                    Label("\(candidate.host.name) · \(candidate.shortID) · \(candidate.status)",
+                                          systemImage: candidate.id == record.id ? "checkmark" : "terminal")
                                 }
                             }
-                        }
                     }
-                    Button("Browse files", systemImage: "folder") { showingFiles = true }
-                    Button("Search History", systemImage: "magnifyingglass") { openHistorySearch() }
-                    Button("Paste", systemImage: "doc.on.clipboard") { requestPaste() }
-                        .disabled(session.state != .connected)
-                    if session.snapshot?.hasSelection == true {
-                        Button("Copy Selection", systemImage: "doc.on.doc") { copySelection() }
-                        Button("Clear Selection", systemImage: "xmark") { session.clearSelection() }
-                    }
-                    Divider()
-                    Button("Disconnect") {
-                        Task {
-                            await sessions.close(id: record.id)
-                            dismiss()
-                        }
-                    }
-                    Button("Forget Host Key", role: .destructive) { model.forgetHostKey(for: host) }
-                        .disabled(!canForgetHostKey)
+                    Button("Input mode…", systemImage: "keyboard") { showingInputModes = true }
+                    Button("Session settings…", systemImage: "gearshape") { showingSessionSettings = true }
                 } label: {
                     Image(systemName: "ellipsis.circle")
                 }
@@ -211,16 +218,31 @@ struct TerminalScreen: View {
         .sheet(isPresented: $showingFiles) {
             NavigationStack { SFTPBrowserScreen(host: host) }
         }
+        .sheet(isPresented: $showingSessionSettings) { sessionSettings }
+        .confirmationDialog("Input mode", isPresented: $showingInputModes, titleVisibility: .visible) {
+            Button(record.textMode ? "Direct input" : "Direct input ✓") { setTextMode(false) }
+            Button(record.textMode ? "Text mode ✓" : "Text mode") { setTextMode(true) }
+        }
+        .alert(item: $pendingTextSubmission) { submission in
+            Alert(title: Text("Send multiple lines?"),
+                  message: Text("This text contains a newline or terminal control sequence."),
+                  primaryButton: .cancel(),
+                  secondaryButton: .default(Text("Send")) { submitText(submission) })
+        }
         .onDisappear {
             secret = ""
             keyboardFocused = false
             keyboardBarState.reset()
+            textDraft = ""
+            pendingTextSubmission = nil
         }
         .onChange(of: session.state) { _, state in
             if state == .connected { keyboardFocused = true }
             else {
                 keyboardFocused = false
                 keyboardBarState.reset()
+                textDraft = ""
+                pendingTextSubmission = nil
             }
         }
         .onChange(of: keyboardFocused) { _, focused in
@@ -301,6 +323,93 @@ struct TerminalScreen: View {
                 accept: { session.answerHostTrust(requestID: request.id, accepted: true) }
             )
         }
+    }
+
+    private var textInputBar: some View {
+        HStack(spacing: 6) {
+            TerminalTextInput(text: $textDraft, isFocused: keyboardFocused, insertNewline: newlineInsertion)
+                .background(Color.ghosttySurface, in: RoundedRectangle(cornerRadius: 8))
+            Button("Send + Enter") { requestTextSubmission(enter: true) }
+                .font(.caption.bold())
+                .frame(minHeight: 44)
+                .contextMenu {
+                    Button("Send only") { requestTextSubmission(enter: false) }
+                    Button("Insert newline") { newlineInsertion += 1 }
+                }
+                .accessibilityHint("Hold for Send only or Insert newline")
+                .accessibilityActions {
+                    Button("Send only") { requestTextSubmission(enter: false) }
+                    Button("Insert newline") { newlineInsertion += 1 }
+                }
+        }
+        .padding(6)
+        .background(Color.ghosttyRaised)
+    }
+
+    private var sessionSettings: some View {
+        NavigationStack {
+            Form {
+                Section("Connection") {
+                    Text(host.destination).textSelection(.enabled)
+                    Text("Session \(record.shortID) · \(record.status)")
+                    if let title = session.snapshot?.title, !title.isEmpty {
+                        LabeledContent("Remote title", value: title)
+                    }
+                }
+                Section("Terminal") {
+                    Button("Input mode") { showingSessionSettings = false; showingInputModes = true }
+                    Button("Search History") { showingSessionSettings = false; openHistorySearch() }
+                    Button("Paste") { showingSessionSettings = false; requestPaste() }
+                        .disabled(session.state != .connected)
+                    if session.snapshot?.hasSelection == true {
+                        Button("Copy Selection") { copySelection() }
+                        Button("Clear Selection") { session.clearSelection() }
+                    }
+                }
+                Section {
+                    Button("Browse files") { showingSessionSettings = false; showingFiles = true }
+                    Button("Disconnect", role: .destructive) {
+                        showingSessionSettings = false
+                        Task { await sessions.close(id: record.id); dismiss() }
+                    }
+                    Button("Forget Host Key", role: .destructive) { model.forgetHostKey(for: host) }
+                        .disabled(!canForgetHostKey)
+                }
+            }
+            .navigationTitle("Session settings")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .confirmationAction) {
+                Button("Done") { showingSessionSettings = false }
+            } }
+        }
+    }
+
+    private func setTextMode(_ enabled: Bool) {
+        textDraft = ""
+        keyboardBarState.reset()
+        record.textMode = enabled
+        keyboardFocused = session.state == .connected
+    }
+
+    private struct TextSubmission: Identifiable {
+        let id = UUID()
+        let text: String
+        let enter: Bool
+        let sessionID: UUID
+    }
+
+    private func requestTextSubmission(enter: Bool) {
+        guard session.state == .connected, !textDraft.isEmpty || enter else { return }
+        let submission = TextSubmission(text: textDraft, enter: enter, sessionID: record.id)
+        if session.isPasteSafe(textDraft) { submitText(submission) }
+        else { pendingTextSubmission = submission }
+    }
+
+    private func submitText(_ submission: TextSubmission) {
+        guard submission.sessionID == record.id, session.state == .connected,
+              textDraft == submission.text else { return }
+        session.paste(submission.text, appendEnter: submission.enter)
+        textDraft = ""
     }
 
     private var remoteClipboardBinding: Binding<TerminalClipboardWriteRequest?> {

@@ -38,7 +38,7 @@ configure<ApplicationExtension> {
     }
 
     signingConfigs {
-        getByName("debug") {
+        create("debugRepo") {
             storeFile = rootProject.file("debug.keystore")
             storePassword = "android"
             keyAlias = "androiddebugkey"
@@ -53,6 +53,9 @@ configure<ApplicationExtension> {
     }
 
     buildTypes {
+        getByName("debug") {
+            signingConfig = signingConfigs.getByName("debugRepo")
+        }
         getByName("release") {
             signingConfig = signingConfigs.getByName("release")
         }
