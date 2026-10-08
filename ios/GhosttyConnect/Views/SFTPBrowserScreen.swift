@@ -5,6 +5,8 @@ import UIKit
 
 struct SFTPBrowserScreen: View {
     let host: Host
+    var initialPath: String? = nil
+    var returnToHosts: (() -> Void)? = nil
     @EnvironmentObject private var app: AppModel
     @EnvironmentObject private var sessions: TerminalSessionRegistry
     @Environment(\.dismiss) private var dismiss
@@ -21,6 +23,7 @@ struct SFTPBrowserScreen: View {
     @State private var showingTerminal = false
     @State private var terminalSessionID: UUID?
     @State private var pendingUpload: SFTPPendingUpload?
+    @State private var showingRecent = false
 
     private var selectedKey: StoredKey? { app.key(for: host) }
     private var hostTrustBinding: Binding<HostTrustRequest?> {
@@ -37,19 +40,27 @@ struct SFTPBrowserScreen: View {
     var body: some View {
         VStack(spacing: 0) {
             addressBar
+            Picker("File browser section", selection: $showingRecent) {
+                Text("Files").tag(false)
+                Text("Recent").tag(true)
+            }
+            .pickerStyle(.segmented)
+            .padding(.horizontal, 12)
+            .padding(.bottom, 10)
             statusView
             if let transfer = browser.transfer { transferView(transfer) }
-            fileList
+            if showingRecent { recentLocations }
+            else { fileList }
         }
         .background(Color.ghosttySurface.ignoresSafeArea())
         .toolbar(.hidden, for: .navigationBar)
+        .toolbar(.hidden, for: .tabBar)
         .persistentSystemOverlays(.hidden)
         .simultaneousGesture(DragGesture(minimumDistance: 24).onEnded { gesture in
             guard gesture.startLocation.x <= 28,
                   gesture.translation.width >= 72,
                   abs(gesture.translation.width) > abs(gesture.translation.height) else { return }
-            if browser.canNavigateBack { Task { await browser.navigateBack() } }
-            else { dismiss() }
+            goToHosts()
         })
         .onAppear { requestConnection() }
         .onDisappear {
@@ -65,7 +76,7 @@ struct SFTPBrowserScreen: View {
             Button("Connect") {
                 let credential = secret
                 secret = ""
-                Task { await browser.connect(to: host, secret: credential, key: selectedKey) }
+                Task { await browser.connect(to: host, secret: credential, key: selectedKey, initialPath: initialPath) }
             }
             Button("Cancel", role: .cancel) { secret = "" }
         } message: {
@@ -102,7 +113,7 @@ struct SFTPBrowserScreen: View {
                 favorites: browser.favorites,
                 recent: browser.recentPaths,
                 toggleFavorite: browser.toggleCurrentFavorite,
-                navigate: { path in Task { await browser.navigate(to: path) } },
+                navigate: openLocation,
                 clearRecent: browser.clearRecentPaths
             )
         }
@@ -122,7 +133,7 @@ struct SFTPBrowserScreen: View {
         .sheet(isPresented: $showingTerminal) {
             if let terminalSessionID, let record = sessions.record(id: terminalSessionID) {
                 NavigationStack {
-                    TerminalScreen(record: record) { selectedID in
+                    TerminalScreen(record: record, showHosts: { showingTerminal = false; goToHosts() }) { selectedID in
                         self.terminalSessionID = selectedID
                     }
                     .id(record.id)
@@ -160,13 +171,27 @@ struct SFTPBrowserScreen: View {
             .textInputAutocapitalization(.never)
             .autocorrectionDisabled()
             .submitLabel(.go)
-            .onSubmit { Task { await browser.submitAddress() } }
+            .onSubmit {
+                guard browser.connected, browser.transfer == nil else { return }
+                showingRecent = false
+                Task { await browser.submitAddress() }
+            }
             .padding(.horizontal, 12)
-            .frame(height: 42)
+            .frame(height: 44)
             .background(Color.ghosttyRaised, in: RoundedRectangle(cornerRadius: 12))
             .accessibilityHint("Enter a path to navigate, or text to filter this directory")
+            Button("..") {
+                guard browser.connected, browser.transfer == nil else { return }
+                showingRecent = false
+                Task { await browser.navigateUp() }
+            }
+            .font(.system(.body, design: .monospaced).bold())
+            .frame(width: 44, height: 44)
+            .background(Color.ghosttyRaised, in: RoundedRectangle(cornerRadius: 12))
+            .accessibilityLabel("Go up one directory")
+            .disabled(!browser.connected || browser.path.isEmpty || browser.path == "/" || browser.transfer != nil)
             browserMenu
-                .frame(width: 42, height: 42)
+                .frame(width: 44, height: 44)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
@@ -229,6 +254,7 @@ struct SFTPBrowserScreen: View {
 
     private var browserMenu: some View {
         Menu {
+            Button("Hosts", systemImage: "server.rack") { goToHosts() }
             Button("Upload document", systemImage: "square.and.arrow.up") { showingImporter = true }
                 .disabled(!browser.connected || browser.transfer != nil)
             Button("New folder", systemImage: "folder.badge.plus") { showingNewFolder = true }
@@ -287,8 +313,50 @@ struct SFTPBrowserScreen: View {
         if host.authenticationType == .password || selectedKey?.requiresPassphrase == true {
             showingCredential = true
         } else {
-            Task { await browser.connect(to: host, secret: nil, key: selectedKey) }
+            Task { await browser.connect(to: host, secret: nil, key: selectedKey, initialPath: initialPath) }
         }
+    }
+
+    private func goToHosts() {
+        if let returnToHosts { returnToHosts() }
+        else { dismiss() }
+    }
+
+    private func openLocation(_ path: String) {
+        guard browser.connected, browser.transfer == nil else { return }
+        showingRecent = false
+        showingLocations = false
+        Task { await browser.navigate(to: path) }
+    }
+
+    private var recentLocations: some View {
+        List {
+            if !browser.path.isEmpty {
+                Section("Current directory") {
+                    Button("Open current folder") { openLocation(browser.path) }
+                    Text(browser.path).font(.system(.caption, design: .monospaced))
+                    Button(browser.favorites.contains(browser.path) ? "Remove current favorite" : "Favorite current folder") {
+                        browser.toggleCurrentFavorite()
+                    }
+                }
+            }
+            if !browser.favorites.isEmpty {
+                Section("Favorites") {
+                    ForEach(browser.favorites, id: \.self) { path in
+                        Button(path) { openLocation(path) }.font(.system(.body, design: .monospaced))
+                    }
+                }
+            }
+            Section("Recent folders") {
+                ForEach(browser.recentPaths.filter { !browser.favorites.contains($0) }, id: \.self) { path in
+                    Button(path) { openLocation(path) }.font(.system(.body, design: .monospaced))
+                }
+                if browser.recentPaths.isEmpty { Text("No recent folders yet.").foregroundStyle(.secondary) }
+                else { Button("Clear recent folders", role: .destructive) { browser.clearRecentPaths() } }
+            }
+        }
+        .scrollContentBackground(.hidden)
+        .disabled(!browser.connected || browser.transfer != nil)
     }
 
     private func open(_ entry: SFTPEntry) { download(entry, preview: true) }
@@ -397,7 +465,8 @@ private struct SFTPLocationsView: View {
         NavigationStack {
             List {
                 Section("Current directory") {
-                    Text(currentPath).font(.system(.body, design: .monospaced)).textSelection(.enabled)
+                    Button(currentPath) { dismiss(); navigate(currentPath) }
+                        .font(.system(.body, design: .monospaced))
                     Button(favorites.contains(currentPath) ? "Remove favorite" : "Add favorite") {
                         toggleFavorite()
                     }

@@ -3,6 +3,7 @@ import UIKit
 
 struct TerminalScreen: View {
     @ObservedObject var record: TerminalSessionRecord
+    var showHosts: (() -> Void)? = nil
     let switchSession: (UUID) -> Void
     @EnvironmentObject private var model: AppModel
     @EnvironmentObject private var sessions: TerminalSessionRegistry
@@ -22,11 +23,11 @@ struct TerminalScreen: View {
     @State private var showingHistorySearch = false
     @State private var historySearchMessage: String?
     @FocusState private var historySearchFocused: Bool
-    @State private var showingSessionSettings = false
     @State private var showingInputModes = false
     @State private var textDraft = ""
     @State private var newlineInsertion = 0
-    @State private var pendingTextSubmission: TextSubmission?
+    @State private var showingQuickNavigation = false
+    @State private var filesInitialPath: String?
 
     private var host: Host { record.host }
     private var session: TerminalSessionModel { record.session }
@@ -58,7 +59,8 @@ struct TerminalScreen: View {
                                     contextualSelection = ContextualSelection(kind: .word)
                                 }
                             },
-                            onMagnify: updateFontSize(_:commit:)
+                            onMagnify: updateFontSize(_:commit:),
+                            onQuickNavigation: snapshot.hasSelection ? nil : { showingQuickNavigation = true }
                         )
                         .accessibilityAction(named: "Scroll backward") {
                             session.scrollViewport(byRows: -max(1, snapshot.rows - 1))
@@ -66,6 +68,8 @@ struct TerminalScreen: View {
                         .accessibilityAction(named: "Scroll forward") {
                             session.scrollViewport(byRows: max(1, snapshot.rows - 1))
                         }
+                        .accessibilityAction(named: "Terminal actions") { showingQuickNavigation = true }
+                        .accessibilityAction(named: "Session settings") { record.showingSettings = true }
 
                         if !snapshot.viewport.isAtBottom {
                             Button {
@@ -93,6 +97,7 @@ struct TerminalScreen: View {
             if model.keyboardBarConfig.enabled && keyboardFocused && session.state == .connected {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 8) {
+                        if !model.keyboardBarConfig.items.contains(.builtIn(.escape)) { inputModeToggle }
                         ForEach(model.keyboardBarConfig.items) { item in
                             HStack(spacing: 4) {
                                 Text(keyboardBarLabel(item))
@@ -145,6 +150,7 @@ struct TerminalScreen: View {
                                         Button("Lock modifier") { lockKeyboardBarItem(item) }
                                     }
                                 }
+                            if item == .builtIn(.escape) { inputModeToggle }
                         }
                     }
                     .padding(.horizontal, 10)
@@ -173,6 +179,7 @@ struct TerminalScreen: View {
         .persistentSystemOverlays(session.state == .connected ? .hidden : .automatic)
         .navigationTitle(host.name)
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar(.hidden, for: .tabBar)
         .toolbar {
             ToolbarItemGroup(placement: .topBarTrailing) {
                 Image(systemName: record.textMode ? "text.cursor" : "keyboard")
@@ -193,48 +200,43 @@ struct TerminalScreen: View {
                 .accessibilityHint("Hold to choose Direct input or Text mode")
                 .disabled(session.state != .connected)
 
-                Menu {
-                    Section("Sessions") {
-                            ForEach(sessions.records) { candidate in
-                                Button {
-                                    textDraft = ""
-                                    switchSession(candidate.id)
-                                } label: {
-                                    Label("\(candidate.host.name) · \(candidate.shortID) · \(candidate.status)",
-                                          systemImage: candidate.id == record.id ? "checkmark" : "terminal")
-                                }
-                            }
-                    }
-                    Button("Input mode…", systemImage: "keyboard") { showingInputModes = true }
-                    Button("Session settings…", systemImage: "gearshape") { showingSessionSettings = true }
-                } label: {
-                    Image(systemName: "ellipsis.circle")
-                }
             }
         }
         .onAppear {
             if !record.hasRequestedConnection { requestConnection(isReconnect: false) }
         }
         .sheet(isPresented: $showingFiles) {
-            NavigationStack { SFTPBrowserScreen(host: host) }
+            NavigationStack {
+                if let savedHost = model.hosts.first(where: { $0.id == host.id }) {
+                    SFTPBrowserScreen(host: savedHost, initialPath: filesInitialPath, returnToHosts: {
+                        showingFiles = false
+                        goToHosts()
+                    })
+                }
+            }
         }
-        .sheet(isPresented: $showingSessionSettings) { sessionSettings }
+        .sheet(isPresented: $record.showingSettings) { sessionSettings }
         .confirmationDialog("Input mode", isPresented: $showingInputModes, titleVisibility: .visible) {
             Button(record.textMode ? "Direct input" : "Direct input ✓") { setTextMode(false) }
             Button(record.textMode ? "Text mode ✓" : "Text mode") { setTextMode(true) }
         }
-        .alert(item: $pendingTextSubmission) { submission in
-            Alert(title: Text("Send multiple lines?"),
-                  message: Text("This text contains a newline or terminal control sequence."),
-                  primaryButton: .cancel(),
-                  secondaryButton: .default(Text("Send")) { submitText(submission) })
+        .confirmationDialog("Terminal actions", isPresented: $showingQuickNavigation, titleVisibility: .visible) {
+            Button(record.textMode ? "Switch to Direct input" : "Switch to Text mode") { setTextMode(!record.textMode) }
+            Button("Files") { openFiles() }
+            Button("Hosts") { goToHosts() }
+            ForEach(sessions.records.filter { $0.id != record.id && $0.session.state == .connected }) { candidate in
+                Button("\(candidate.host.name) · \(candidate.shortID)") {
+                    guard candidate.session.state == .connected else { return }
+                    textDraft = ""
+                    switchSession(candidate.id)
+                }
+            }
         }
         .onDisappear {
             secret = ""
             keyboardFocused = false
             keyboardBarState.reset()
             textDraft = ""
-            pendingTextSubmission = nil
         }
         .onChange(of: session.state) { _, state in
             if state == .connected { keyboardFocused = true }
@@ -242,7 +244,6 @@ struct TerminalScreen: View {
                 keyboardFocused = false
                 keyboardBarState.reset()
                 textDraft = ""
-                pendingTextSubmission = nil
             }
         }
         .onChange(of: keyboardFocused) { _, focused in
@@ -329,9 +330,12 @@ struct TerminalScreen: View {
         HStack(spacing: 6) {
             TerminalTextInput(text: $textDraft, isFocused: keyboardFocused, insertNewline: newlineInsertion)
                 .background(Color.ghosttySurface, in: RoundedRectangle(cornerRadius: 8))
-            Button("Send + Enter") { requestTextSubmission(enter: true) }
+            Button { requestTextSubmission(enter: true) } label: {
+                Image(systemName: "paperplane.fill").frame(width: 44, height: 44)
+            }
                 .font(.caption.bold())
-                .frame(minHeight: 44)
+                .background(Color.ghosttySurface, in: RoundedRectangle(cornerRadius: 8))
+                .accessibilityLabel("Send text and Enter")
                 .contextMenu {
                     Button("Send only") { requestTextSubmission(enter: false) }
                     Button("Insert newline") { newlineInsertion += 1 }
@@ -357,9 +361,9 @@ struct TerminalScreen: View {
                     }
                 }
                 Section("Terminal") {
-                    Button("Input mode") { showingSessionSettings = false; showingInputModes = true }
-                    Button("Search History") { showingSessionSettings = false; openHistorySearch() }
-                    Button("Paste") { showingSessionSettings = false; requestPaste() }
+                    Button("Input mode") { record.showingSettings = false; showingInputModes = true }
+                    Button("Search History") { record.showingSettings = false; openHistorySearch() }
+                    Button("Paste") { record.showingSettings = false; requestPaste() }
                         .disabled(session.state != .connected)
                     if session.snapshot?.hasSelection == true {
                         Button("Copy Selection") { copySelection() }
@@ -367,9 +371,9 @@ struct TerminalScreen: View {
                     }
                 }
                 Section {
-                    Button("Browse files") { showingSessionSettings = false; showingFiles = true }
+                    Button("Browse files") { record.showingSettings = false; openFiles() }
                     Button("Disconnect", role: .destructive) {
-                        showingSessionSettings = false
+                        record.showingSettings = false
                         Task { await sessions.close(id: record.id); dismiss() }
                     }
                     Button("Forget Host Key", role: .destructive) { model.forgetHostKey(for: host) }
@@ -379,7 +383,7 @@ struct TerminalScreen: View {
             .navigationTitle("Session settings")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .confirmationAction) {
-                Button("Done") { showingSessionSettings = false }
+                Button("Done") { record.showingSettings = false }
             } }
         }
     }
@@ -389,6 +393,37 @@ struct TerminalScreen: View {
         keyboardBarState.reset()
         record.textMode = enabled
         keyboardFocused = session.state == .connected
+    }
+
+    private var inputModeToggle: some View {
+        Button("Text") { setTextMode(!record.textMode) }
+            .font(.system(.caption2, design: .monospaced).weight(.semibold))
+            .frame(minWidth: 44, minHeight: 44)
+            .foregroundStyle(record.textMode ? Color.ghosttySurface : Color.ghosttyAccent)
+            .background(record.textMode ? Color.ghosttyAccent : Color.clear, in: RoundedRectangle(cornerRadius: 7))
+            .accessibilityLabel(record.textMode ? "Text mode. Switch to Direct input" : "Direct input. Switch to Text mode")
+            .accessibilityValue(record.textMode ? "Text mode on" : "Text mode off")
+            .accessibilityAddTraits(record.textMode ? .isSelected : [])
+    }
+
+    private func openFiles() {
+        guard let savedHost = model.hosts.first(where: { $0.id == host.id }) else {
+            model.alertMessage = "This saved host was removed. Return to host management to browse files."
+            return
+        }
+        guard savedHost.authenticationType != .sshKey || model.key(for: savedHost) != nil else {
+            model.alertMessage = "The selected SSH identity is unavailable. Edit the saved host first."
+            return
+        }
+        filesInitialPath = terminalDirectoryPath(session.snapshot?.workingDirectory)
+        showingFiles = true
+    }
+
+    private func goToHosts() {
+        textDraft = ""
+        keyboardFocused = false
+        if let showHosts { showHosts() }
+        else { dismiss() }
     }
 
     private struct TextSubmission: Identifiable {
@@ -401,8 +436,7 @@ struct TerminalScreen: View {
     private func requestTextSubmission(enter: Bool) {
         guard session.state == .connected, !textDraft.isEmpty || enter else { return }
         let submission = TextSubmission(text: textDraft, enter: enter, sessionID: record.id)
-        if session.isPasteSafe(textDraft) { submitText(submission) }
-        else { pendingTextSubmission = submission }
+        submitText(submission)
     }
 
     private func submitText(_ submission: TextSubmission) {

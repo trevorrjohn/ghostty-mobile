@@ -45,7 +45,7 @@ final class SFTPBrowserModel: ObservableObject {
 
     var canNavigateBack: Bool { !pathHistory.isEmpty }
 
-    func connect(to host: Host, secret: String?, key: StoredKey?) async {
+    func connect(to host: Host, secret: String?, key: StoredKey?, initialPath: String? = nil) async {
         guard transport == nil else { return }
         let credential: SSHCredential
         switch host.authenticationType {
@@ -87,7 +87,7 @@ final class SFTPBrowserModel: ObservableObject {
                 await transport.disconnect()
                 return
             }
-            try await load(path: ".")
+            try await load(path: initialPath ?? ".")
         } catch {
             await failConnection(error, host: host, id: id, transport: transport)
         }
@@ -111,10 +111,12 @@ final class SFTPBrowserModel: ObservableObject {
     }
 
     func navigate(to requestedPath: String) async {
-        guard transport != nil else { return }
+        guard connected, transfer == nil else { return }
         let previousPath = path
         do {
-            try await load(path: requestedPath)
+            let target = requestedPath.hasPrefix("/") || path.isEmpty
+                ? requestedPath : remoteChildPath(parent: path, name: requestedPath)
+            try await load(path: target)
             if !previousPath.isEmpty, previousPath != path {
                 pathHistory.append(previousPath)
                 pathHistory = Array(pathHistory.suffix(100))
@@ -314,9 +316,10 @@ final class SFTPBrowserModel: ObservableObject {
     }
 
     private func load(path requestedPath: String) async throws {
-        guard let transport else { throw SFTPBrowserError.notConnected }
+        guard let transport, let id = connectionID else { throw SFTPBrowserError.notConnected }
         status = .loading
         let directory = try await transport.list(path: requestedPath)
+        guard connectionID == id else { throw SFTPBrowserError.notConnected }
         path = directory.path
         entries = directory.entries
         addressText = directory.path

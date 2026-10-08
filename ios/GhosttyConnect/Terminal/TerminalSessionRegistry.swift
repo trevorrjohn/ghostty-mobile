@@ -10,6 +10,7 @@ final class TerminalSessionRecord: ObservableObject, Identifiable {
     @Published var hasRequestedConnection = false
     @Published var searchQuery = ""
     @Published var textMode = false
+    @Published var showingSettings = false
 
     private var observation: AnyCancellable?
 

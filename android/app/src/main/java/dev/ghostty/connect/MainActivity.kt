@@ -118,6 +118,7 @@ import dev.ghostty.connect.sftp.SftpSortMode
 import dev.ghostty.connect.sftp.filterAndSortSftpEntries
 import dev.ghostty.connect.sftp.remoteChildNameError
 import dev.ghostty.connect.sftp.remoteFolderPath
+import dev.ghostty.connect.sftp.terminalDirectoryPath
 import dev.ghostty.connect.terminal.SshSessionService
 import dev.ghostty.connect.terminal.AuthenticationChallenge
 import dev.ghostty.connect.terminal.ContextualSelection
@@ -173,6 +174,7 @@ class MainActivity : Activity() {
         val host: Host,
         val credential: CharArray,
         val unlockedPrivateKey: ByteArray?,
+        val initialPath: String?,
     )
     private data class PendingKeyImport(val name: String, val privateKey: CharArray)
     private data class RetainedConnections(
@@ -232,7 +234,6 @@ class MainActivity : Activity() {
     private var terminalBackgroundColor = Color.BLACK
     private var terminalRetryButton: Button? = null
     private var terminalChrome: View? = null
-    private var terminalFloatingMenu: View? = null
     private var terminalChromeFadeRunnable: Runnable? = null
     private var terminalView: GhosttyTerminalView? = null
     private val textModeSessions = mutableSetOf<String>()
@@ -516,7 +517,7 @@ class MainActivity : Activity() {
             val openBrowser = browserVisible || pendingBrowserConnection != null
             pendingBrowserConnection?.let { pending ->
                 pendingBrowserConnection = null
-                service.connect(pending.browserId, pending.host, pending.credential, pending.unlockedPrivateKey)
+                service.connect(pending.browserId, pending.host, pending.credential, pending.unlockedPrivateKey, pending.initialPath)
                 selectedBrowserId = pending.browserId
             }
             selectedBrowserId?.let(service::state)?.takeIf { openBrowser }?.let {
@@ -774,7 +775,6 @@ class MainActivity : Activity() {
         terminalTextInput?.text?.clear()
         terminalTextInput = null
         textInputRow = null
-        terminalFloatingMenu = null
         shellIntegrationNotice = null
         cancelShellIntegrationNotice()
         editorKeySelection = null
@@ -786,22 +786,58 @@ class MainActivity : Activity() {
         terminalMouseTracking = false
         previewTerminal?.close()
         previewTerminal = null
-        val root = vertical(24)
-        root.addView(label("Seance Shell", 28f, primary, Typeface.BOLD))
-        root.addView(label("A fast, native SSH terminal", 15f, secondary).margins(bottom = 28))
+        val root = vertical(20)
+        val header = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        header.addView(vertical(0).apply {
+            addView(label("Seance Shell", 28f, primary, Typeface.BOLD))
+            addView(label("Your remote workspace", 14f, secondary).margins(top = 4))
+        }, LinearLayout.LayoutParams(0, -2, 1f))
+        header.addView(indexMenuButton("App menu") { anchor ->
+            PopupMenu(this, anchor).apply {
+                menu.add("Settings").setOnMenuItemClickListener { showKeyboardSettings(); true }
+                menu.add("SSH identities").setOnMenuItemClickListener { showSshIdentities(); true }
+                menu.add("Add SSH key").setOnMenuItemClickListener { showKeyImportDialog(); true }
+                menu.add("Record feedback").setOnMenuItemClickListener { showFeedbackDialog("Hosts"); true }
+                menu.add("Ghostty renderer preview").setOnMenuItemClickListener { showGhosttyPreview(); true }
+                show()
+            }
+        }, LinearLayout.LayoutParams(dp(48), dp(48)))
+        root.addView(header.margins(bottom = 24))
+        val hostSection = vertical(0)
+        hostSection.addView(LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            addView(label("Hosts", 19f, primary, Typeface.BOLD), LinearLayout.LayoutParams(0, -2, 1f))
+            addView(compactButton("+ Add host") { showHostEditor() }, LinearLayout.LayoutParams(-2, dp(48)))
+        }.margins(bottom = 12))
+        root.addView(hostSection)
         val activeSessions = sessionService?.summaries().orEmpty()
         if (activeSessions.isNotEmpty()) {
             val sessionsPerHost = activeSessions.groupingBy { it.hostId }.eachCount()
-            root.addView(label("Active sessions", 20f, primary, Typeface.BOLD).margins(bottom = 10))
+            root.addView(label("Terminal sessions", 19f, primary, Typeface.BOLD).margins(top = 12, bottom = 10))
             activeSessions.forEach { session ->
                 val duplicateHostSession = sessionsPerHost.getValue(session.hostId) > 1
-                val row = vertical(12).apply { setBackgroundColor(raised) }
-                row.addView(label(
+                val row = vertical(16).apply { background = roundedBackground(raised, 18) }
+                val heading = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+                heading.addView(label(
                     if (duplicateHostSession) "${session.hostName} · ${session.shortId}" else session.hostName,
                     17f,
                     primary,
                     Typeface.BOLD,
-                ))
+                ), LinearLayout.LayoutParams(0, -2, 1f))
+                heading.addView(indexMenuButton("Session actions for ${session.hostName} ${session.shortId}") { anchor ->
+                    PopupMenu(this, anchor).apply {
+                        sessionService?.host(session.sessionId)?.let { host ->
+                            menu.add("Duplicate session").setOnMenuItemClickListener { requestCredentialAndConnect(host); true }
+                        }
+                        menu.add("Disconnect").setOnMenuItemClickListener { sessionService?.disconnect(session.sessionId); true }
+                        show()
+                    }
+                }, LinearLayout.LayoutParams(dp(48), dp(48)))
+                row.addView(heading)
                 row.addView(label("${session.status} · ${session.destination}", 13f, secondary).also {
                     hostSessionStatusViews[session.sessionId] = it
                 })
@@ -813,40 +849,66 @@ class MainActivity : Activity() {
                     contentDescription = "Session ${session.shortId} duration"
                     start()
                 })
-                val actions = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-                actions.addView(compactButton("Open") { openSession(session.sessionId) })
+                val actions = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+                actions.addView(indexActionButton("Terminal", R.drawable.ic_terminal, true) { openSession(session.sessionId) },
+                    LinearLayout.LayoutParams(0, dp(48), 1f))
                 sessionService?.host(session.sessionId)?.let { host ->
-                    actions.addView(compactButton("Duplicate session") { requestCredentialAndConnect(host) })
+                    actions.addView(indexActionButton("Files", R.drawable.ic_sftp_folder, false) {
+                        val savedHost = hostStore.loadAll().firstOrNull { it.id == host.id }
+                        if (savedHost == null) {
+                            toast("This saved host was removed. Return to host management to browse files.")
+                            return@indexActionButton
+                        }
+                        if (savedHost.authenticationType == AuthenticationType.SSH_KEY &&
+                            savedHost.identityId?.let(keyStore::identity) == null) {
+                            toast("The selected SSH identity is unavailable. Edit the saved host first.")
+                            return@indexActionButton
+                        }
+                        val path = sessionService?.terminal(session.sessionId)?.snapshot()?.pwd?.let(::terminalDirectoryPath)
+                        requestCredentialAndBrowse(savedHost, path)
+                    }, LinearLayout.LayoutParams(0, dp(48), 1f).apply { marginStart = dp(8) })
                 }
-                actions.addView(compactButton("Retry / Reauthenticate") {
+                row.addView(actions.margins(top = 12))
+                row.addView(compactButton("Retry / Reauthenticate") {
                     reauthenticate(session.sessionId)
                 }.apply {
                     visibility = if (session.canRetry) View.VISIBLE else View.GONE
                     hostSessionRetryButtons[session.sessionId] = this
-                })
-                actions.addView(compactButton("Disconnect") {
-                    sessionService?.disconnect(session.sessionId)
-                })
-                row.addView(actions.margins(top = 8))
+                }.margins(top = 8))
                 root.addView(row.margins(bottom = 12))
             }
-            root.addView(label("Hosts", 20f, primary, Typeface.BOLD).margins(top = 12, bottom = 10))
         }
         val activeBrowsers = sftpService?.states().orEmpty()
         if (activeBrowsers.isNotEmpty()) {
-            root.addView(label("File browsers", 20f, primary, Typeface.BOLD).margins(top = 12, bottom = 10))
+            root.addView(label("File browsers", 19f, primary, Typeface.BOLD).margins(top = 12, bottom = 10))
             activeBrowsers.forEach { browser ->
-                val row = vertical(12).apply { setBackgroundColor(raised) }
-                row.addView(label(browser.hostName, 17f, primary, Typeface.BOLD))
-                row.addView(label("${browser.status} · ${browser.path ?: "Remote files"}", 13f, secondary))
-                row.addView(compactButton("Open") { showFileBrowser(browser.browserId) }.margins(top = 8))
-                row.addView(compactButton("Close") {
-                    if (browser.transfer?.status == SftpTransferStatus.RUNNING) showFileBrowser(browser.browserId)
-                    else {
-                        sftpService?.close(browser.browserId)
-                        showHosts(disconnect = false)
+                val row = vertical(16).apply { background = roundedBackground(raised, 18) }
+                val heading = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+                heading.addView(label(browser.hostName, 17f, primary, Typeface.BOLD), LinearLayout.LayoutParams(0, -2, 1f))
+                heading.addView(indexMenuButton("File browser actions for ${browser.hostName}") { anchor ->
+                    PopupMenu(this, anchor).apply {
+                        menu.add("Close file browser").setOnMenuItemClickListener {
+                            val current = sftpService?.state(browser.browserId)
+                            if (current?.transfer?.status == SftpTransferStatus.RUNNING) showFileBrowser(browser.browserId)
+                            else {
+                                sftpService?.close(browser.browserId)
+                                showHosts(disconnect = false)
+                            }
+                            true
+                        }
+                        show()
                     }
-                }.margins(top = 4))
+                }, LinearLayout.LayoutParams(dp(48), dp(48)))
+                row.addView(heading)
+                row.addView(label("${browser.status} · ${browser.path ?: "Remote files"}", 13f, secondary))
+                val actions = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+                actions.addView(indexActionButton("Files", R.drawable.ic_sftp_folder, true) { showFileBrowser(browser.browserId) },
+                    LinearLayout.LayoutParams(0, dp(48), 1f))
+                sftpService?.host(browser.browserId)?.let { host ->
+                    actions.addView(indexActionButton("Terminal", R.drawable.ic_terminal, false) { requestCredentialAndConnect(host) },
+                        LinearLayout.LayoutParams(0, dp(48), 1f).apply { marginStart = dp(8) })
+                }
+                row.addView(actions.margins(top = 12))
                 root.addView(row.margins(bottom = 12))
             }
         }
@@ -862,32 +924,45 @@ class MainActivity : Activity() {
         val hosts = identityAndHosts.second
         hosts.forEach { host ->
             val identity = host.identityId?.let(identitiesById::get)
-            val card = vertical(18).apply { setBackgroundColor(raised) }
-            card.addView(label(host.name, 20f, primary, Typeface.BOLD))
-            card.addView(label(host.destination, 14f, secondary))
+            val card = vertical(16).apply { background = roundedBackground(raised, 20) }
+            val heading = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+            heading.addView(vertical(0).apply {
+                setBackgroundColor(Color.TRANSPARENT)
+                addView(label(host.name, 20f, primary, Typeface.BOLD))
+                addView(label(host.destination, 13f, secondary).margins(top = 4))
+            }, LinearLayout.LayoutParams(0, -2, 1f))
+            heading.addView(indexMenuButton("Host actions for ${host.name}") { anchor ->
+                PopupMenu(this, anchor).apply {
+                    menu.add("Edit host").setOnMenuItemClickListener { showHostEditor(host.id); true }
+                    menu.add("Duplicate host").setOnMenuItemClickListener {
+                        val duplicate = host.duplicate(UUID.randomUUID().toString(), hosts.map(Host::name))
+                        showHostEditor(draft = duplicate)
+                        true
+                    }
+                    if (terminalStateStore.has(host.id)) {
+                        menu.add("Last session archive").setOnMenuItemClickListener { showArchivedTerminal(host); true }
+                    }
+                    show()
+                }
+            }, LinearLayout.LayoutParams(dp(48), dp(48)))
+            card.addView(heading)
             card.addView(label(when (host.authenticationType) {
                 AuthenticationType.PASSWORD -> "Password"
                 AuthenticationType.SSH_KEY -> identity?.let { "SSH key · ${it.name}" } ?: "SSH key unavailable"
                 AuthenticationType.TAILSCALE_SSH -> "Tailscale SSH"
-            }, 14f, if (host.authenticationType == AuthenticationType.SSH_KEY && identity == null) Color.RED else accent).margins(top = 8))
-            card.addView(button("Terminal") {
+            }, 12f, if (host.authenticationType == AuthenticationType.SSH_KEY && identity == null) Color.RED else secondary).margins(top = 8))
+            val actions = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+            actions.addView(indexActionButton("Terminal", R.drawable.ic_terminal, true) {
                 if (host.authenticationType == AuthenticationType.SSH_KEY && identity == null) {
                     toast("Edit this host and select an available SSH identity.")
                 } else requestCredentialAndConnect(host)
-            }.margins(top = 10))
-            card.addView(button("Files", secondary) {
+            }, LinearLayout.LayoutParams(0, dp(52), 1f))
+            actions.addView(indexActionButton("Files", R.drawable.ic_sftp_folder, false) {
                 if (host.authenticationType == AuthenticationType.SSH_KEY && identity == null) {
                     toast("Edit this host and select an available SSH identity.")
                 } else requestCredentialAndBrowse(host)
-            }.margins(top = 8))
-            card.addView(button("Edit", secondary) { showHostEditor(host.id) }.margins(top = 8))
-            card.addView(button("Duplicate host", secondary) {
-                val duplicate = host.duplicate(UUID.randomUUID().toString(), hosts.map(Host::name))
-                showHostEditor(draft = duplicate)
-            }.margins(top = 8))
-            if (terminalStateStore.has(host.id)) {
-                card.addView(button("Last session", secondary) { showArchivedTerminal(host) }.margins(top = 8))
-            }
+            }, LinearLayout.LayoutParams(0, dp(52), 1f).apply { marginStart = dp(8) })
+            card.addView(actions.margins(top = 16))
             card.setOnClickListener {
                 if (host.authenticationType == AuthenticationType.SSH_KEY && identity == null) {
                     toast("Edit this host and select an available SSH identity.")
@@ -895,16 +970,15 @@ class MainActivity : Activity() {
                     requestCredentialAndConnect(host)
                 }
             }
-            root.addView(card.margins(bottom = 16))
+            hostSection.addView(card.margins(bottom = 12))
         }
-        root.addView(button(if (hosts.isEmpty()) "Add your first host" else "Add host") { showHostEditor() })
-        root.addView(button("Add SSH key", secondary) { showKeyImportDialog() }.margins(top = 10))
-        root.addView(button("Manage SSH identities", secondary) { showSshIdentities() }.margins(top = 10))
-        root.addView(button("Record feedback", secondary) { showFeedbackDialog("Hosts") }.margins(top = 10))
-        root.addView(button("Settings", secondary) { showKeyboardSettings() }.margins(top = 10))
-        root.addView(button("Ghostty renderer preview", secondary) { showGhosttyPreview() }.margins(top = 10))
-        if (identities.isNotEmpty()) {
-            root.addView(label("Imported keys: ${identities.joinToString { it.name }}", 13f, secondary).margins(top = 14))
+        if (hosts.isEmpty()) {
+            hostSection.addView(vertical(24).apply {
+                background = roundedBackground(raised, 20)
+                addView(label("Your first connection", 20f, primary, Typeface.BOLD))
+                addView(label("Save a host to open its terminal or browse its files.", 14f, secondary).margins(top = 8))
+                addView(button("Add your first host") { showHostEditor() }.margins(top = 16))
+            }.margins(bottom = 12))
         }
         setContentView(scroll(root))
     }
@@ -1351,8 +1425,8 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun requestCredentialAndBrowse(host: Host) = requestCredential(host) { credential, privateKey ->
-        startFileBrowser(host, credential, privateKey)
+    private fun requestCredentialAndBrowse(host: Host, initialPath: String? = null) = requestCredential(host) { credential, privateKey ->
+        startFileBrowser(host, credential, privateKey, initialPath)
     }
 
     private fun requestCredential(host: Host, connect: (CharArray, ByteArray?) -> Unit) {
@@ -2773,7 +2847,7 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun startFileBrowser(host: Host, credential: CharArray, unlockedPrivateKey: ByteArray? = null) {
+    private fun startFileBrowser(host: Host, credential: CharArray, unlockedPrivateKey: ByteArray? = null, initialPath: String? = null) {
         if (pendingBrowserConnection != null) {
             credential.fill('\u0000')
             unlockedPrivateKey?.fill(0)
@@ -2782,7 +2856,8 @@ class MainActivity : Activity() {
         }
         val browserId = SftpBrowserService.newBrowserId()
         selectedBrowserId = browserId
-        pendingBrowserConnection = PendingBrowserConnection(browserId, host, credential, unlockedPrivateKey)
+        pendingBrowserConnection = PendingBrowserConnection(browserId, host, credential, unlockedPrivateKey, initialPath)
+        sftpShowingRecent = false
         shouldBindSftp = true
         if (runCatching {
             startForegroundService(Intent(this, SftpBrowserService::class.java)
@@ -2802,7 +2877,7 @@ class MainActivity : Activity() {
                 credential.fill('\u0000')
                 unlockedPrivateKey?.fill(0)
             } else {
-                service.connect(browserId, host, credential, unlockedPrivateKey)
+                service.connect(browserId, host, credential, unlockedPrivateKey, initialPath)
                 showFileBrowser(browserId)
             }
         }
@@ -2838,6 +2913,21 @@ class MainActivity : Activity() {
             root.addView(ProgressBar(this), FrameLayout.LayoutParams(dp(48), dp(48), Gravity.CENTER))
             setContentView(root)
         }
+    }
+
+    private fun openSftpPath(browserId: String, path: String) {
+        if (!browserVisible || selectedBrowserId != browserId) return
+        val state = sftpService?.state(browserId) ?: return
+        if (!state.connected || state.status !in setOf("Ready", "Empty") ||
+            state.transfer?.status == SftpTransferStatus.RUNNING) {
+            toast("Wait for the file browser to become ready.")
+            return
+        }
+        clearSftpSearch(browserId)
+        sftpKeepSearchFocused.remove(browserId)
+        releaseSftpSearchFocus()
+        sftpShowingRecent = false
+        sftpService?.openPath(browserId, path)
     }
 
     private fun renderFileBrowser(state: SftpBrowserState) {
@@ -2997,8 +3087,7 @@ class MainActivity : Activity() {
                     value == "." || value == ".." || '/' in value
                 if (pathInput) {
                     if (!remoteActionsEnabled) return@setOnEditorActionListener false
-                    sftpSearchQueries.remove(state.browserId)
-                    sftpService?.openPath(state.browserId, value)
+                    openSftpPath(state.browserId, value)
                 }
                 clearFocus()
                 getSystemService(InputMethodManager::class.java).hideSoftInputFromWindow(windowToken, 0)
@@ -3019,6 +3108,12 @@ class MainActivity : Activity() {
             })
         }.also { sftpSearchField = it }
         navigationRow.addView(search, LinearLayout.LayoutParams(0, dp(48), 1f))
+        navigationRow.addView(barButton("..") {
+            openSftpPath(state.browserId, "..")
+        }.apply {
+            contentDescription = "Go up one directory"
+            isEnabled = remoteActionsEnabled && currentPath.isNotEmpty() && currentPath != "/"
+        }, LinearLayout.LayoutParams(dp(48), dp(48)).apply { marginStart = dp(8) })
         navigationRow.addView(menuButton, LinearLayout.LayoutParams(dp(48), dp(48)).apply {
             marginStart = dp(8)
         })
@@ -3102,6 +3197,9 @@ class MainActivity : Activity() {
             hostId?.let { id ->
                 val currentPath = state.path
                 if (currentPath != null) {
+                    content.addView(compactButton("Open current folder", remoteActionsEnabled) {
+                        openSftpPath(state.browserId, currentPath)
+                    }.margins(bottom = 6))
                     val isFavorite = currentPath in favorites
                     content.addView(compactButton(
                         if (isFavorite) "Remove current folder from favorites" else "Add current folder to favorites",
@@ -3130,9 +3228,7 @@ class MainActivity : Activity() {
                                 toast("Reconnect to open a favorite folder.")
                                 return@compactButton
                             }
-                            clearSftpSearch(state.browserId)
-                            releaseSftpSearchFocus()
-                            sftpService?.openPath(state.browserId, path)
+                            openSftpPath(state.browserId, path)
                         }, LinearLayout.LayoutParams(0, dp(44), 1f))
                         row.addView(compactButton("Remove") {
                             runCatching { sftpFavoriteStore.remove(id, path) }
@@ -3157,9 +3253,7 @@ class MainActivity : Activity() {
                             toast("Reconnect to open a recent folder.")
                             return@compactButton
                         }
-                        clearSftpSearch(state.browserId)
-                        releaseSftpSearchFocus()
-                        sftpService?.openPath(state.browserId, path)
+                        openSftpPath(state.browserId, path)
                     }.margins(top = 4))
                 }
             }
@@ -3349,9 +3443,7 @@ class MainActivity : Activity() {
             .setTitle("Recent folders")
             .setItems(paths.toTypedArray()) { _, index ->
                 if (sftpService?.state(state.browserId)?.connected == true) {
-                    clearSftpSearch(state.browserId)
-                    releaseSftpSearchFocus()
-                    sftpService?.openPath(state.browserId, paths[index])
+                    openSftpPath(state.browserId, paths[index])
                 } else toast("Reconnect to open a recent folder.")
             }
             .setNegativeButton("Cancel", null)
@@ -3383,7 +3475,11 @@ class MainActivity : Activity() {
         val content = vertical(16)
         state.path?.let { current ->
             content.addView(label("Current folder", 13f, secondary, Typeface.BOLD))
-            content.addView(label(current, 13f, primary).apply { typeface = Typeface.MONOSPACE }.margins(top = 4))
+            content.addView(compactButton(current) {
+                if (!canNavigate()) return@compactButton
+                dialog.dismiss()
+                openSftpPath(state.browserId, current)
+            }.apply { typeface = Typeface.MONOSPACE }.margins(top = 4))
             content.addView(compactButton(
                 if (current in favorites) "Remove current favorite" else "Favorite current folder",
             ) {
@@ -3398,9 +3494,7 @@ class MainActivity : Activity() {
                 row.addView(compactButton(favorite) {
                     if (!canNavigate()) return@compactButton
                     dialog.dismiss()
-                    clearSftpSearch(state.browserId)
-                    releaseSftpSearchFocus()
-                    sftpService?.openPath(state.browserId, favorite)
+                    openSftpPath(state.browserId, favorite)
                 }, LinearLayout.LayoutParams(0, dp(44), 1f))
                 row.addView(compactButton("Remove") {
                     dialog.dismiss()
@@ -3417,9 +3511,7 @@ class MainActivity : Activity() {
                 content.addView(compactButton(path, state.connected) {
                     if (!canNavigate()) return@compactButton
                     dialog.dismiss()
-                    clearSftpSearch(state.browserId)
-                    releaseSftpSearchFocus()
-                    sftpService?.openPath(state.browserId, path)
+                    openSftpPath(state.browserId, path)
                 }.margins(bottom = 4))
             }
             content.addView(compactButton("Clear recent folders") {
@@ -3675,9 +3767,18 @@ class MainActivity : Activity() {
             setBackgroundColor(Color.TRANSPARENT)
             setPadding(0, 0, dp(8), 0)
         }
-        val titleRow = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL or Gravity.END
+        fun browseFiles() {
+            if (selectedSessionId != sessionId || sessionService !== service ||
+                service.terminal(sessionId) !== terminal || terminalView == null) return
+            val savedHost = hostStore.loadAll().firstOrNull { it.id == host.id }
+            if (savedHost == null) {
+                toast("This saved host was removed. Return to host management to browse files.")
+            } else if (savedHost.authenticationType == AuthenticationType.SSH_KEY &&
+                savedHost.identityId?.let(keyStore::identity) == null) {
+                toast("The selected SSH identity is unavailable. Edit the saved host first.")
+            } else {
+                requestCredentialAndBrowse(savedHost, terminalDirectoryPath(terminal.snapshot().pwd))
+            }
         }
         fun showControls() {
             if (selectedSessionId != sessionId || sessionService !== service ||
@@ -3726,18 +3827,7 @@ class MainActivity : Activity() {
                         "Hosts" -> showHosts(disconnect = false)
                         "Input mode" -> showInputModeChooser(sessionId)
                         "Duplicate session" -> requestCredentialAndConnect(host)
-                        "Browse files" -> {
-                            val savedHost = hostStore.loadAll().firstOrNull { it.id == host.id }
-                            if (savedHost == null) {
-                                toast("This saved host was removed. Return to host management to browse files.")
-                            } else if (savedHost.authenticationType == AuthenticationType.SSH_KEY &&
-                                savedHost.identityId?.let(keyStore::identity) == null
-                            ) {
-                                toast("The selected SSH identity is unavailable. Edit the saved host first.")
-                            } else {
-                                requestCredentialAndBrowse(savedHost)
-                            }
-                        }
+                        "Browse files" -> browseFiles()
                         "Export encrypted archive" -> showTerminalArchiveDialog(sessionId)
                         "Disconnect" -> {
                             service.disconnect(sessionId)
@@ -3773,46 +3863,6 @@ class MainActivity : Activity() {
             }
             dialog.show()
         }
-        fun showQuickMenu(anchor: View) {
-            if (selectedSessionId != sessionId || sessionService !== service) return
-            PopupMenu(this, anchor).apply {
-                service.summaries().forEach { candidate ->
-                    menu.add("${candidate.hostName} · ${candidate.shortId} · ${candidate.status}").apply {
-                        isCheckable = true
-                        isChecked = candidate.sessionId == sessionId
-                        setOnMenuItemClickListener {
-                            if (selectedSessionId == sessionId && sessionService === service) {
-                                if (candidate.sessionId != sessionId) openSession(candidate.sessionId)
-                            }
-                            true
-                        }
-                    }
-                }
-                menu.add("Input mode…").setOnMenuItemClickListener {
-                    showInputModeChooser(sessionId)
-                    true
-                }
-                menu.add("Session settings…").setOnMenuItemClickListener { showControls(); true }
-                menu.add("Hosts").setOnMenuItemClickListener {
-                    if (selectedSessionId == sessionId) showHosts(disconnect = false)
-                    true
-                }
-                show()
-            }
-        }
-        val hostname = ImageButton(this).apply {
-            contentDescription = "Switch session and session settings"
-            setImageResource(android.R.drawable.ic_menu_more)
-            setColorFilter(primary)
-            setPadding(dp(7), dp(7), dp(7), dp(7))
-            background = roundedBackground(Color.argb(230, 26, 29, 36), 12)
-            elevation = dp(6).toFloat()
-            setOnClickListener { showQuickMenu(it) }
-            setOnLongClickListener { showInputModeChooser(sessionId); true }
-        }
-        terminalFloatingMenu = titleRow
-        titleRow.addView(hostname, LinearLayout.LayoutParams(dp(48), dp(48)))
-        toolbar.addView(titleRow)
         toolbar.addView(status)
         toolbar.addView(vertical(10).apply {
             setBackgroundColor(surface)
@@ -3863,17 +3913,24 @@ class MainActivity : Activity() {
                         anchorRow,
                     )
                 }
-                onQuickNavigation = { column, row, anchorRow ->
-                    val directions = HoldSwipeDirection.entries
+                onQuickNavigation = { _, _, _ ->
+                    val textMode = sessionId in textModeSessions
+                    val actions = mutableListOf<Pair<String, () -> Unit>>()
+                    actions += (if (textMode) "Switch to Direct input" else "Switch to Text mode") to {
+                        setTextMode(sessionId, !textMode)
+                    }
+                    actions += "Files" to { browseFiles() }
+                    actions += "Hosts" to { showHosts(disconnect = false) }
+                    service.summaries().filter { it.status == "Connected" && it.sessionId != sessionId }.forEach { candidate ->
+                        actions += "${candidate.hostName} · ${candidate.shortId} · Connected" to {
+                            if (service.status(candidate.sessionId) == "Connected") openSession(candidate.sessionId)
+                        }
+                    }
                     AlertDialog.Builder(this@MainActivity)
                         .setTitle("Terminal actions")
-                        .setItems((listOf("Direct input", "Text mode") + directions.map {
-                            quickActionLabel(keyboardBarConfig.holdSwipeActions[it].orEmpty())
-                        }).toTypedArray()) { _, index ->
+                        .setItems(actions.map { it.first }.toTypedArray()) { _, index ->
                             if (selectedSessionId != sessionId || service.terminal(sessionId) !== terminal) return@setItems
-                            if (index < 2) setTextMode(sessionId, index == 1)
-                            else performHoldSwipeAction(sessionId,
-                                keyboardBarConfig.holdSwipeActions[directions[index - 2]].orEmpty(), column, row, anchorRow)
+                            actions[index].second()
                         }
                         .setNegativeButton("Cancel", null)
                         .show()
@@ -3963,7 +4020,7 @@ class MainActivity : Activity() {
         }, LinearLayout.LayoutParams(-1, 0, 1f))
         terminalTextInput?.text?.clear()
         root.addView(createTextInputRow(sessionId, service, terminal).also { textInputRow = it })
-        root.addView(createModifierBar(::showQuickMenu).also { modifierBar = it })
+        root.addView(createModifierBar().also { modifierBar = it })
         setContentView(root)
         view.refresh()
         updateModifierBarVisibility()
@@ -4111,7 +4168,7 @@ class MainActivity : Activity() {
             .show()
     }
 
-    private fun createModifierBar(onMenu: (View) -> Unit): View {
+    private fun createModifierBar(): View {
         val row = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             setBackgroundColor(raised)
@@ -4122,14 +4179,6 @@ class MainActivity : Activity() {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
             setBackgroundColor(raised)
-            addView(ImageButton(this@MainActivity).apply {
-                contentDescription = "Switch session and session settings"
-                setImageResource(android.R.drawable.ic_menu_more)
-                setColorFilter(primary)
-                setBackgroundColor(Color.TRANSPARENT)
-                setOnClickListener { onMenu(it) }
-                setOnLongClickListener { selectedSessionId?.let(::showInputModeChooser); true }
-            }, LinearLayout.LayoutParams(dp(48), dp(50)))
             addView(HorizontalScrollView(this@MainActivity).apply {
                 isHorizontalScrollBarEnabled = false
                 addView(row, ViewGroup.LayoutParams(-2, dp(50)))
@@ -4187,26 +4236,16 @@ class MainActivity : Activity() {
             val text = input.text.toString()
             if (text.isEmpty() && !enter) return
             // Encode the draft as paste (including bracketed-paste mode), followed by a distinct Enter event.
-            if (!terminal.isPasteSafe(text)) {
-                AlertDialog.Builder(this)
-                    .setTitle("Send multiple lines?")
-                    .setMessage("This text contains a newline or terminal control sequence.")
-                    .setNegativeButton("Cancel", null)
-                    .setPositiveButton("Send") { _, _ ->
-                        if (selectedSessionId == sessionId && sessionService === service &&
-                            service.terminal(sessionId) === terminal && service.status(sessionId) == "Connected" &&
-                            input.text.toString() == text) {
-                            service.send(sessionId, terminal.encodePaste(text) + if (enter) terminal.encodeKey("ENTER", "", 0) else byteArrayOf())
-                            input.text.clear()
-                        }
-                    }.show()
-            } else {
-                service.send(sessionId, terminal.encodePaste(text) + if (enter) terminal.encodeKey("ENTER", "", 0) else byteArrayOf())
-                input.text.clear()
-            }
+            service.send(sessionId, terminal.encodePaste(text) + if (enter) terminal.encodeKey("ENTER", "", 0) else byteArrayOf())
+            input.text.clear()
         }
-        val sendButton = barButton("Send + Enter") { send(true) }.apply {
+        val sendButton = ImageButton(this).apply {
+            setImageResource(R.drawable.ic_send)
+            imageTintList = ColorStateList.valueOf(primary)
+            background = roundedBackground(surface, 8)
+            setPadding(dp(12), dp(12), dp(12), dp(12))
             contentDescription = "Send text and Enter. Hold for Send only or Insert newline."
+            setOnClickListener { send(true) }
             setOnLongClickListener {
                 PopupMenu(this@MainActivity, this).apply {
                     menu.add("Send only").setOnMenuItemClickListener { send(false); true }
@@ -4229,7 +4268,7 @@ class MainActivity : Activity() {
             setBackgroundColor(raised)
             setPadding(dp(6), dp(4), dp(6), dp(4))
             addView(input, LinearLayout.LayoutParams(0, -2, 1f))
-            addView(sendButton, LinearLayout.LayoutParams(-2, dp(48)).apply { leftMargin = dp(6) })
+            addView(sendButton, LinearLayout.LayoutParams(dp(48), dp(48)).apply { leftMargin = dp(6) })
             visibility = if (sessionId in textModeSessions) View.VISIBLE else View.GONE
         }
     }
@@ -4237,8 +4276,28 @@ class MainActivity : Activity() {
     private fun renderModifierBarItems() {
         val row = modifierBarRow ?: return
         row.removeAllViews()
-        keyboardBarConfig.items.filter(::isKeyboardBarItemVisible).forEach { item ->
+        val items = keyboardBarConfig.items.filter(::isKeyboardBarItemVisible)
+        val sessionId = selectedSessionId
+        fun addInputModeToggle() {
+            if (sessionId == null) return
+            val textMode = sessionId in textModeSessions
+            row.addView(barButton("Text", textMode) {
+                if (selectedSessionId == sessionId && terminalView != null) {
+                    setTextMode(sessionId, sessionId !in textModeSessions)
+                }
+            }.apply {
+                isSelected = textMode
+                contentDescription = if (textMode) "Text mode. Switch to Direct input" else "Direct input. Switch to Text mode"
+                if (Build.VERSION.SDK_INT >= 30) {
+                    stateDescription = if (textMode) "Text mode on" else "Text mode off"
+                }
+            }, keyboardBarLayoutParams())
+        }
+        val escapeIndex = items.indexOfFirst { it.key == "ESCAPE" }
+        if (escapeIndex < 0) addInputModeToggle()
+        items.forEachIndexed { index, item ->
             row.addView(modifierBarButton(item), keyboardBarLayoutParams())
+            if (index == escapeIndex) addInputModeToggle()
         }
         row.addView(barButton("More") { showAllKeyboardKeys() }, keyboardBarLayoutParams(endMargin = 0))
     }
@@ -4364,7 +4423,7 @@ class MainActivity : Activity() {
 
     private fun showSessionChooser(sourceSessionId: String): Boolean {
         if (sourceSessionId != selectedSessionId) return false
-        val sessions = sessionService?.summaries().orEmpty()
+        val sessions = sessionService?.summaries().orEmpty().filter { it.status == "Connected" }
         if (sessions.isEmpty()) return false
         val repeatedHosts = sessions.groupingBy { it.hostId }.eachCount()
         AlertDialog.Builder(this)
@@ -4607,14 +4666,11 @@ class MainActivity : Activity() {
 
     private fun updateModifierBarVisibility() {
         val rowVisible = keyboardBarConfig.enabled && imeVisible && terminalAtBottom
-        val revealFallback = !rowVisible && terminalFloatingMenu?.visibility == View.GONE
         modifierBar?.visibility = if (rowVisible) {
             View.VISIBLE
         } else {
             View.GONE
         }
-        terminalFloatingMenu?.visibility = if (rowVisible) View.GONE else View.VISIBLE
-        if (revealFallback && terminalView != null) selectedSessionId?.let { revealTerminalChrome(it) }
     }
 
     private fun showAllKeyboardKeys() {
@@ -4686,18 +4742,8 @@ class MainActivity : Activity() {
         else if (identitiesVisible) showKeyboardSettings()
         else if (settingsVisible) showHosts(disconnect = false)
         else if (browserVisible) {
-            val browserId = selectedBrowserId
-            val state = browserId?.let { sftpService?.state(it) }
-            if (state?.transfer?.status == SftpTransferStatus.RUNNING) {
-                toast("Cancel the transfer before leaving this directory.")
-            } else if (browserId != null && state?.canNavigateBack == true && state.connected) {
-                clearSftpSearch(browserId)
-                sftpKeepSearchFocused.remove(browserId)
-                releaseSftpSearchFocus()
-                sftpService?.navigateBack(browserId)
-            } else {
-                showHosts(disconnect = false)
-            }
+            releaseSftpSearchFocus()
+            showHosts(disconnect = false)
         }
         else if (terminalView?.dismissQuickNavigation() == true) Unit
         else if (terminalView?.isLocalSelectionMode == true) {
@@ -4905,6 +4951,37 @@ class MainActivity : Activity() {
         shape = GradientDrawable.RECTANGLE
         cornerRadius = dp(radius).toFloat()
         setColor(color)
+    }
+
+    private fun indexMenuButton(description: String, action: (View) -> Unit) = ImageButton(this).apply {
+        setImageResource(R.drawable.ic_more_vert)
+        imageTintList = ColorStateList.valueOf(secondary)
+        background = pressableBackground(raised, blendColors(raised, Color.WHITE, 0.12f), 12)
+        setPadding(dp(12), dp(12), dp(12), dp(12))
+        contentDescription = description
+        setOnClickListener { action(it) }
+    }
+
+    private fun indexActionButton(text: String, icon: Int, emphasized: Boolean, action: () -> Unit) = Button(this).apply {
+        this.text = text
+        isAllCaps = false
+        textSize = 14f
+        setTypeface(typeface, Typeface.BOLD)
+        val foreground = if (emphasized) Color.rgb(8, 15, 12) else primary
+        val fill = if (emphasized) accent else Color.rgb(43, 49, 59)
+        setTextColor(foreground)
+        backgroundTintList = null
+        background = pressableBackground(fill, blendColors(fill, Color.WHITE, 0.15f), 12)
+        minWidth = 0
+        minimumWidth = 0
+        setPadding(dp(14), 0, dp(14), 0)
+        compoundDrawablePadding = dp(8)
+        val drawable = getDrawable(icon)?.mutate()?.apply {
+            setTint(foreground)
+            setBounds(0, 0, dp(20), dp(20))
+        }
+        setCompoundDrawablesRelative(drawable, null, null, null)
+        setOnClickListener { action() }
     }
 
     private fun vertical(padding: Int) = LinearLayout(this).apply {

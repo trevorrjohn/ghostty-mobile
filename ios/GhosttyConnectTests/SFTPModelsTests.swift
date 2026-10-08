@@ -2,6 +2,17 @@ import XCTest
 @testable import GhosttyConnect
 
 final class SFTPModelsTests: XCTestCase {
+    func testTerminalDirectoryMetadataUsesOnlyBoundedAbsolutePaths() {
+        XCTAssertEqual(terminalDirectoryPath("/srv/project"), "/srv/project")
+        XCTAssertEqual(terminalDirectoryPath("file://remote/srv/my%20project"), "/srv/my project")
+        XCTAssertEqual(terminalDirectoryPath("file://remote/"), "/")
+        for value in ["", "relative/path", "https://remote/srv", "file://remote", "file://remote/srv?query",
+                      "file://remote/srv#fragment", "file://user@remote/srv", "file://remote/%00",
+                      "/" + String(repeating: "a", count: 4_096), "file://remote/%ZZ"] {
+            XCTAssertNil(terminalDirectoryPath(value), value)
+        }
+    }
+
     func testRemoteChildNameRejectsTraversalAndSeparators() {
         XCTAssertFalse(validRemoteChildName(""))
         XCTAssertFalse(validRemoteChildName("."))

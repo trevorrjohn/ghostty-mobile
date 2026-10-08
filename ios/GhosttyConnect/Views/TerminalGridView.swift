@@ -11,6 +11,7 @@ struct TerminalGridView: View {
     let onSelectionEndpointChanged: (Bool, Int, Int) -> Void
     let onSelectionFinished: () -> Void
     let onMagnify: (Double, Bool) -> Void
+    let onQuickNavigation: (() -> Void)?
 
     private var cellWidth: CGFloat { Self.cellWidth(fontSize: fontSize) }
     private var cellHeight: CGFloat { Self.cellHeight(fontSize: fontSize) }
@@ -27,7 +28,8 @@ struct TerminalGridView: View {
         onSelectWord: @escaping (Int, Int) -> Void = { _, _ in },
         onSelectionEndpointChanged: @escaping (Bool, Int, Int) -> Void = { _, _, _ in },
         onSelectionFinished: @escaping () -> Void = {},
-        onMagnify: @escaping (Double, Bool) -> Void = { _, _ in }
+        onMagnify: @escaping (Double, Bool) -> Void = { _, _ in },
+        onQuickNavigation: (() -> Void)? = nil
     ) {
         self.snapshot = snapshot
         self.fontSize = fontSize
@@ -38,6 +40,7 @@ struct TerminalGridView: View {
         self.onSelectionEndpointChanged = onSelectionEndpointChanged
         self.onSelectionFinished = onSelectionFinished
         self.onMagnify = onMagnify
+        self.onQuickNavigation = onQuickNavigation
     }
 
     var body: some View {
@@ -65,7 +68,8 @@ struct TerminalGridView: View {
                 onSelectWord: onSelectWord,
                 onSelectionEndpointChanged: onSelectionEndpointChanged,
                 onSelectionFinished: onSelectionFinished,
-                onMagnify: onMagnify
+                onMagnify: onMagnify,
+                onQuickNavigation: onQuickNavigation
             )
         }
         .background(Color(snapshot.background))
@@ -272,6 +276,7 @@ private struct TerminalInteractionOverlay: UIViewRepresentable {
     let onSelectionEndpointChanged: (Bool, Int, Int) -> Void
     let onSelectionFinished: () -> Void
     let onMagnify: (Double, Bool) -> Void
+    let onQuickNavigation: (() -> Void)?
 
     func makeCoordinator() -> Coordinator { Coordinator(parent: self) }
 
@@ -325,6 +330,7 @@ private struct TerminalInteractionOverlay: UIViewRepresentable {
         private var pinchStartFontSize: Double?
         private var selectionDrag = TerminalSelectionDragState()
         private var selectionDragActive = false
+        private var quickNavigationActive = false
         private var selectionAutoscroll = TerminalSelectionAutoscrollState()
         private var selectionAutoscrollTimer: Timer?
         private var selectionColumn = 0
@@ -358,7 +364,7 @@ private struct TerminalInteractionOverlay: UIViewRepresentable {
         }
 
         @objc func pan(_ recognizer: UIPanGestureRecognizer) {
-            if selectionDragActive {
+            if selectionDragActive || quickNavigationActive {
                 recognizer.setTranslation(.zero, in: recognizer.view)
                 return
             }
@@ -461,6 +467,12 @@ private struct TerminalInteractionOverlay: UIViewRepresentable {
             let row = min(parent.rows - 1, max(0, Int(location.y / parent.cellHeight)))
             switch recognizer.state {
             case .began:
+                stopInertia()
+                if let quickNavigation = parent.onQuickNavigation, !UIAccessibility.isVoiceOverRunning {
+                    quickNavigationActive = true
+                    quickNavigation()
+                    return
+                }
                 selectionDragActive = true
                 selectionDrag.begin(column: column, row: row)
                 parent.onSelectWord(column, row)
@@ -471,11 +483,13 @@ private struct TerminalInteractionOverlay: UIViewRepresentable {
                 }
                 updateSelectionAutoscroll(location: location, in: view)
             case .ended:
+                quickNavigationActive = false
                 stopSelectionAutoscroll()
                 if selectionDragActive { parent.onSelectionFinished() }
                 selectionDragActive = false
                 selectionDrag.reset()
             case .cancelled, .failed:
+                quickNavigationActive = false
                 stopSelectionAutoscroll()
                 selectionDragActive = false
                 selectionDrag.reset()

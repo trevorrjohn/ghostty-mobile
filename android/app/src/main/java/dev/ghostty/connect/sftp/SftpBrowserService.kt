@@ -62,6 +62,7 @@ class SftpBrowserService : Service() {
     private inner class BrowserRecord(
         val browserId: String,
         val host: Host,
+        val initialPath: String? = null,
     ) {
         val executor = Executors.newSingleThreadExecutor { task -> Thread(task, "sftp-browser") }
         val pathStack = ArrayDeque<String>()
@@ -204,7 +205,7 @@ class SftpBrowserService : Service() {
         if (this.listener === listener) this.listener = null
     }
 
-    fun connect(browserId: String, host: Host, credential: CharArray, unlockedPrivateKey: ByteArray? = null) = onServiceMain {
+    fun connect(browserId: String, host: Host, credential: CharArray, unlockedPrivateKey: ByteArray? = null, initialPath: String? = null) = onServiceMain {
         if (browserId.isBlank()) {
             credential.fill('\u0000')
             unlockedPrivateKey?.fill(0)
@@ -215,7 +216,7 @@ class SftpBrowserService : Service() {
             unlockedPrivateKey?.fill(0)
             error("File browser already exists")
         }
-        val record = BrowserRecord(browserId, host)
+        val record = BrowserRecord(browserId, host, initialPath)
         browsers[browserId] = record
         selectedBrowserId = browserId
         emit(record)
@@ -398,23 +399,24 @@ class SftpBrowserService : Service() {
             record.executor.execute {
                 try {
                     val home = connection.connect(record.host, credential, unlockedPrivateKey)
-                    val entries = connection.list(home)
+                    val directory = record.initialPath?.let { connection.openDirectoryPath(home, it) } ?: home
+                    val entries = connection.list(directory)
                     onMain {
                     if (!isCurrent(record, generation)) return@onMain
                     record.pendingAuthenticationBanner = null
                     authenticationForegroundBrowsers -= record.browserId
                     refreshForegroundNotification()
                     record.pathStack.clear()
-                    record.pathStack.addAll(remoteAbsolutePathStack(home))
+                    record.pathStack.addAll(remoteAbsolutePathStack(directory))
                     update(record, record.state.copy(
                             status = if (entries.isEmpty()) STATUS_EMPTY else STATUS_READY,
-                            path = home,
+                            path = directory,
                             entries = entries,
                         canNavigateBack = record.pathStack.size > 1,
                             connected = true,
                             error = null,
                         ))
-                        recordRecentFolder(record, home)
+                         recordRecentFolder(record, directory)
                     }
                 } catch (error: Exception) {
                     onMain { fail(record, generation, error) }

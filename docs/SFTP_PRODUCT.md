@@ -49,6 +49,8 @@ Each saved-host card has separate **Terminal** and **Files** actions. Tapping th
 
 The terminal overflow menu includes **Browse files**. This starts an independent SFTP connection using the same saved host. It does not reuse the terminal's PTY, credentials, connection state, or reconnect state.
 
+On both platforms, **Files** opens the terminal's reported current directory when bounded absolute-path or OSC 7 file-URI metadata is available. Only the path is used; the saved host remains the SSH destination, and SFTP canonicalizes the directory. Without usable metadata, browsing starts in the account's home directory.
+
 If the underlying saved host was removed or its identity is unavailable, the app explains why browsing cannot start and offers a path back to host management.
 
 ## Connection Experience
@@ -72,6 +74,8 @@ Credentials are scoped to one connection attempt. Reconnect and **Open terminal*
 ## Browser Experience
 
 The browser header shows the host display name, one combined current-directory/search field, parent navigation, and one menu. Ordinary text in the combined field filters the loaded directory; a submitted path navigates after server canonicalization. Upload, new-folder, refresh, locations, sorting, hidden-file visibility, terminal launch where supported, and disconnect controls live in the menu rather than a permanent action strip.
+
+Back (including the back gesture) returns to the host index instead of navigating directory history. Android retains its independent service-owned browser; iOS disconnects its screen-owned browser and cancels any transfer on leaving. The `..` control beside the location field explicitly opens the parent directory and is disabled at root or while remote operations are unavailable. Selecting a current, favorite, or recent folder switches to the Files tab; the Recent tab also offers **Open current folder**.
 
 The path can be entered directly as an absolute or current-directory-relative path. The server canonicalizes it before use, and an explicitly entered path may open any directory the authenticated account can access. File operations remain constrained to validated children of the resulting current directory. Favorite folders are stored encrypted against the saved host ID and remain available across browser connections. The 10 most recently displayed canonical folders are also stored encrypted per host in most-recent-first order; failed paths are not retained, and the user can clear this history. Neither store retains credentials or connection state.
 

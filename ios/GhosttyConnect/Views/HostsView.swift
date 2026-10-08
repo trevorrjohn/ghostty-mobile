@@ -13,25 +13,39 @@ struct HostsView: View {
         NavigationStack(path: $path) {
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
-                    VStack(alignment: .leading, spacing: 5) {
-                        Text("Seance Shell")
-                            .font(.system(size: 32, weight: .bold, design: .rounded))
-                        Text("A fast, native SSH terminal")
-                            .foregroundStyle(Color.ghosttySecondary)
+                    HStack {
+                        VStack(alignment: .leading, spacing: 5) {
+                            Text("Seance Shell")
+                                .font(.system(size: 28, weight: .bold, design: .rounded))
+                            Text("Your remote workspace")
+                                .font(.subheadline)
+                                .foregroundStyle(Color.ghosttySecondary)
+                        }
+                        Spacer()
+                        Menu {
+                            NavigationLink("Settings", destination: SettingsView())
+                            Button("Import SSH key", systemImage: "key") { showingKeyImport = true }
+                            Button("Renderer preview", systemImage: "rectangle.on.rectangle") { showingPreview = true }
+                        } label: {
+                            Image(systemName: "ellipsis")
+                                .foregroundStyle(Color.ghosttySecondary)
+                                .frame(width: 48, height: 48)
+                                .background(Color.ghosttyRaised, in: RoundedRectangle(cornerRadius: 12))
+                        }
+                        .accessibilityLabel("App menu")
                     }
 
-                    if !sessions.records.isEmpty {
-                        VStack(alignment: .leading, spacing: 10) {
-                            Text("Active Sessions")
-                                .font(.headline)
-                            ForEach(sessions.records) { record in
-                                ActiveSessionCard(
-                                    record: record,
-                                    open: { path = [record.id] },
-                                    close: { Task { await sessions.close(id: record.id) } }
-                                )
-                            }
+                    HStack {
+                        Text("Hosts").font(.title3.bold())
+                        Spacer()
+                        Button { editedHost = Host() } label: {
+                            Label("Add host", systemImage: "plus")
+                                .font(.subheadline.weight(.semibold))
+                                .padding(.horizontal, 12)
+                                .frame(minHeight: 44)
+                                .background(Color.ghosttyRaised, in: RoundedRectangle(cornerRadius: 12))
                         }
+                        .buttonStyle(.plain)
                     }
 
                     if model.hosts.isEmpty {
@@ -39,35 +53,30 @@ struct HostsView: View {
                     } else {
                         LazyVStack(spacing: 12) {
                             ForEach(model.hosts) { host in
-                                HStack(spacing: 8) {
-                                    Button { startSession(for: host) } label: { HostCard(host: host) }
-                                        .buttonStyle(.plain)
-                                        .contextMenu {
-                                            Button("Edit") { editedHost = host }
-                                            Button("Duplicate", systemImage: "plus.square.on.square") {
-                                                editedHost = host.duplicated(existingNames: model.hosts.map(\.name))
-                                            }
-                                            Button("Delete", role: .destructive) { model.delete(host: host) }
-                                        }
-                                    NavigationLink {
-                                        SFTPBrowserScreen(host: host)
-                                    } label: {
-                                        Image(systemName: "folder")
-                                            .font(.title3.weight(.semibold))
-                                            .foregroundStyle(Color.ghosttyAccent)
-                                            .frame(width: 48, height: 48)
-                                            .background(Color.ghosttyRaised, in: RoundedRectangle(cornerRadius: 14))
-                                    }
-                                    .accessibilityLabel("Browse files on \(host.name)")
-                                }
+                                HostCard(
+                                    host: host,
+                                    open: { startSession(for: host) },
+                                    edit: { editedHost = host },
+                                    duplicate: { editedHost = host.duplicated(existingNames: model.hosts.map(\.name)) },
+                                    delete: { model.delete(host: host) }
+                                )
                             }
                         }
                     }
 
-                    HStack {
-                        ActionButton(title: "Add host", icon: "plus", action: { editedHost = Host() })
-                        ActionButton(title: "Import key", icon: "key", action: { showingKeyImport = true })
-                        ActionButton(title: "Preview", icon: "rectangle.on.rectangle", action: { showingPreview = true })
+                    if !sessions.records.isEmpty {
+                        VStack(alignment: .leading, spacing: 12) {
+                            Text("Terminal sessions").font(.title3.bold())
+                            ForEach(sessions.records) { record in
+                                ActiveSessionCard(
+                                    record: record,
+                                    savedHost: model.hosts.first { $0.id == record.host.id },
+                                    open: { path = [record.id] },
+                                    duplicate: { startSession(for: record.host) },
+                                    close: { Task { await sessions.close(id: record.id) } }
+                                )
+                            }
+                        }
                     }
                 }
                 .padding(20)
@@ -75,7 +84,7 @@ struct HostsView: View {
             .background(Color.ghosttySurface.ignoresSafeArea())
             .navigationDestination(for: UUID.self) { sessionID in
                 if let record = sessions.record(id: sessionID) {
-                    TerminalScreen(record: record) { selectedID in path = [selectedID] }
+                    TerminalScreen(record: record, showHosts: { path = [] }) { selectedID in path = [selectedID] }
                         .id(record.id)
                 } else {
                     ContentUnavailableView("Session Closed", systemImage: "terminal", description: Text("This session is no longer active."))
@@ -110,12 +119,14 @@ struct HostsView: View {
 
 private struct ActiveSessionCard: View {
     @ObservedObject var record: TerminalSessionRecord
+    let savedHost: Host?
     let open: () -> Void
+    let duplicate: () -> Void
     let close: () -> Void
 
     var body: some View {
-        HStack(spacing: 12) {
-            Button(action: open) {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .top) {
                 VStack(alignment: .leading, spacing: 4) {
                     HStack {
                         Text(record.host.name).font(.headline)
@@ -133,13 +144,29 @@ private struct ActiveSessionCard: View {
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
+                Menu {
+                    Button("Session settings", systemImage: "gearshape") { record.showingSettings = true; open() }
+                    Button("Duplicate session", systemImage: "plus.square.on.square", action: duplicate)
+                    Button("Disconnect", role: .destructive, action: close)
+                } label: {
+                    Image(systemName: "ellipsis")
+                        .foregroundStyle(Color.ghosttySecondary)
+                        .frame(width: 44, height: 44)
+                }
+                .accessibilityLabel("Session actions for \(record.host.name) \(record.shortID)")
+            }
+            HStack(spacing: 8) {
+                Button(action: open) { HostIndexActionLabel(title: "Terminal", icon: "terminal", emphasized: true) }
+                if let savedHost {
+                    NavigationLink {
+                        SFTPBrowserScreen(host: savedHost, initialPath: terminalDirectoryPath(record.session.snapshot?.workingDirectory))
+                    } label: { HostIndexActionLabel(title: "Files", icon: "folder", emphasized: false) }
+                }
             }
             .buttonStyle(.plain)
-            Button("Disconnect", role: .destructive, action: close)
-                .font(.caption.bold())
         }
-        .padding(14)
-        .background(Color.ghosttyRaised, in: RoundedRectangle(cornerRadius: 14))
+        .padding(16)
+        .background(Color.ghosttyRaised, in: RoundedRectangle(cornerRadius: 18))
     }
 
     private func duration(_ seconds: Int) -> String {
@@ -156,9 +183,9 @@ private struct EmptyHostsView: View {
                 Image(systemName: "terminal.fill")
                     .font(.system(size: 38))
                     .foregroundStyle(Color.ghosttyAccent)
-                Text("Your terminals, one tap away")
+                Text("Your first connection")
                     .font(.headline)
-                Text("Add an SSH host. Credentials stay on this device and passwords are never saved.")
+                Text("Save a host to open its terminal or browse its files.")
                     .font(.subheadline)
                     .foregroundStyle(Color.ghosttySecondary)
                     .multilineTextAlignment(.center)
@@ -173,39 +200,54 @@ private struct EmptyHostsView: View {
 
 private struct HostCard: View {
     let host: Host
+    let open: () -> Void
+    let edit: () -> Void
+    let duplicate: () -> Void
+    let delete: () -> Void
 
     var body: some View {
-        HStack(spacing: 14) {
-            Image(systemName: "terminal.fill")
-                .foregroundStyle(Color.ghosttyAccent)
-                .frame(width: 42, height: 42)
-                .background(Color.ghosttyAccent.opacity(0.12), in: RoundedRectangle(cornerRadius: 12))
-            VStack(alignment: .leading, spacing: 4) {
-                Text(host.name).font(.headline)
-                Text(host.destination).font(.system(.subheadline, design: .monospaced)).foregroundStyle(Color.ghosttySecondary)
-                Text(host.authenticationType.label).font(.caption).foregroundStyle(Color.ghosttyAccent)
+        VStack(alignment: .leading, spacing: 16) {
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(host.name).font(.title3.bold())
+                    Text(host.destination).font(.system(.caption, design: .monospaced)).foregroundStyle(Color.ghosttySecondary)
+                    Text(host.authenticationType.label).font(.caption).foregroundStyle(Color.ghosttySecondary)
+                }
+                Spacer()
+                Menu {
+                    Button("Edit host", systemImage: "pencil", action: edit)
+                    Button("Duplicate host", systemImage: "plus.square.on.square", action: duplicate)
+                    Button("Delete host", role: .destructive, action: delete)
+                } label: {
+                    Image(systemName: "ellipsis")
+                        .foregroundStyle(Color.ghosttySecondary)
+                        .frame(width: 44, height: 44)
+                }
+                .accessibilityLabel("Host actions for \(host.name)")
             }
-            Spacer()
-            Image(systemName: "chevron.right").foregroundStyle(Color.ghosttySecondary)
+            HStack(spacing: 8) {
+                Button(action: open) { HostIndexActionLabel(title: "Terminal", icon: "terminal", emphasized: true) }
+                NavigationLink { SFTPBrowserScreen(host: host) } label: {
+                    HostIndexActionLabel(title: "Files", icon: "folder", emphasized: false)
+                }
+            }
+            .buttonStyle(.plain)
         }
         .padding(16)
-        .background(Color.ghosttyRaised, in: RoundedRectangle(cornerRadius: 16))
+        .background(Color.ghosttyRaised, in: RoundedRectangle(cornerRadius: 20))
     }
 }
 
-private struct ActionButton: View {
+private struct HostIndexActionLabel: View {
     let title: String
     let icon: String
-    let action: () -> Void
+    let emphasized: Bool
 
     var body: some View {
-        Button(action: action) {
-            Label(title, systemImage: icon)
-                .font(.caption.weight(.semibold))
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 12)
-                .background(Color.ghosttyRaised, in: RoundedRectangle(cornerRadius: 12))
-        }
-        .buttonStyle(.plain)
+        Label(title, systemImage: icon)
+            .font(.subheadline.weight(.semibold))
+            .frame(maxWidth: .infinity, minHeight: 48)
+            .foregroundStyle(emphasized ? Color.ghosttySurface : Color.primary)
+            .background(emphasized ? Color.ghosttyAccent : Color.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 12))
     }
 }

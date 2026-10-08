@@ -95,6 +95,24 @@ func remoteChildPath(parent: String, name: String) -> String {
     parent == "/" ? "/\(name)" : "\(parent)/\(name)"
 }
 
+/// OSC 7 supplies a directory, never a replacement SSH destination or credentials.
+func terminalDirectoryPath(_ value: String?) -> String? {
+    guard let value else { return nil }
+    let path: String
+    if value.hasPrefix("/") {
+        path = value
+    } else {
+        guard let url = URL(string: value, encodingInvalidCharacters: false),
+              let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+              components.scheme == "file", components.user == nil, components.password == nil,
+              components.query == nil, components.fragment == nil,
+              let decoded = components.percentEncodedPath.removingPercentEncoding else { return nil }
+        path = decoded
+    }
+    guard path.hasPrefix("/"), !path.contains("\0"), path.utf8.count <= 4_096 else { return nil }
+    return path
+}
+
 func sftpEntryKind(name: String, permissions: UInt32?) -> SFTPEntryKind {
     guard validRemoteChildName(name) else { return .unsupported }
     return switch permissions.map({ $0 & 0o170000 }) {
