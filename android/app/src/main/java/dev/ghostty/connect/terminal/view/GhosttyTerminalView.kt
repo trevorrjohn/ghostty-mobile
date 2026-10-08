@@ -1439,7 +1439,14 @@ class GhosttyTerminalView(
 
             override fun sendKeyEvent(event: KeyEvent): Boolean {
                 if (!inputBuffer.isOpen) return false
-                if (event.action == KeyEvent.ACTION_DOWN) inputBuffer.flush()
+                if (event.keyCode == KeyEvent.KEYCODE_ENTER || event.keyCode == KeyEvent.KEYCODE_NUMPAD_ENTER) {
+                    if (event.action == KeyEvent.ACTION_DOWN) {
+                        inputBuffer.discardComposing()
+                        onSpecialKey("ENTER")
+                    }
+                    return event.action == KeyEvent.ACTION_DOWN || event.action == KeyEvent.ACTION_UP
+                }
+                inputBuffer.prepareForKeyEvent(event.action, event.keyCode)
                 return onKeyEvent(event) || super.sendKeyEvent(event)
             }
 
@@ -1673,6 +1680,15 @@ internal class TerminalImeInputBuffer(
         pendingText = ""
         cursor = 0
         pendingGeneration++
+    }
+
+    fun prepareForKeyEvent(action: Int, keyCode: Int) {
+        if (closed || action != KeyEvent.ACTION_DOWN) return
+        if (keyCode == KeyEvent.KEYCODE_ENTER || keyCode == KeyEvent.KEYCODE_NUMPAD_ENTER) {
+            discardComposing()
+        } else {
+            flush()
+        }
     }
 
     fun textBeforeCursor(length: Int): CharSequence {
