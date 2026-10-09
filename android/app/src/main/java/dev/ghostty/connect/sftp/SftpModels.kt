@@ -57,6 +57,21 @@ fun remoteChildNameError(name: String): String? = when {
 
 internal fun safeRemoteChildName(name: String): Boolean = remoteChildNameError(name) == null
 
+fun sftpEntryAccessibilityDescription(entry: SftpEntry, actionable: Boolean): String {
+    val typeDescription = when (entry.type) {
+        SftpEntryType.FILE -> "File"
+        SftpEntryType.DIRECTORY -> "Directory"
+        SftpEntryType.SYMLINK -> "Symbolic link"
+        SftpEntryType.UNSUPPORTED -> "Unsupported entry"
+    }
+    val primaryAction = if (actionable && entry.type in setOf(SftpEntryType.FILE, SftpEntryType.DIRECTORY)) {
+        " Tap to open."
+    } else {
+        ""
+    }
+    return "$typeDescription, ${entry.name}.$primaryAction Long press for details and actions."
+}
+
 fun filterAndSortSftpEntries(
     entries: List<SftpEntry>,
     query: String,

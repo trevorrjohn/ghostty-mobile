@@ -1557,6 +1557,8 @@ internal class TerminalImeInputBuffer(
     private val schedule: (() -> Unit) -> Unit,
 ) {
     private var composingText = ""
+    private var composingStart = 0
+    private var composingEnd = 0
     private var cursor = 0
     private var pendingText = ""
     private var pendingGeneration = 0
@@ -1570,14 +1572,19 @@ internal class TerminalImeInputBuffer(
         if (value.isEmpty()) {
             if (composingText.isNotEmpty()) {
                 composingText = ""
+                composingStart = 0
+                composingEnd = 0
                 cursor = 0
             }
             return true
         }
+        val committed = if (composingText.isNotEmpty()) replaceComposingRegion(value) else value
         composingText = ""
+        composingStart = 0
+        composingEnd = 0
         cursor = 0
         discardPending()
-        if (value == "\n" || value == "\r" || value == "\r\n") sendSpecialKey("ENTER") else sendInput(value)
+        if (committed == "\n" || committed == "\r" || committed == "\r\n") sendSpecialKey("ENTER") else sendInput(committed)
         return true
     }
 
@@ -1588,13 +1595,22 @@ internal class TerminalImeInputBuffer(
         if (value.isEmpty()) {
             if (pendingText.isEmpty()) {
                 composingText = ""
+                composingStart = 0
+                composingEnd = 0
                 cursor = 0
             }
             return true
         }
         discardPending()
-        composingText = value
-        cursor = safeCursor(if (newCursorPosition > 0) value.length + newCursorPosition - 1 else newCursorPosition)
+        if (composingText.isEmpty()) {
+            composingText = value
+            composingStart = 0
+            composingEnd = value.length
+        } else {
+            composingText = replaceComposingRegion(value)
+            composingEnd = composingStart + value.length
+        }
+        cursor = safeCursor(if (newCursorPosition > 0) composingEnd + newCursorPosition - 1 else composingStart + newCursorPosition)
         return true
     }
 
@@ -1603,6 +1619,8 @@ internal class TerminalImeInputBuffer(
         pendingText = composingText
         cursor = composingText.length
         composingText = ""
+        composingStart = 0
+        composingEnd = 0
         val generation = ++pendingGeneration
         schedule {
             if (!closed && generation == pendingGeneration) flushPending()
@@ -1610,12 +1628,15 @@ internal class TerminalImeInputBuffer(
     }
 
     fun setComposingRegion(start: Int, end: Int): Boolean {
-        if (closed || start != 0) return false
+        if (closed || start < 0 || end < start) return false
         val text = visibleText()
-        if (text.isEmpty() || end != text.length) return false
-        discardPending()
+        if (text.isEmpty() || end > text.length || splitsSurrogate(text, start) || splitsSurrogate(text, end)) return false
         composingText = text
-        cursor = composingText.length
+        pendingText = ""
+        pendingGeneration++
+        composingStart = start
+        composingEnd = end
+        cursor = end
         return true
     }
 
@@ -1627,6 +1648,8 @@ internal class TerminalImeInputBuffer(
             composingText = pendingText
             pendingText = ""
             pendingGeneration++
+            composingStart = 0
+            composingEnd = composingText.length
             cursor = composingText.length
         }
         if (composingText.isNotEmpty()) {
@@ -1646,6 +1669,8 @@ internal class TerminalImeInputBuffer(
             ) end++
             composingText = composingText.removeRange(start, end)
             cursor = start
+            composingStart = composingStart.coerceIn(0, composingText.length)
+            composingEnd = composingEnd.coerceIn(composingStart, composingText.length)
             repeat(beforeLength - localBefore) { sendSpecialKey("BACKSPACE") }
             repeat(afterLength - localAfter) { sendSpecialKey("DELETE") }
         } else {
@@ -1661,6 +1686,8 @@ internal class TerminalImeInputBuffer(
         if (composingText.isNotEmpty()) {
             sendInput(composingText)
             composingText = ""
+            composingStart = 0
+            composingEnd = 0
             cursor = 0
         }
     }
@@ -1669,6 +1696,8 @@ internal class TerminalImeInputBuffer(
         if (closed) return
         composingText = ""
         pendingText = ""
+        composingStart = 0
+        composingEnd = 0
         cursor = 0
         pendingGeneration++
     }
@@ -1694,6 +1723,8 @@ internal class TerminalImeInputBuffer(
     fun close() {
         closed = true
         composingText = ""
+        composingStart = 0
+        composingEnd = 0
         cursor = 0
         discardPending()
     }
@@ -1712,13 +1743,17 @@ internal class TerminalImeInputBuffer(
 
     private fun visibleText(): String = composingText.ifEmpty { pendingText }
 
+    private fun replaceComposingRegion(value: String): String =
+        composingText.replaceRange(composingStart, composingEnd, value)
+
     private fun safeCursor(requested: Int): Int {
         var position = requested.coerceIn(0, composingText.length)
-        if (position in 1 until composingText.length && composingText[position].isLowSurrogate() &&
-            composingText[position - 1].isHighSurrogate()
-        ) position++
+        if (splitsSurrogate(composingText, position)) position++
         return position
     }
+
+    private fun splitsSurrogate(text: String, position: Int): Boolean =
+        position in 1 until text.length && text[position].isLowSurrogate() && text[position - 1].isHighSurrogate()
 
     private companion object {
         const val MAX_STAGED_TEXT_LENGTH = 16 * 1024

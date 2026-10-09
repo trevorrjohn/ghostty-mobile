@@ -17,11 +17,13 @@ import dev.ghostty.connect.terminal.SshConnection
 import dev.ghostty.connect.terminal.SshConnector
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
+import java.io.OutputStream
 import java.net.InetAddress
 import java.util.UUID
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 import org.junit.After
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
@@ -172,6 +174,99 @@ class OpenSshIntegrationTest {
         }
     }
 
+    @Test
+    fun sftpLiveDirectoryOperationsRoundTrip() {
+        val connection = SftpConnection(context, RecordingAuthenticationCallbacks(approveHostKey = true))
+        try {
+            val home = connection.connect(fixture.host(), fixture.password.toCharArray())
+            val directory = "ops-${UUID.randomUUID()}"
+            val renamed = "$directory-renamed"
+
+            connection.createDirectory(home, directory)
+            assertTrue(connection.list(home).any { it.name == directory && it.type == dev.ghostty.connect.sftp.SftpEntryType.DIRECTORY })
+
+            val entered = connection.enterDirectory(home, directory)
+            assertEquals(entered, connection.openDirectoryPath(home, directory))
+
+            connection.rename(home, directory, renamed)
+            assertFalse(connection.exists(home, directory))
+            assertTrue(connection.exists(home, renamed))
+            assertEquals(connection.enterDirectory(home, renamed), connection.openDirectoryPath(home, renamed))
+
+            val entry = connection.list(home).single { it.name == renamed }
+            connection.delete(home, entry)
+            assertFalse(connection.exists(home, renamed))
+        } finally {
+            connection.disconnect()
+        }
+    }
+
+    @Test
+    fun sftpLiveRejectsConflictsAndUnsafePaths() {
+        val connection = SftpConnection(context, RecordingAuthenticationCallbacks(approveHostKey = true))
+        try {
+            val home = connection.connect(fixture.host(), fixture.password.toCharArray())
+            val directory = "conflict-${UUID.randomUUID()}"
+            val other = "$directory-other"
+            val payload = byteArrayOf(1, 2, 3, 4)
+
+            connection.createDirectory(home, directory)
+            connection.createDirectory(home, other)
+
+            assertThrows(IllegalArgumentException::class.java) { connection.createDirectory(home, directory) }
+            assertThrows(IllegalArgumentException::class.java) { connection.rename(home, directory, other) }
+            assertThrows(IllegalStateException::class.java) { connection.createDirectory(home, "../escape") }
+            assertThrows(IllegalArgumentException::class.java) { connection.openDirectoryPath(home, "bad\u0000path") }
+
+            connection.upload(home, "existing.bin", ByteArrayInputStream(payload), payload.size.toLong(), false, AtomicBoolean(false)) { _, _ -> }
+            assertThrows(IllegalStateException::class.java) {
+                connection.upload(home, "existing.bin", ByteArrayInputStream(payload), payload.size.toLong(), false, AtomicBoolean(false)) { _, _ -> }
+            }
+
+            connection.delete(home, connection.list(home).single { it.name == "existing.bin" })
+            connection.delete(home, connection.list(home).single { it.name == directory })
+            connection.delete(home, connection.list(home).single { it.name == other })
+        } finally {
+            connection.disconnect()
+        }
+    }
+
+    @Test
+    fun sftpLiveDownloadFailsSafelyWhenConnectionIsInterrupted() {
+        val connection = SftpConnection(context, RecordingAuthenticationCallbacks(approveHostKey = true))
+        try {
+            val home = connection.connect(fixture.host(), fixture.password.toCharArray())
+            val name = "interrupted-${UUID.randomUUID()}.bin"
+            val payload = ByteArray(4 * 1024 * 1024) { index -> (index % 239).toByte() }
+            connection.upload(home, name, ByteArrayInputStream(payload), payload.size.toLong(), false, AtomicBoolean(false)) { _, _ -> }
+
+            val firstWrite = CountDownLatch(1)
+            val releaseWrite = CountDownLatch(1)
+            val finished = CountDownLatch(1)
+            val failure = AtomicReference<Throwable?>()
+            val output = BlockingOutputStream(firstWrite, releaseWrite)
+            Thread({
+                try {
+                    connection.download(home, name, output, AtomicBoolean(false)) { _, _ -> }
+                } catch (error: Throwable) {
+                    failure.set(error)
+                } finally {
+                    finished.countDown()
+                }
+            }, "sftp-interrupted-download").start()
+
+            assertTrue("Download did not start", firstWrite.await(10, TimeUnit.SECONDS))
+            connection.disconnect()
+            releaseWrite.countDown()
+
+            assertTrue("Interrupted download did not finish", finished.await(15, TimeUnit.SECONDS))
+            assertTrue("Download unexpectedly completed after disconnect", failure.get() != null)
+            assertTrue("Interrupted output should be partial", output.bytesWritten < payload.size)
+        } finally {
+            connection.disconnect()
+        }
+    }
+
     private fun authenticatedClient(callbacks: SshAuthenticationCallbacks) =
         AuthenticatedSshClient(context, SshKeyStore(context), callbacks)
 
@@ -249,5 +344,24 @@ class OpenSshIntegrationTest {
         fun outputText(): String = synchronized(output) { output.toString(Charsets.UTF_8.name()) }
 
         fun attach(connection: SshConnection) = connection.whenFinished(finished::countDown)
+    }
+
+    private class BlockingOutputStream(
+        private val firstWrite: CountDownLatch,
+        private val releaseWrite: CountDownLatch,
+    ) : OutputStream() {
+        @Volatile var bytesWritten = 0L
+
+        override fun write(buffer: ByteArray, offset: Int, length: Int) {
+            bytesWritten += length.toLong()
+            firstWrite.countDown()
+            assertTrue("Timed out waiting to release blocked write", releaseWrite.await(10, TimeUnit.SECONDS))
+        }
+
+        override fun write(value: Int) {
+            bytesWritten++
+            firstWrite.countDown()
+            assertTrue("Timed out waiting to release blocked write", releaseWrite.await(10, TimeUnit.SECONDS))
+        }
     }
 }

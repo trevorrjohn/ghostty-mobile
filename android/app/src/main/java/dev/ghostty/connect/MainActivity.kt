@@ -15,13 +15,18 @@ import android.content.Context
 import android.content.ServiceConnection
 import android.content.ClipboardManager
 import android.content.ClipData
+import android.content.SharedPreferences
 import android.content.res.ColorStateList
 import android.content.res.Configuration
 import android.graphics.Color
+import android.graphics.RenderEffect
+import android.graphics.Shader
 import android.graphics.drawable.GradientDrawable
 import android.graphics.drawable.StateListDrawable
 import android.graphics.Rect
 import android.graphics.Typeface
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.net.Uri
 import android.os.Bundle
 import android.os.CancellationSignal
@@ -118,6 +123,7 @@ import dev.ghostty.connect.sftp.SftpSortMode
 import dev.ghostty.connect.sftp.filterAndSortSftpEntries
 import dev.ghostty.connect.sftp.remoteChildNameError
 import dev.ghostty.connect.sftp.remoteFolderPath
+import dev.ghostty.connect.sftp.sftpEntryAccessibilityDescription
 import dev.ghostty.connect.sftp.terminalDirectoryPath
 import dev.ghostty.connect.terminal.SshSessionService
 import dev.ghostty.connect.terminal.AuthenticationChallenge
@@ -139,11 +145,14 @@ import dev.ghostty.connect.terminal.bridge.GhosttyTerminal
 import dev.ghostty.connect.terminal.bridge.TerminalEffects
 import dev.ghostty.connect.terminal.view.GhosttyTerminalView
 import net.schmizz.sshj.connection.channel.direct.Signal
+import java.net.InetSocketAddress
+import java.net.Socket
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.UUID
 import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicInteger
 import javax.crypto.Cipher
 
 class MainActivity : Activity() {
@@ -157,6 +166,7 @@ class MainActivity : Activity() {
     private lateinit var knownHostStore: KnownHostStore
     private lateinit var sftpFavoriteStore: SftpFavoriteStore
     private lateinit var sftpRecentFolderStore: SftpRecentFolderStore
+    private lateinit var appSettings: SharedPreferences
     private var keyboardBarConfig = KeyboardBarConfig()
     private var sessionService: SshSessionService? = null
     private var sessionBound = false
@@ -230,6 +240,14 @@ class MainActivity : Activity() {
     private var pendingApkInstall: Pair<String, String>? = null
     private var selectedSessionId: String? = null
     private var terminalStatus: TextView? = null
+    private var terminalConnectionBackdrop: View? = null
+    private var terminalConnectionOverlay: View? = null
+    private var terminalConnectionTitle: TextView? = null
+    private var terminalConnectionDetail: TextView? = null
+    private var terminalTailscaleAssist: View? = null
+    private var terminalTailscaleAssistText: TextView? = null
+    private var terminalTailscaleOpenButton: Button? = null
+    private var terminalTailscaleInstallButton: Button? = null
     private var terminalTitle = ""
     private var terminalBackgroundColor = Color.BLACK
     private var terminalRetryButton: Button? = null
@@ -243,6 +261,9 @@ class MainActivity : Activity() {
     private var shellIntegrationNoticeRunnable: Runnable? = null
     private val mainHandler = Handler(Looper.getMainLooper())
     private val diagnosticExecutor = Executors.newSingleThreadExecutor { task -> Thread(task, "diagnostic-store") }
+    private val tailscaleProbeExecutor = Executors.newSingleThreadExecutor { task -> Thread(task, "tailscale-assist") }
+    private val tailscaleProbeGeneration = AtomicInteger()
+    private var activeTailscaleProbeKey: String? = null
     private var previewTerminal: GhosttyTerminal? = null
     private var editingHostId: String? = null
     private var editorKeySelection: Spinner? = null
@@ -284,8 +305,12 @@ class MainActivity : Activity() {
             if (refreshHostSessionRow(sessionId)) return
             if (sessionId != selectedSessionId) return
             val service = sessionService ?: return
-            terminalStatus?.text = "$status · ${service.host(sessionId)?.destination.orEmpty()}"
-            terminalStatus?.visibility = if (status == "Connected") View.GONE else View.VISIBLE
+            val host = service.host(sessionId)
+            val destination = host?.destination.orEmpty()
+            val modalConnectionStatus = isModalConnectionStatus(status)
+            terminalStatus?.text = "$status · $destination"
+            terminalStatus?.visibility = if (status == "Connected" || modalConnectionStatus) View.GONE else View.VISIBLE
+            updateTerminalConnectionOverlay(status, host)
             setTerminalEnabled(status == "Connected")
             setTerminalSystemBarsHidden(status == "Connected")
             terminalRetryButton?.visibility = if (
@@ -595,6 +620,7 @@ class MainActivity : Activity() {
         knownHostStore = KnownHostStore(this)
         sftpFavoriteStore = SftpFavoriteStore(this)
         sftpRecentFolderStore = SftpRecentFolderStore(this)
+        appSettings = getSharedPreferences(APP_SETTINGS_NAME, Context.MODE_PRIVATE)
         if (savedInstanceState == null) SftpPreviewProvider.clearCache(this)
         keyboardBarConfig = keyboardBarStore.load()
         val savedScreen = savedInstanceState?.getString(STATE_SCREEN)
@@ -766,6 +792,16 @@ class MainActivity : Activity() {
         selectedSessionId = null
         sessionService?.selectListenerSession(null)
         terminalStatus = null
+        terminalConnectionBackdrop = null
+        terminalConnectionOverlay = null
+        terminalConnectionTitle = null
+        terminalConnectionDetail = null
+        terminalTailscaleAssist = null
+        terminalTailscaleAssistText = null
+        terminalTailscaleOpenButton = null
+        terminalTailscaleInstallButton = null
+        activeTailscaleProbeKey = null
+        tailscaleProbeGeneration.incrementAndGet()
         terminalTitle = ""
         terminalRetryButton = null
         cancelTerminalChromeFade()
@@ -1657,7 +1693,20 @@ class MainActivity : Activity() {
             runCatching { diagnosticStore.clear() }
                 .onSuccess { toast("Diagnostics cleared.") }
                 .onFailure { toast("Could not clear diagnostics.") }
-        }.margins(bottom = 20))
+        }.margins(bottom = 12))
+        root.addView(CheckBox(this).apply {
+            text = "Tailscale connection assistance"
+            setTextColor(primary)
+            isChecked = tailscaleAssistanceEnabled()
+            setOnCheckedChangeListener { _, checked ->
+                appSettings.edit().putBoolean(PREF_TAILSCALE_ASSISTANCE, checked).apply()
+            }
+        })
+        root.addView(label(
+            "For Tailscale SSH hosts, show VPN route status, probe port 22, and offer to open Tailscale while connecting.",
+            13f,
+            secondary,
+        ).margins(bottom = 20))
 
         root.addView(label("Hardware volume buttons", 18f, primary, Typeface.BOLD))
         root.addView(label(
@@ -4013,10 +4062,15 @@ class MainActivity : Activity() {
             }
             onTextSizeChanged = terminalThemeStore::saveFontSize
         }.also { terminalView = it }
-        root.addView(FrameLayout(this).apply {
+        val terminalScene = FrameLayout(this).apply {
             setBackgroundColor(terminalBackgroundColor)
             addView(view, FrameLayout.LayoutParams(-1, -1))
             addView(toolbar.also { terminalChrome = it }, FrameLayout.LayoutParams(-1, -2, Gravity.TOP))
+        }.also { terminalConnectionBackdrop = it }
+        root.addView(FrameLayout(this).apply {
+            setBackgroundColor(terminalBackgroundColor)
+            addView(terminalScene, FrameLayout.LayoutParams(-1, -1))
+            addView(createTerminalConnectionOverlay(), FrameLayout.LayoutParams(-1, -1))
         }, LinearLayout.LayoutParams(-1, 0, 1f))
         terminalTextInput?.text?.clear()
         root.addView(createTextInputRow(sessionId, service, terminal).also { textInputRow = it })
@@ -4025,6 +4079,166 @@ class MainActivity : Activity() {
         view.refresh()
         updateModifierBarVisibility()
         service.status(sessionId)?.let { sessionListener.onSessionStatus(sessionId, it) }
+    }
+
+    private fun createTerminalConnectionOverlay(): View = FrameLayout(this).apply {
+        setBackgroundColor(Color.argb(150, 0, 0, 0))
+        visibility = View.GONE
+        isClickable = true
+        importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_YES
+        contentDescription = "Connection status"
+        addView(vertical(14).apply {
+            background = roundedBackground(Color.argb(242, 18, 22, 29), 26)
+            setPadding(dp(22), dp(20), dp(22), dp(20))
+            addView(ProgressBar(this@MainActivity).apply {
+                isIndeterminate = true
+                indeterminateTintList = ColorStateList.valueOf(accent)
+            }, LinearLayout.LayoutParams(dp(34), dp(34)).apply { gravity = Gravity.CENTER_HORIZONTAL })
+            addView(label("Connecting", 20f, primary, Typeface.BOLD).apply {
+                gravity = Gravity.CENTER
+                terminalConnectionTitle = this
+            }.margins(top = 12))
+            addView(label("Starting SSH session", 13f, secondary).apply {
+                gravity = Gravity.CENTER
+                terminalConnectionDetail = this
+            }.margins(top = 6))
+            addView(vertical(8).apply {
+                visibility = View.GONE
+                background = roundedBackground(Color.rgb(27, 33, 42), 18)
+                setPadding(dp(14), dp(12), dp(14), dp(12))
+                addView(label("Tailscale assistance", 13f, accent, Typeface.BOLD))
+                addView(label("Checking Tailscale route…", 12f, secondary).apply {
+                    terminalTailscaleAssistText = this
+                }.margins(top = 4))
+                addView(LinearLayout(this@MainActivity).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    addView(compactButton("Open Tailscale") { openTailscaleApp() }.apply {
+                        terminalTailscaleOpenButton = this
+                    }, LinearLayout.LayoutParams(0, dp(42), 1f))
+                    addView(compactButton("Install") { openTailscaleInstall() }.apply {
+                        terminalTailscaleInstallButton = this
+                    }, LinearLayout.LayoutParams(0, dp(42), 1f).apply { marginStart = dp(8) })
+                }.margins(top = 8))
+            }.also { terminalTailscaleAssist = it }.margins(top = 14))
+        }, FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT,
+            Gravity.CENTER,
+        ).apply {
+            leftMargin = dp(24)
+            rightMargin = dp(24)
+        })
+    }.also { terminalConnectionOverlay = it }
+
+    private fun updateTerminalConnectionOverlay(status: String, host: Host?) {
+        val visible = isModalConnectionStatus(status)
+        val destination = host?.destination.orEmpty()
+        terminalConnectionOverlay?.visibility = if (visible) View.VISIBLE else View.GONE
+        terminalConnectionTitle?.text = connectionOverlayTitle(status)
+        terminalConnectionDetail?.text = connectionOverlayDetail(status, destination)
+        updateTailscaleAssistance(visible, host)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            terminalConnectionBackdrop?.setRenderEffect(
+                if (visible) RenderEffect.createBlurEffect(dp(5).toFloat(), dp(5).toFloat(), Shader.TileMode.CLAMP) else null,
+            )
+        }
+    }
+
+    private fun isModalConnectionStatus(status: String): Boolean =
+        status == "Connecting…" || status == "Authenticating…" || status == "Waiting for network" ||
+            status == "Tailscale verification required" || status.startsWith("Reconnecting")
+
+    private fun connectionOverlayTitle(status: String): String = when {
+        status.startsWith("Reconnecting") -> "Reconnecting"
+        status == "Authenticating…" -> "Authenticating"
+        status == "Waiting for network" -> "Waiting for network"
+        status == "Tailscale verification required" -> "Tailscale verification"
+        else -> "Connecting"
+    }
+
+    private fun connectionOverlayDetail(status: String, destination: String): String {
+        val statusText = when {
+            status.startsWith("Reconnecting in ") -> "$status. Terminal input is paused."
+            status == "Reconnecting…" -> "Starting a fresh SSH shell."
+            status == "Waiting for network" -> "The session will retry when the route is available."
+            status == "Tailscale verification required" -> "Approve the Tailscale check, then return here."
+            else -> status
+        }
+        return if (destination.isBlank()) statusText else "$statusText\n$destination"
+    }
+
+    private fun updateTailscaleAssistance(overlayVisible: Boolean, host: Host?) {
+        val tailscaleHost = host?.takeIf { it.authenticationType == AuthenticationType.TAILSCALE_SSH }
+        if (!overlayVisible || !tailscaleAssistanceEnabled() || tailscaleHost == null) {
+            terminalTailscaleAssist?.visibility = View.GONE
+            activeTailscaleProbeKey = null
+            tailscaleProbeGeneration.incrementAndGet()
+            return
+        }
+        terminalTailscaleAssist?.visibility = View.VISIBLE
+        val vpnActive = isVpnTransportActive()
+        val installed = isTailscaleInstalled()
+        terminalTailscaleOpenButton?.visibility = if (installed) View.VISIBLE else View.GONE
+        terminalTailscaleInstallButton?.visibility = if (installed) View.GONE else View.VISIBLE
+        terminalTailscaleAssistText?.text = tailscaleAssistText(
+            vpnActive = vpnActive,
+            hostStatus = "Host route: checking port ${tailscaleHost.port}…",
+        )
+        val probeKey = "${tailscaleHost.id}:${tailscaleHost.hostname}:${tailscaleHost.port}"
+        if (activeTailscaleProbeKey == probeKey) return
+        activeTailscaleProbeKey = probeKey
+        val generation = tailscaleProbeGeneration.incrementAndGet()
+        tailscaleProbeExecutor.execute {
+            val result = probeSshPort(tailscaleHost.hostname, tailscaleHost.port)
+            mainHandler.post {
+                if (generation != tailscaleProbeGeneration.get() || activeTailscaleProbeKey != probeKey) return@post
+                terminalTailscaleAssistText?.text = tailscaleAssistText(
+                    vpnActive = isVpnTransportActive(),
+                    hostStatus = result,
+                )
+            }
+        }
+    }
+
+    private fun tailscaleAssistText(vpnActive: Boolean, hostStatus: String): String =
+        "Tailscale route: ${if (vpnActive) "active VPN route" else "VPN route not detected"}\n$hostStatus"
+
+    private fun probeSshPort(hostname: String, port: Int): String = runCatching {
+        Socket().use { socket ->
+            socket.connect(InetSocketAddress(hostname, port), TAILSCALE_PROBE_TIMEOUT_MS)
+        }
+        "Host route: port $port is reachable"
+    }.getOrElse {
+        "Host route: cannot reach port $port"
+    }
+
+    private fun isVpnTransportActive(): Boolean = runCatching {
+        val connectivityManager = getSystemService(ConnectivityManager::class.java)
+        val network = connectivityManager.activeNetwork ?: return false
+        val capabilities = connectivityManager.getNetworkCapabilities(network) ?: return false
+        capabilities.hasTransport(NetworkCapabilities.TRANSPORT_VPN)
+    }.getOrDefault(false)
+
+    private fun tailscaleAssistanceEnabled(): Boolean =
+        appSettings.getBoolean(PREF_TAILSCALE_ASSISTANCE, true)
+
+    private fun isTailscaleInstalled(): Boolean = packageManager.getLaunchIntentForPackage(TAILSCALE_PACKAGE) != null
+
+    private fun openTailscaleApp() {
+        val intent = packageManager.getLaunchIntentForPackage(TAILSCALE_PACKAGE)
+        if (intent == null) {
+            openTailscaleInstall()
+        } else {
+            startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        }
+    }
+
+    private fun openTailscaleInstall() {
+        val marketUri = Uri.parse("market://details?id=$TAILSCALE_PACKAGE")
+        val webUri = Uri.parse("https://play.google.com/store/apps/details?id=$TAILSCALE_PACKAGE")
+        val intent = Intent(Intent.ACTION_VIEW, marketUri)
+        if (intent.resolveActivity(packageManager) != null) startActivity(intent)
+        else startActivity(Intent(Intent.ACTION_VIEW, webUri))
     }
 
     private fun revealTerminalChrome(sessionId: String, autoHide: Boolean = true) {
@@ -4875,16 +5089,7 @@ class MainActivity : Activity() {
                 showEntryActions(state.browserId, entry)
                 true
             }
-            val typeDescription = when (entry.type) {
-                SftpEntryType.FILE -> "File"
-                SftpEntryType.DIRECTORY -> "Directory"
-                SftpEntryType.SYMLINK -> "Symbolic link"
-                SftpEntryType.UNSUPPORTED -> "Unsupported entry"
-            }
-            val primaryAction = if (actionable && entry.type in setOf(SftpEntryType.FILE, SftpEntryType.DIRECTORY)) {
-                " Tap to open."
-            } else ""
-            row.contentDescription = "$typeDescription, ${entry.name}.$primaryAction Long press for details and actions."
+            row.contentDescription = sftpEntryAccessibilityDescription(entry, actionable)
             list.addView(row)
         }
     }
@@ -5135,6 +5340,10 @@ class MainActivity : Activity() {
         private const val SHELL_INTEGRATION_NOTICE_DELAY_MS = 15_000L
         private const val TERMINAL_CHROME_VISIBLE_MS = 2_000L
         private const val TERMINAL_CHROME_FADE_DURATION_MS = 300L
+        private const val APP_SETTINGS_NAME = "app_settings"
+        private const val PREF_TAILSCALE_ASSISTANCE = "tailscale_assistance"
+        private const val TAILSCALE_PACKAGE = "com.tailscale.ipn"
+        private const val TAILSCALE_PROBE_TIMEOUT_MS = 1_500
         private const val MAX_OPEN_FILE_BYTES = 25L * 1024 * 1024
         private const val STATE_SCREEN = "screen"
         private const val STATE_SESSION_ID = "session_id"

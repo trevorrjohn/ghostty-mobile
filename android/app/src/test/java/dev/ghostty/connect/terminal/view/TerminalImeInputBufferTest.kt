@@ -83,6 +83,31 @@ class TerminalImeInputBufferTest {
     }
 
     @Test
+    fun composingRegionCanCorrectWordInsidePendingPhrase() {
+        buffer.setComposing("hello wrld")
+        buffer.finishComposing()
+
+        assertTrue(buffer.setComposingRegion(6, 10))
+        buffer.setComposing("world")
+        buffer.finishComposing()
+        runScheduledActions()
+
+        assertEquals(listOf("hello world"), input)
+    }
+
+    @Test
+    fun commitTextReplacesActiveComposingRegionInsidePendingPhrase() {
+        buffer.setComposing("hello wrld")
+        buffer.finishComposing()
+
+        assertTrue(buffer.setComposingRegion(6, 10))
+        assertTrue(buffer.commit("world"))
+        runScheduledActions()
+
+        assertEquals(listOf("hello world"), input)
+    }
+
+    @Test
     fun emptyOrNullCommitDoesNotDiscardFinishedText() {
         buffer.setComposing("hello")
         buffer.finishComposing()
