@@ -6,6 +6,7 @@ import android.graphics.Typeface
 import android.graphics.text.TextRunShaper
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import dev.ghostty.connect.model.KeyboardActionStep
+import dev.ghostty.connect.model.KeyboardBarCatalog
 import dev.ghostty.connect.model.KeyboardBarItem
 import dev.ghostty.connect.model.KeyboardBarItemType
 import dev.ghostty.connect.model.KeyboardModifier
@@ -46,6 +47,21 @@ class GhosttyTerminalIntegrationTest {
     }
 
     @Test
+    fun controlBCombinationEncodesControlCharacter() {
+        GhosttyTerminal().use { terminal ->
+            val bytes = encodeKeyboardAction(KeyboardBarCatalog.controlB) { step ->
+                terminal.encodeKey(
+                    key = step.key,
+                    text = step.key,
+                    modifiers = if (KeyboardModifier.CONTROL in step.modifiers) 1 shl 1 else 0,
+                )
+            }
+
+            assertArrayEquals(byteArrayOf(0x02), bytes)
+        }
+    }
+
+    @Test
     fun focusReportsOnlyWhenApplicationEnablesMode() {
         GhosttyTerminal().use { terminal ->
             assertTrue(terminal.encodeFocus(true).isEmpty())
@@ -54,6 +70,15 @@ class GhosttyTerminalIntegrationTest {
             assertArrayEquals("\u001b[I".toByteArray(), terminal.encodeFocus(true))
             assertArrayEquals("\u001b[O".toByteArray(), terminal.encodeFocus(false))
         }
+    }
+
+    @Test
+    fun focusEventAfterCloseIsIgnored() {
+        val terminal = GhosttyTerminal()
+        terminal.write("\u001b[?1004h")
+        terminal.close()
+
+        assertTrue(terminal.encodeFocus(false).isEmpty())
     }
 
     @Test

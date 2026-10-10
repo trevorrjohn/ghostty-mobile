@@ -72,7 +72,11 @@ class GhosttyTerminal(
         return nativeIsMouseTracking(handle)
     }
 
-    fun encodeFocus(focused: Boolean): ByteArray = nativeEncodeFocus(handle, focused)
+    fun encodeFocus(focused: Boolean): ByteArray {
+        val current = handle
+        if (current == 0L) return ByteArray(0)
+        return nativeEncodeFocus(current, focused)
+    }
 
     fun encodeMouse(
         action: Int,

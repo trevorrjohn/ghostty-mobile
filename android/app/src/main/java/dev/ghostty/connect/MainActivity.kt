@@ -4012,7 +4012,9 @@ class MainActivity : Activity() {
                 ))
             }
             onTerminalFocusChanged = { focused ->
-                terminal.encodeFocus(focused).takeIf(ByteArray::isNotEmpty)?.let { sessionService?.send(sessionId, it) }
+                if (selectedSessionId == sessionId && sessionService?.terminal(sessionId) === terminal) {
+                    terminal.encodeFocus(focused).takeIf(ByteArray::isNotEmpty)?.let { sessionService?.send(sessionId, it) }
+                }
             }
             onSelectionUpdate = { start, column, row -> terminal.setSelectionEndpoint(start, column, row) }
             onSelectionFinished = {
@@ -4559,6 +4561,7 @@ class MainActivity : Activity() {
                     activeModifiers += modifier
                 }
                 renderModifierBarItems()
+                refocusTerminalInputTarget()
             }
             KeyboardBarItemType.KEY -> sendBarKey(item.key.orEmpty(), activeModifiers)
             KeyboardBarItemType.COMBINATION -> {
@@ -4651,13 +4654,14 @@ class MainActivity : Activity() {
     }
 
     private fun sendBarKey(key: String, modifiers: Set<KeyboardModifier>) {
-        val text = key.takeUnless { candidate -> KeyboardBarCatalog.keys.any { it.key == candidate } }.orEmpty()
         val sessionId = selectedSessionId ?: return
         val terminal = sessionService?.terminal(sessionId) ?: return
+        val modifierBits = ghosttyModifierBits(modifiers)
+        val text = softKeyText(key)
         sessionService?.send(sessionId, terminal.encodeKey(
             key = key,
             text = text,
-            modifiers = ghosttyModifierBits(modifiers),
+            modifiers = modifierBits,
         ))
         consumeOneShotModifiers()
     }
@@ -4666,11 +4670,21 @@ class MainActivity : Activity() {
         val sessionId = selectedSessionId ?: return
         val terminal = sessionService?.terminal(sessionId) ?: return
         val bytes = encodeKeyboardAction(item, additionalModifiers) { step ->
-            val text = step.key.takeUnless { candidate -> KeyboardBarCatalog.keys.any { it.key == candidate } }.orEmpty()
-            terminal.encodeKey(step.key, text, ghosttyModifierBits(step.modifiers))
+            val modifierBits = ghosttyModifierBits(step.modifiers)
+            terminal.encodeKey(step.key, softKeyText(step.key), modifierBits)
         }
         if (bytes.isNotEmpty()) sessionService?.send(sessionId, bytes)
         consumeOneShotModifiers()
+    }
+
+    private fun softKeyText(key: String): String =
+        key.takeUnless { candidate -> KeyboardBarCatalog.keys.any { it.key == candidate } }.orEmpty()
+
+    private fun refocusTerminalInputTarget() {
+        val sessionId = selectedSessionId ?: return
+        val target = if (sessionId in textModeSessions) terminalTextInput else terminalView
+        target?.requestFocus()
+        target?.post { getSystemService(InputMethodManager::class.java).showSoftInput(target, InputMethodManager.SHOW_IMPLICIT) }
     }
 
     private fun sendHardwareKey(terminal: GhosttyTerminal, event: KeyEvent, logicalKey: String? = null): Boolean {
@@ -5228,6 +5242,8 @@ class MainActivity : Activity() {
     private fun barButton(text: String, active: Boolean = false, action: () -> Unit) = Button(this).apply {
         this.text = text
         isAllCaps = false
+        isFocusable = false
+        isFocusableInTouchMode = false
         setTextColor(ColorStateList(
             arrayOf(intArrayOf(android.R.attr.state_pressed), intArrayOf()),
             intArrayOf(Color.rgb(8, 15, 12), if (active) Color.rgb(8, 15, 12) else primary),

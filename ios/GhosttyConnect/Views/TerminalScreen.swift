@@ -660,6 +660,7 @@ struct TerminalScreen: View {
         UIImpactFeedbackGenerator(style: .light).impactOccurred()
         if let modifier = resolvedModifier(item) {
             keyboardBarState.toggle(modifier)
+            refocusTerminalInputTarget()
             return
         }
         switch item {
@@ -687,6 +688,12 @@ struct TerminalScreen: View {
     private func lockKeyboardBarItem(_ item: KeyboardBarItem) {
         guard let modifier = resolvedModifier(item) else { return }
         keyboardBarState.lock(modifier)
+        refocusTerminalInputTarget()
+    }
+
+    private func refocusTerminalInputTarget() {
+        guard session.state == .connected else { return }
+        keyboardFocused = true
     }
 
     private func handleInput(_ event: TerminalInputEvent) {
