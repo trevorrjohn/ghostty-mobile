@@ -111,12 +111,6 @@ class GhosttyTerminal(
 
     fun clearSelection() = nativeClearSelection(handle)
 
-    fun selectLatestOutput(): Boolean = nativeSelectLatestOutput(handle)
-
-    fun selectOutput(column: Int, row: Int): Boolean = nativeSelectOutput(handle, column, row)
-
-    fun jumpPrompt(direction: Int): Boolean = nativeJumpPrompt(handle, direction)
-
     fun search(query: String, direction: Int): Boolean = nativeSearch(handle, query, direction)
 
     fun hyperlink(column: Int, row: Int): String = nativeHyperlink(handle, column, row)
@@ -404,9 +398,6 @@ class GhosttyTerminal(
     private external fun nativeSelectedText(handle: Long): String
     private external fun nativePlainText(handle: Long): ByteArray
     private external fun nativeClearSelection(handle: Long)
-    private external fun nativeSelectLatestOutput(handle: Long): Boolean
-    private external fun nativeSelectOutput(handle: Long, column: Int, row: Int): Boolean
-    private external fun nativeJumpPrompt(handle: Long, direction: Int): Boolean
     private external fun nativeSearch(handle: Long, query: String, direction: Int): Boolean
     private external fun nativeHyperlink(handle: Long, column: Int, row: Int): String
     private external fun nativeDrainEffects(handle: Long): ByteArray

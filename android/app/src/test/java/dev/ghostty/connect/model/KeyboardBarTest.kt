@@ -114,7 +114,7 @@ class KeyboardBarTest {
         val config = KeyboardBarConfig()
 
         assertTrue(config.holdSwipeEnabled)
-        assertEquals(HoldSwipeActions.COPY_LATEST, config.holdSwipeActions[HoldSwipeDirection.UP])
+        assertEquals(HoldSwipeActions.SEARCH, config.holdSwipeActions[HoldSwipeDirection.UP])
         assertEquals(HoldSwipeActions.PASTE, config.holdSwipeActions[HoldSwipeDirection.RIGHT])
         assertEquals("key-escape", config.holdSwipeActions[HoldSwipeDirection.DOWN])
         assertEquals(HoldSwipeActions.NEXT_SESSION, config.holdSwipeActions[HoldSwipeDirection.LEFT])

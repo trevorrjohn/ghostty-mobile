@@ -35,7 +35,7 @@ Shared product boundaries are defined in [PRODUCT_SCOPE.md](PRODUCT_SCOPE.md), a
 | Phase | Outcome | Why this comes next |
 | --- | --- | --- |
 | 0. Android feedback loop | Capture encrypted in-app dogfooding notes, review them in context, and explicitly export a sanitized report. | Product priorities need evidence from daily use before more scope is added. |
-| 1. Android core quality | Complete identity management, trust, cancellation, retry, secure-store safety, input, shell integration, and error recovery on Android. | Android is the reference implementation for discovering and validating the product workflow. |
+| 1. Android core quality | Complete identity management, trust, cancellation, retry, secure-store safety, input, and error recovery on Android. | Android is the reference implementation for discovering and validating the product workflow. |
 | 2. Android lifecycle and release baseline | Validate multiple sessions, interruptions, accessibility, device layouts, live SSH, and UI automation. | The reference behavior must be dependable before it is copied. |
 | 3. iOS core parity | Establish a full-app TestFlight baseline, then implement the validated Android connection, terminal, session, and privacy behavior using iOS-native architecture. | The full app must prove signing, distribution, installation, and core behavior before optional lightweight experiences add release surface. |
 | 4. Remote integrations | Enforce remote clipboard and notification policy, complete title/CWD/link handling, and render bounded inline graphics. | These features must preserve consent and parser limits before being enabled broadly. |
@@ -92,8 +92,8 @@ The matrix reflects the current working tree, not only the last commit.
 | Selection and copy | `Implemented` | `Partial` | Android has an explicit local-selection mode that pauses remote mouse reporting for tmux and other TUIs, plus contextual double-tap actions, draggable endpoints, edge autoscroll, and copy. iOS supports contextual double-tap selection followed by long-press multi-row drag extension, bounded edge autoscroll, post-lift draggable endpoint handles, and plain-text copy; stationary holds without selection open quick navigation, and broader pointer selection remains. |
 | Paste and paste-safety confirmation | `Implemented` | `Implemented` | Both route explicit paste through Ghostty's mode-aware encoder and confirm LF or bracketed-paste termination; iOS also confirms CR-only command submission. |
 | Search within terminal history | `Implemented` | `Implemented` | Both select one match and support cyclic previous/next navigation across soft-wrapped scrollback. iOS bounds queries to 1,024 UTF-8 bytes and uses Unicode-aware case matching; Android still needs full Unicode case handling. |
-| Prompt navigation and semantic output copy | `Partial` | `Planned` | Depends on reliable OSC 133 shell markers. Android has the terminal support; iOS has not started it. |
-| Guided Bash and zsh shell integration | `Partial` | `Planned` | Android detects OSC 133 markers and provides guided setup; it still needs broader validation and durable UX. iOS has not reached this slice. |
+| Prompt navigation and semantic output copy | `Planned` | `Planned` | Deferred pending a rethought shell-integration design and reliable OSC 133 marker UX. |
+| Guided Bash and zsh shell integration | `Planned` | `Planned` | Deferred pending a rethought setup, trust, and troubleshooting model; the previous Android setup prompt was removed. |
 | Mouse, trackpad, stylus, and remote mouse reporting | `Implemented` | `Partial` | Android exposes an explicit local-selection override when remote applications capture pointer input, preserves correct right/middle button identity, and releases remote buttons on focus and lifecycle transitions. iOS now routes indirect wheel and trackpad scrolling locally; primary-button selection, stylus policy, remote mouse encoding, and explicit local override remain. |
 | Built-in themes and font scaling | `Implemented` | `Implemented` | Custom fonts, themes, and per-host overrides remain planned. |
 | Cursor blinking and synchronized-output scheduling | `Partial` | `Partial` | iOS now schedules a lightweight two-phase cursor layer without redrawing terminal cells; synchronized-output suppression and watchdog behavior remain on both mobile adapters. |
@@ -264,7 +264,7 @@ These are deferred rather than rejected and should be reconsidered only after or
 ## Near-Term Execution
 
 1. Use the Android feedback log during daily host, terminal, and interruption workflows and triage by severity and repetition.
-2. Complete Android Bash/zsh shell-integration validation and continue device-specific IME, AltGr, shortcut, and live tmux input coverage.
+2. Continue Android device-specific IME, AltGr, shortcut, and live tmux input coverage.
 3. Continue Android multi-session validation through network and VPN changes and process death; selected-session rotation restoration, same-host identifiers, monotonic durations, prompt ownership, and pending-connect rotation handoff are implemented.
 4. Add disposable SSH-server, lifecycle, accessibility, and UI automation for the validated Android behavior.
 5. Update shared contracts and fixtures with product decisions discovered through Android dogfooding.

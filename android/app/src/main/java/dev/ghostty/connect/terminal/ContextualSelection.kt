@@ -5,7 +5,6 @@ import dev.ghostty.connect.terminal.bridge.TerminalSnapshot
 enum class ContextualSelectionKind {
     LINK,
     PATH,
-    OUTPUT,
     WORD,
 }
 

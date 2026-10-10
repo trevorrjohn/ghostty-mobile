@@ -72,7 +72,7 @@ Production rollout does not begin until every item marked **Launch blocker** is 
 - [ ] **Launch blocker:** Verify native libraries and the packaged AAB satisfy Android 16 KB page-size requirements.
 - [ ] **Launch blocker:** Run the disposable live SSH/SFTP suite from the release commit.
 - [ ] Validate host creation, edit, duplicate, deletion, startup-command persistence and once-per-shell execution, identity migration, trust removal, and process restart.
-- [ ] Validate terminal Unicode, colors, cursor, resize, scrollback, selection, copy, safe paste, search, links, and shell integration.
+- [ ] Validate terminal Unicode, colors, cursor, resize, scrollback, selection, copy, safe paste, search, and links.
 - [ ] Validate software keyboards from Gboard and one materially different IME.
 - [ ] Validate hardware keyboard letters, punctuation, Ctrl, Alt/AltGr, Shift, navigation, function, numpad, and lock keys.
 - [ ] Validate tmux/screen keyboard, mouse, resize, selection override, and reconnect workflows against live hosts.

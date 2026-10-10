@@ -137,4 +137,4 @@ Connected tests require a compatible emulator or device. Public release also req
 
 ## Current Platform Gaps
 
-Current status is maintained in the [roadmap](../ROADMAP.md). Important Android-specific engineering gaps include full shell-integration validation, large-screen workflows, and release automation. The SFTP slice has a first disposable OpenSSH integration tier but still needs key authentication, host-key rotation, server-side interruption, document-provider and connected lifecycle testing, UI automation, and TalkBack validation.
+Current status is maintained in the [roadmap](../ROADMAP.md). Important Android-specific engineering gaps include large-screen workflows and release automation. The SFTP slice has a first disposable OpenSSH integration tier but still needs key authentication, host-key rotation, server-side interruption, document-provider and connected lifecycle testing, UI automation, and TalkBack validation.

@@ -32,7 +32,6 @@ data class KeyboardActionStep(
 object HoldSwipeActions {
     const val SELECT_HERE = "quick-select-here"
     const val PASTE = "quick-paste"
-    const val COPY_LATEST = "quick-copy-latest"
     const val SEARCH = "quick-search"
     const val NEXT_SESSION = "quick-next-session"
     const val CHOOSE_SESSION = "quick-choose-session"
@@ -40,7 +39,6 @@ object HoldSwipeActions {
     val builtIns = listOf(
         SELECT_HERE to "Select here",
         PASTE to "Paste",
-        COPY_LATEST to "Copy latest",
         SEARCH to "Search",
         NEXT_SESSION to "Next session",
         CHOOSE_SESSION to "Choose session",
@@ -105,7 +103,7 @@ data class KeyboardBarConfig(
     val volumeDownActionId: String = KeyboardBarCatalog.DEFAULT_VOLUME_DOWN_ACTION_ID,
     val holdSwipeEnabled: Boolean = true,
     val holdSwipeActions: Map<HoldSwipeDirection, String> = mapOf(
-        HoldSwipeDirection.UP to HoldSwipeActions.COPY_LATEST,
+        HoldSwipeDirection.UP to HoldSwipeActions.SEARCH,
         HoldSwipeDirection.RIGHT to HoldSwipeActions.PASTE,
         HoldSwipeDirection.DOWN to "key-escape",
         HoldSwipeDirection.LEFT to HoldSwipeActions.NEXT_SESSION,

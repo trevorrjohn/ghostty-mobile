@@ -158,4 +158,4 @@ Dogfooding feedback is manually authored product data, not automatic diagnostics
 
 ## Shared Behavioral Fixtures
 
-Algorithms duplicated in Kotlin and Swift should use shared fixture inputs and expected outputs where practical. Priority fixtures include host-name duplication, terminal byte streams, key inspection, tmux passthrough, iTerm payload bounds, host trust transitions, retry policy, resize, and shell-integration markers.
+Algorithms duplicated in Kotlin and Swift should use shared fixture inputs and expected outputs where practical. Priority fixtures include host-name duplication, terminal byte streams, key inspection, tmux passthrough, iTerm payload bounds, host trust transitions, retry policy, and resize.

@@ -28,7 +28,7 @@ Seance Shell is a focused native SSH client for Android and iOS powered by Ghost
 - Platform-native rendering, keyboard input, touch interaction, and accessibility.
 - Correct resize, Unicode, colors, cursor behavior, scrollback, selection, copy, paste, and search.
 - Bounded and consent-gated remote effects such as clipboard requests, notifications, links, and inline graphics.
-- Optional shell integration for semantic prompt and command boundaries.
+- Optional future shell integration for semantic prompt and command boundaries after a reviewed setup and troubleshooting design.
 
 ### Sessions and Connections
 

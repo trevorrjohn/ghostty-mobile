@@ -74,8 +74,7 @@ class GhosttyTerminalView(
     var onOpenLink: (String) -> Unit = {}
     var onTap: () -> Unit = {}
     var onLocalSelectionModeChanged: (Boolean) -> Unit = {}
-    var onMetadataChanged: (title: String, pwd: String, atPrompt: Boolean, passwordInput: Boolean) -> Unit =
-        { _, _, _, _ -> }
+    var onMetadataChanged: (title: String, pwd: String, passwordInput: Boolean) -> Unit = { _, _, _ -> }
     var onResize: (columns: Int, rows: Int, pixelWidth: Int, pixelHeight: Int) -> Unit = { _, _, _, _ -> }
     var onScrollPositionChanged: (isAtBottom: Boolean) -> Unit = {}
     var onTextSizeChanged: (Float) -> Unit = {}
@@ -232,7 +231,7 @@ class GhosttyTerminalView(
         kittyFrame = terminal.kittyFrame()
         updateSelectionHandles()
         updateKittyBitmaps()
-        onMetadataChanged(snapshot.title, snapshot.pwd, snapshot.cursorAtPrompt, snapshot.passwordInput)
+        onMetadataChanged(snapshot.title, snapshot.pwd, snapshot.passwordInput)
         if (snapshot.isAtBottom != wasAtBottom) onScrollPositionChanged(snapshot.isAtBottom)
         invalidate()
     }
@@ -723,7 +722,7 @@ class GhosttyTerminalView(
                     return true
                 }
                 if (remoteEdgeScrollGesture) {
-                    sendRemoteWheelFromDelta(event.y - lastTouchY, event.x, event.y)
+                    sendRemoteWheelFromDelta(lastTouchY - event.y, event.x, event.y)
                     lastTouchY = event.y
                     return true
                 }
@@ -932,7 +931,6 @@ class GhosttyTerminalView(
             val copyLabel = when (contextualSelection?.kind) {
                 ContextualSelectionKind.LINK -> "Copy Link"
                 ContextualSelectionKind.PATH -> "Copy Path"
-                ContextualSelectionKind.OUTPUT -> "Copy Block"
                 else -> "Copy"
             }
             menu.add(0, ACTION_COPY, 0, copyLabel).setShowAsAction(MenuItem.SHOW_AS_ACTION_ALWAYS)
@@ -1307,9 +1305,6 @@ class GhosttyTerminalView(
                 "Copy visible terminal text",
             ))
         }
-        info.addAction(AccessibilityNodeInfo.AccessibilityAction(ACTION_PREVIOUS_PROMPT, "Previous prompt"))
-        info.addAction(AccessibilityNodeInfo.AccessibilityAction(ACTION_NEXT_PROMPT, "Next prompt"))
-        info.addAction(AccessibilityNodeInfo.AccessibilityAction(ACTION_COPY_OUTPUT, "Copy latest command output"))
         if (holdSwipeLabels.isNotEmpty()) {
             if (holdSwipePinned) {
                 HoldSwipeDirection.entries.forEach { direction ->
@@ -1343,18 +1338,6 @@ class GhosttyTerminalView(
                     ClipData.newPlainText("Visible terminal", visibleAccessibilityText()),
                 )
                 return true
-            }
-            ACTION_PREVIOUS_PROMPT -> {
-                if (!terminal.jumpPrompt(-1)) return false
-            }
-            ACTION_NEXT_PROMPT -> {
-                if (!terminal.jumpPrompt(1)) return false
-            }
-            ACTION_COPY_OUTPUT -> {
-                if (!terminal.selectLatestOutput()) return false
-                context.getSystemService(ClipboardManager::class.java).setPrimaryClip(
-                    ClipData.newPlainText("Latest command output", terminal.selectedText()),
-                )
             }
             ACTION_OPEN_QUICK_NAVIGATION -> {
                 holdSwipe.start(width / 2f, height / 2f)
@@ -1544,9 +1527,6 @@ class GhosttyTerminalView(
         private const val ACTION_COPY = 1
         private const val ACTION_OPEN_LINK = 2
         private const val ACTION_CLEAR = 3
-        private const val ACTION_PREVIOUS_PROMPT = 0x01020001
-        private const val ACTION_NEXT_PROMPT = 0x01020002
-        private const val ACTION_COPY_OUTPUT = 0x01020003
         private const val ACTION_OPEN_QUICK_NAVIGATION = 0x01020004
         private const val ACTION_CLOSE_QUICK_NAVIGATION = 0x01020005
         private const val ACTION_QUICK_NAVIGATION_UP = 0x01020006

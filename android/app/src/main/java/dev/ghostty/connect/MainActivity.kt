@@ -258,8 +258,6 @@ class MainActivity : Activity() {
     private val textModeSessions = mutableSetOf<String>()
     private var textInputRow: View? = null
     private var terminalTextInput: EditText? = null
-    private var shellIntegrationNotice: View? = null
-    private var shellIntegrationNoticeRunnable: Runnable? = null
     private val mainHandler = Handler(Looper.getMainLooper())
     private val diagnosticExecutor = Executors.newSingleThreadExecutor { task -> Thread(task, "diagnostic-store") }
     private val tailscaleProbeExecutor = Executors.newSingleThreadExecutor { task -> Thread(task, "tailscale-assist") }
@@ -318,10 +316,8 @@ class MainActivity : Activity() {
                 service.summaries().firstOrNull { it.sessionId == sessionId }?.canRetry == true
             ) View.VISIBLE else View.GONE
             if (status == "Connected") {
-                scheduleShellIntegrationNotice(sessionId)
                 revealTerminalChrome(sessionId)
             } else {
-                cancelShellIntegrationNotice()
                 revealTerminalChrome(sessionId, autoHide = false)
             }
         }
@@ -816,8 +812,6 @@ class MainActivity : Activity() {
         terminalTextInput?.text?.clear()
         terminalTextInput = null
         textInputRow = null
-        shellIntegrationNotice = null
-        cancelShellIntegrationNotice()
         editorKeySelection = null
         editorAuthentication = null
         editorIdentities = emptyList()
@@ -3856,8 +3850,7 @@ class MainActivity : Activity() {
             val selectionAction = if (terminalView?.isLocalSelectionMode == true) "Done selecting" else "Select text"
             val actions = listOf(
                 selectionAction, "Hosts", "Input mode", "Duplicate session", "Browse files",
-                "Export encrypted archive", "Disconnect", "Paste", "Copy latest output",
-                "Previous prompt", "Next prompt", "Search scrollback", "Shell integration setup",
+                "Export encrypted archive", "Disconnect", "Paste", "Search scrollback",
                 "Record feedback", "Send interrupt signal", "Send terminate signal",
             )
             actions.forEach { action ->
@@ -3888,23 +3881,7 @@ class MainActivity : Activity() {
                             showHosts(disconnect = false)
                         }
                         "Paste" -> pasteFromClipboard(service)
-                        "Copy latest output" -> {
-                            if (terminal.selectLatestOutput()) {
-                                terminalView?.refresh()
-                                writeClipboard(terminal.selectedText())
-                                toast("Latest output copied")
-                            } else toast("No command output found")
-                        }
-                        "Previous prompt" -> {
-                            if (!terminal.jumpPrompt(-1)) toast("No previous prompt")
-                            terminalView?.refresh()
-                        }
-                        "Next prompt" -> {
-                            if (!terminal.jumpPrompt(1)) toast("No next prompt")
-                            terminalView?.refresh()
-                        }
                         "Search scrollback" -> showScrollbackSearch(terminal)
-                        "Shell integration setup" -> showShellIntegrationSetup()
                         "Record feedback" -> showFeedbackDialog("Terminal", sessionId)
                         "Send interrupt signal" -> service.signal(sessionId, Signal.INT)
                         "Send terminate signal" -> service.signal(sessionId, Signal.TERM)
@@ -3918,21 +3895,6 @@ class MainActivity : Activity() {
             dialog.show()
         }
         toolbar.addView(status)
-        toolbar.addView(vertical(10).apply {
-            setBackgroundColor(surface)
-            addView(label("Command tracking needs shell integration.", 13f, primary))
-            addView(label("Set it up to identify commands without recording passwords or TUI input.", 12f, secondary))
-            addView(LinearLayout(this@MainActivity).apply {
-                orientation = LinearLayout.HORIZONTAL
-                addView(compactButton("Set up") { showShellIntegrationSetup() })
-                addView(compactButton("Not now") {
-                    service.dismissShellIntegrationNotice(sessionId)
-                    shellIntegrationNotice?.visibility = View.GONE
-                    revealTerminalChrome(sessionId)
-                })
-            }.margins(top = 6))
-            visibility = View.GONE
-        }.also { shellIntegrationNotice = it }.margins(top = 8))
         toolbar.addView(button("Retry / Reauthenticate", secondary) { reauthenticate(sessionId) }.apply {
             visibility = if (service.summaries().firstOrNull { it.sessionId == sessionId }?.canRetry == true) {
                 View.VISIBLE
@@ -4046,20 +4008,13 @@ class MainActivity : Activity() {
             onLocalSelectionModeChanged = { active ->
                 revealTerminalChrome(sessionId, autoHide = !active)
             }
-            onMetadataChanged = { title, pwd, atPrompt, passwordInput ->
+            onMetadataChanged = { title, pwd, passwordInput ->
                 val displayedTitle = title.ifBlank { host.name }
                 if (terminalTitle != displayedTitle) {
                     terminalTitle = displayedTitle
                     renderModifierBarItems()
                 }
                 if (pwd.isNotBlank()) terminalStatus?.text = displayRemotePwd(pwd)
-                if (atPrompt) {
-                    service.markShellIntegrationDetected(sessionId)
-                    val noticeWasVisible = shellIntegrationNotice?.visibility == View.VISIBLE
-                    shellIntegrationNotice?.visibility = View.GONE
-                    cancelShellIntegrationNotice()
-                    if (noticeWasVisible) revealTerminalChrome(sessionId)
-                }
                 setPasswordInput(passwordInput)
                 if (passwordInput) window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
                 else window.clearFlags(WindowManager.LayoutParams.FLAG_SECURE)
@@ -4264,7 +4219,7 @@ class MainActivity : Activity() {
         terminalChromeFadeRunnable = Runnable {
             if (selectedSessionId != sessionId || terminalChrome !== chrome) return@Runnable
             if (terminalStatus?.visibility == View.VISIBLE || terminalRetryButton?.visibility == View.VISIBLE ||
-                shellIntegrationNotice?.visibility == View.VISIBLE || terminalMouseTracking
+                terminalMouseTracking
             ) return@Runnable
             chrome.animate()
                 .alpha(0f)
@@ -4329,71 +4284,6 @@ class MainActivity : Activity() {
                 View.SYSTEM_UI_FLAG_LAYOUT_STABLE
             }
         }
-    }
-
-    private fun scheduleShellIntegrationNotice(sessionId: String) {
-        cancelShellIntegrationNotice()
-        val service = sessionService ?: return
-        if (service.shellIntegrationDetected(sessionId) || service.shellIntegrationNoticeDismissed(sessionId)) return
-        shellIntegrationNoticeRunnable = Runnable {
-            if (selectedSessionId == sessionId && service.status(sessionId) == "Connected" &&
-                !service.shellIntegrationDetected(sessionId) && !service.shellIntegrationNoticeDismissed(sessionId)
-            ) {
-                shellIntegrationNotice?.visibility = View.VISIBLE
-                revealTerminalChrome(sessionId, autoHide = false)
-            }
-        }.also { mainHandler.postDelayed(it, SHELL_INTEGRATION_NOTICE_DELAY_MS) }
-    }
-
-    private fun cancelShellIntegrationNotice() {
-        shellIntegrationNoticeRunnable?.let(mainHandler::removeCallbacks)
-        shellIntegrationNoticeRunnable = null
-    }
-
-    private fun showShellIntegrationSetup() {
-        AlertDialog.Builder(this)
-            .setTitle("Set up shell integration")
-            .setItems(arrayOf("Bash", "zsh")) { _, index ->
-                if (index == 0) {
-                    showShellIntegrationInstallCommand(
-                        "Bash", R.raw.ghostty_connect_bash, "seance-shell.bash", ".bashrc",
-                    )
-                } else {
-                    showShellIntegrationInstallCommand(
-                        "zsh", R.raw.ghostty_connect_zsh, "seance-shell.zsh", ".zshrc",
-                    )
-                }
-            }
-            .setNegativeButton("Cancel", null)
-            .show()
-    }
-
-    private fun showShellIntegrationInstallCommand(
-        shell: String,
-        scriptResource: Int,
-        scriptName: String,
-        rcFile: String,
-    ) {
-        val script = resources.openRawResource(scriptResource).bufferedReader().use { it.readText() }.trimEnd()
-        val sourceLine = "source \"\$HOME/.config/seance-shell/$scriptName\""
-        val installCommand = buildString {
-            appendLine("mkdir -p \"\$HOME/.config/seance-shell\"")
-            appendLine("cat > \"\$HOME/.config/seance-shell/$scriptName\" <<'SEANCE_SHELL_EOF'")
-            appendLine(script)
-            appendLine("SEANCE_SHELL_EOF")
-            appendLine("touch \"\$HOME/$rcFile\"")
-            appendLine("grep -Fqx '$sourceLine' \"\$HOME/$rcFile\" || printf '%s\\n' '$sourceLine' >> \"\$HOME/$rcFile\"")
-            appendLine(sourceLine)
-        }.trimEnd()
-        AlertDialog.Builder(this)
-            .setTitle("$shell setup")
-            .setMessage("Copy and paste the installation command into the remote shell. The setup notice will disappear when the next prompt is detected.")
-            .setNegativeButton("Back") { _, _ -> showShellIntegrationSetup() }
-            .setPositiveButton("Copy command") { _, _ ->
-                writeClipboard(installCommand)
-                toast("Installation command copied")
-            }
-            .show()
     }
 
     private fun createModifierBar(): View {
@@ -4638,14 +4528,6 @@ class MainActivity : Activity() {
                 return terminalView?.selectContextAt(column, row) == true
             }
             HoldSwipeActions.PASTE -> sessionService?.let(::pasteFromClipboard)
-            HoldSwipeActions.COPY_LATEST -> {
-                if (!terminal.selectLatestOutput()) return false
-                val text = terminal.selectedText()
-                terminal.clearSelection()
-                if (text.isEmpty()) return false
-                writeClipboard(text)
-                toast("Latest output copied")
-            }
             HoldSwipeActions.SEARCH -> showScrollbackSearch(terminal)
             HoldSwipeActions.NEXT_SESSION -> return switchToNextSession(sourceSessionId)
             HoldSwipeActions.CHOOSE_SESSION -> return showSessionChooser(sourceSessionId)
@@ -4850,9 +4732,6 @@ class MainActivity : Activity() {
                 } else match.kind
                 return ContextualSelection(kind, match.text)
             }
-        }
-        if (terminal.selectOutput(column, row)) {
-            return ContextualSelection(ContextualSelectionKind.OUTPUT)
         }
         return if (terminal.selectWord(column, row)) {
             ContextualSelection(ContextualSelectionKind.WORD)
@@ -5066,7 +4945,6 @@ class MainActivity : Activity() {
     }
 
     override fun onDestroy() {
-        cancelShellIntegrationNotice()
         cancelTerminalChromeFade()
         cancelBiometricPrompt()
         if (!isChangingConfigurations) {
@@ -5387,7 +5265,6 @@ class MainActivity : Activity() {
         const val GHOSTTY_MOD_CAPS_LOCK = 1 shl 4
         const val GHOSTTY_MOD_NUM_LOCK = 1 shl 5
         const val REMOTE_NOTIFICATION_CHANNEL = "remote_terminal"
-        private const val SHELL_INTEGRATION_NOTICE_DELAY_MS = 15_000L
         private const val TERMINAL_CHROME_VISIBLE_MS = 2_000L
         private const val TERMINAL_CHROME_FADE_DURATION_MS = 300L
         private const val APP_SETTINGS_NAME = "app_settings"
