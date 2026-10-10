@@ -308,6 +308,13 @@ struct TerminalScreen: View {
 
     private var textInputBar: some View {
         HStack(spacing: 6) {
+            Button { dismissTextMode() } label: {
+                Image(systemName: "xmark")
+                    .font(.caption.bold())
+                    .frame(width: 44, height: 44)
+            }
+                .background(Color.ghosttySurface, in: RoundedRectangle(cornerRadius: 8))
+                .accessibilityLabel("Close text input")
             TerminalTextInput(text: $textDraft, isFocused: keyboardFocused, insertNewline: newlineInsertion)
                 .background(Color.ghosttySurface, in: RoundedRectangle(cornerRadius: 8))
             Button { requestTextSubmission(enter: true) } label: {
@@ -373,6 +380,13 @@ struct TerminalScreen: View {
         keyboardBarState.reset()
         record.textMode = enabled
         keyboardFocused = session.state == .connected
+    }
+
+    private func dismissTextMode() {
+        textDraft = ""
+        keyboardBarState.reset()
+        record.textMode = false
+        keyboardFocused = false
     }
 
     private var inputModeToggle: some View {

@@ -134,6 +134,7 @@ class GhosttyTerminalView(
     private var remoteMouseGesture = false
     private var remotePressSent = false
     private var remoteTwoFingerGesture = false
+    private var remoteEdgeScrollGesture = false
     private var remoteDownX = 0f
     private var remoteDownY = 0f
     private var remoteLastX = 0f
@@ -635,7 +636,7 @@ class GhosttyTerminalView(
             return true
         }
         pointerMetaState = event.metaState
-        if (!remoteMouseGesture && !remoteTwoFingerGesture && !holdSwipe.active) scaleDetector.onTouchEvent(event)
+        if (!remoteMouseGesture && !remoteTwoFingerGesture && !remoteEdgeScrollGesture && !holdSwipe.active) scaleDetector.onTouchEvent(event)
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
                 if (holdSwipePinned) {
@@ -656,6 +657,8 @@ class GhosttyTerminalView(
                 remoteMouseGesture = shouldRouteRemoteMouse(isMouseTracking(), isLocalSelectionMode)
                 remotePressSent = false
                 remoteTwoFingerGesture = false
+                remoteEdgeScrollGesture = remoteMouseGesture && isEdgeScrollTouch(event.x)
+                if (remoteEdgeScrollGesture) remoteMouseGesture = false
                 remoteDownX = event.x
                 remoteDownY = event.y
                 remoteLastX = event.x
@@ -715,14 +718,13 @@ class GhosttyTerminalView(
                 }
                 if (remoteTwoFingerGesture && event.pointerCount >= 2) {
                     val y = pointerAverageY(event)
-                    remoteWheelPixels += y - lastTouchY
+                    sendRemoteWheelFromDelta(y - lastTouchY, event.x, y)
                     lastTouchY = y
-                    val threshold = cellHeight.coerceAtLeast(1f)
-                    while (abs(remoteWheelPixels) >= threshold) {
-                        val button = if (remoteWheelPixels < 0) MOUSE_WHEEL_DOWN else MOUSE_WHEEL_UP
-                        sendRemoteMouse(MOUSE_PRESS, button, event.x, y, false)
-                        remoteWheelPixels += if (remoteWheelPixels < 0) threshold else -threshold
-                    }
+                    return true
+                }
+                if (remoteEdgeScrollGesture) {
+                    sendRemoteWheelFromDelta(event.y - lastTouchY, event.x, event.y)
+                    lastTouchY = event.y
                     return true
                 }
                 if (remoteMouseGesture) {
@@ -783,8 +785,9 @@ class GhosttyTerminalView(
                     endTouch()
                     return true
                 }
-                if (remoteTwoFingerGesture) {
+                if (remoteTwoFingerGesture || remoteEdgeScrollGesture) {
                     remoteTwoFingerGesture = false
+                    remoteEdgeScrollGesture = false
                     endTouch()
                     return true
                 }
@@ -844,6 +847,7 @@ class GhosttyTerminalView(
                 releaseRemotePointerInteraction()
                 remoteMouseGesture = false
                 remoteTwoFingerGesture = false
+                remoteEdgeScrollGesture = false
                 selectionActive = false
                 draggedHandle = HANDLE_NONE
                 updateSelectionAutoScroll(height / 2f)
@@ -1059,6 +1063,21 @@ class GhosttyTerminalView(
     private fun pointerAverageY(event: MotionEvent): Float =
         (0 until event.pointerCount).sumOf { event.getY(it).toDouble() }.toFloat() / event.pointerCount
 
+    private fun isEdgeScrollTouch(x: Float): Boolean {
+        val edgeWidth = dp(EDGE_SCROLL_WIDTH_DP)
+        return x <= edgeWidth || x >= width - edgeWidth
+    }
+
+    private fun sendRemoteWheelFromDelta(delta: Float, x: Float, y: Float) {
+        remoteWheelPixels += delta
+        val threshold = cellHeight.coerceAtLeast(1f)
+        while (abs(remoteWheelPixels) >= threshold) {
+            val button = if (remoteWheelPixels < 0) MOUSE_WHEEL_DOWN else MOUSE_WHEEL_UP
+            sendRemoteMouse(MOUSE_PRESS, button, x, y, false)
+            remoteWheelPixels += if (remoteWheelPixels < 0) threshold else -threshold
+        }
+    }
+
     private fun cellColumn(x: Float) = floor(x / cellWidth).toInt().coerceIn(0, snapshot.columns - 1)
 
     private fun cellRow(y: Float) = floor(y / cellHeight).toInt().coerceIn(0, snapshot.rows - 1)
@@ -1105,6 +1124,7 @@ class GhosttyTerminalView(
         remoteMouseGesture = false
         remotePressSent = false
         remoteTwoFingerGesture = false
+        remoteEdgeScrollGesture = false
         remoteWheelPixels = 0f
         selectionActive = false
         draggedHandle = HANDLE_NONE
@@ -1517,6 +1537,7 @@ class GhosttyTerminalView(
         private const val SELECTION_SCROLL_INTERVAL_MS = 50L
         private const val ACCESSIBILITY_UPDATE_INTERVAL_MS = 150L
         private const val IME_CORRECTION_GRACE_PERIOD_MS = 100L
+        private const val EDGE_SCROLL_WIDTH_DP = 32f
         private const val HANDLE_NONE = 0
         private const val HANDLE_START = 1
         private const val HANDLE_END = 2

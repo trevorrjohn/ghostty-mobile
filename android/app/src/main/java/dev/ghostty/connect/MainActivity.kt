@@ -4442,6 +4442,19 @@ class MainActivity : Activity() {
         }
     }
 
+    private fun dismissTextMode(sessionId: String) {
+        if (selectedSessionId != sessionId) return
+        textModeSessions -= sessionId
+        activeModifiers.clear()
+        lockedModifiers.clear()
+        renderModifierBarItems()
+        terminalTextInput?.text?.clear()
+        textInputRow?.visibility = View.GONE
+        getSystemService(InputMethodManager::class.java)
+            .hideSoftInputFromWindow(terminalTextInput?.windowToken ?: terminalView?.windowToken, 0)
+        terminalView?.requestFocus()
+    }
+
     private fun createTextInputRow(sessionId: String, service: SshSessionService, terminal: GhosttyTerminal): View {
         val input = EditText(this).apply {
             contentDescription = "Terminal text input"
@@ -4490,11 +4503,20 @@ class MainActivity : Activity() {
                 true
             }
         }
+        val closeButton = Button(this).apply {
+            text = "X"
+            textSize = 13f
+            setTextColor(primary)
+            background = roundedBackground(surface, 8)
+            contentDescription = "Close text input"
+            setOnClickListener { dismissTextMode(sessionId) }
+        }
         return LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
             setBackgroundColor(raised)
             setPadding(dp(6), dp(4), dp(6), dp(4))
+            addView(closeButton, LinearLayout.LayoutParams(dp(44), dp(48)).apply { rightMargin = dp(6) })
             addView(input, LinearLayout.LayoutParams(0, -2, 1f))
             addView(sendButton, LinearLayout.LayoutParams(dp(48), dp(48)).apply { leftMargin = dp(6) })
             visibility = if (sessionId in textModeSessions) View.VISIBLE else View.GONE
