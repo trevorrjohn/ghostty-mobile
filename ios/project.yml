@@ -56,7 +56,7 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: fail.founder.terminal
         PRODUCT_NAME: Seance Shell
         PRODUCT_MODULE_NAME: GhosttyConnect
-        CURRENT_PROJECT_VERSION: 6
+        CURRENT_PROJECT_VERSION: 7
         MARKETING_VERSION: 0.1.0
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         TARGETED_DEVICE_FAMILY: "1,2"
@@ -80,7 +80,7 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: fail.founder.terminal.quick-connect
         PRODUCT_NAME: Quick Connect
         PRODUCT_MODULE_NAME: GhosttyConnectControl
-        CURRENT_PROJECT_VERSION: 6
+        CURRENT_PROJECT_VERSION: 7
         MARKETING_VERSION: 0.1.0
         SKIP_INSTALL: YES
         "EXCLUDED_ARCHS[sdk=iphonesimulator*]": x86_64
