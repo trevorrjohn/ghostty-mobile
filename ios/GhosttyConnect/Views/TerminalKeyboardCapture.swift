@@ -111,12 +111,23 @@ final class TerminalKeyboardInputView: UIView, UIKeyInput {
         guard !flags.contains(.command) else { return nil }
         let modifiers = TerminalKeyModifiers(flags)
         if let key = namedKey(input) { return .key(key, modifiers: modifiers) }
+        if let event = controlCharacterEvent(input: input, modifiers: modifiers) { return event }
         guard let key = TerminalKey.fromCommittedText(input) else { return nil }
         return .key(
             key,
             text: key.generatedText(shifted: modifiers.contains(.shift)) ?? input,
             modifiers: modifiers
         )
+    }
+
+    private static func controlCharacterEvent(input: String, modifiers: TerminalKeyModifiers) -> TerminalInputEvent? {
+        guard modifiers.contains(.control),
+              input.unicodeScalars.count == 1,
+              let scalar = input.unicodeScalars.first,
+              (1...26).contains(scalar.value) else { return nil }
+        let letter = UnicodeScalar(UnicodeScalar("a").value + scalar.value - 1)!
+        let text = String(letter)
+        return .key(.character(text.uppercased()), text: text, modifiers: modifiers)
     }
 
     private static func namedKey(_ input: String) -> TerminalKey? {

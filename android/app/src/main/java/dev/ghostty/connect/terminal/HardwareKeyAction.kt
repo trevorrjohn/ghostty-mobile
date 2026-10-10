@@ -13,6 +13,12 @@ internal fun ghosttyKeyAction(action: Int, repeatCount: Int): Int? = when {
 internal fun isModifierEligibleImeCommit(text: String): Boolean =
     text.codePointCount(0, text.length) == 1 && text.firstOrNull()?.code in 0x20..0x7e
 
+internal fun imeControlCharacterKey(text: String): String? =
+    text.singleOrNull()
+        ?.code
+        ?.takeIf { it in 1..26 }
+        ?.let { ('a'.code + it - 1).toChar().toString() }
+
 internal fun hardwareKeyText(unicodeChar: Int, unmodifiedUnicodeChar: Int = 0, isCtrlPressed: Boolean = false): String =
     (if (unicodeChar > 31 && unicodeChar != 127) unicodeChar else
         unmodifiedUnicodeChar.takeIf { it > 31 && it != 127 } ?:

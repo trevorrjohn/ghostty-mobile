@@ -137,6 +137,7 @@ import dev.ghostty.connect.terminal.HardwareKeyModifierState
 import dev.ghostty.connect.terminal.HardwareClipboardAction
 import dev.ghostty.connect.terminal.hardwareClipboardAction
 import dev.ghostty.connect.terminal.hardwareKeyText
+import dev.ghostty.connect.terminal.imeControlCharacterKey
 import dev.ghostty.connect.terminal.isModifierEligibleImeCommit
 import dev.ghostty.connect.terminal.sessionDisplayId
 import dev.ghostty.connect.terminal.nextSessionId
@@ -354,8 +355,12 @@ class MainActivity : Activity() {
             if (effects.notificationTitle.isNotEmpty() || effects.notificationBody.isNotEmpty()) {
                 handleRemoteNotification(effects.notificationTitle, effects.notificationBody)
             }
-            if (effects.processingError) {
-                terminalStatus?.text = "Terminal processing warning"
+            if (effects.processingError || effects.unknownSequences > 0) {
+                terminalStatus?.text = if (effects.unknownSequences > 0) {
+                    "Unsupported terminal sequence"
+                } else {
+                    "Terminal processing warning"
+                }
                 terminalStatus?.visibility = View.VISIBLE
                 revealTerminalChrome(sessionId, autoHide = false)
             }
@@ -3986,13 +3991,20 @@ class MainActivity : Activity() {
                 }
             }
             onInput = { input ->
-                val modifierEligible = isModifierEligibleImeCommit(input)
-                val key = input.singleOrNull()?.takeIf { modifierEligible }?.let { character ->
-                    if (character.isLetterOrDigit()) character.lowercase() else "UNIDENTIFIED"
-                } ?: "UNIDENTIFIED"
-                val modifiers = if (modifierEligible) ghosttyModifierBits(activeModifiers) else 0
-                sessionService?.send(sessionId, terminal.encodeKey(key, input, modifiers))
-                if (modifierEligible) consumeOneShotModifiers()
+                val controlKey = imeControlCharacterKey(input)
+                if (controlKey != null) {
+                    val key = controlKey
+                    sessionService?.send(sessionId, terminal.encodeKey(key, key, GHOSTTY_MOD_CTRL))
+                    consumeOneShotModifiers()
+                } else {
+                    val modifierEligible = isModifierEligibleImeCommit(input)
+                    val key = input.singleOrNull()?.takeIf { modifierEligible }?.let { character ->
+                        if (character.isLetterOrDigit()) character.lowercase() else "UNIDENTIFIED"
+                    } ?: "UNIDENTIFIED"
+                    val modifiers = if (modifierEligible) ghosttyModifierBits(activeModifiers) else 0
+                    sessionService?.send(sessionId, terminal.encodeKey(key, input, modifiers))
+                    if (modifierEligible) consumeOneShotModifiers()
+                }
             }
             onSpecialKey = { key -> sendBarKey(key, activeModifiers) }
             onKeyEvent = { event -> sendHardwareKey(terminal, event) }

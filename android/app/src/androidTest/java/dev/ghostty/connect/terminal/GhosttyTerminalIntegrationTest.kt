@@ -62,6 +62,17 @@ class GhosttyTerminalIntegrationTest {
     }
 
     @Test
+    fun controlBEncodesAsModifiedKeyInKittyKeyboardMode() {
+        GhosttyTerminal().use { terminal ->
+            terminal.write("\u001b[>1u")
+
+            val bytes = terminal.encodeKey("b", "b", 1 shl 1)
+
+            assertArrayEquals("\u001b[98;5u".toByteArray(), bytes)
+        }
+    }
+
+    @Test
     fun focusReportsOnlyWhenApplicationEnablesMode() {
         GhosttyTerminal().use { terminal ->
             assertTrue(terminal.encodeFocus(true).isEmpty())

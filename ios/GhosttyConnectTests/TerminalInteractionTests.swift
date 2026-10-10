@@ -31,6 +31,10 @@ final class TerminalInteractionTests: XCTestCase {
             .key(.character("C"), text: "c", modifiers: .control)
         )
         XCTAssertEqual(
+            TerminalKeyboardInputView.event(input: "\u{2}", flags: .control),
+            .key(.character("B"), text: "b", modifiers: .control)
+        )
+        XCTAssertEqual(
             TerminalKeyboardInputView.event(input: "1", flags: [.shift, .alternate]),
             .key(.character("1"), text: "!", modifiers: [.shift, .alt])
         )

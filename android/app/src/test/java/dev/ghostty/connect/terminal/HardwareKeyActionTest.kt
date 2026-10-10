@@ -52,6 +52,14 @@ class HardwareKeyActionTest {
     }
 
     @Test
+    fun imeControlCharactersMapBackToControlKeyIdentity() {
+        assertEquals("b", imeControlCharacterKey("\u0002"))
+        assertEquals("z", imeControlCharacterKey("\u001a"))
+        assertNull(imeControlCharacterKey("b"))
+        assertNull(imeControlCharacterKey("\u001b"))
+    }
+
+    @Test
     fun unmodifiedControlCharactersDoNotBecomeLetters() {
         assertEquals("", hardwareKeyText(unicodeChar = '\n'.code))
         assertEquals("", hardwareKeyText(unicodeChar = '\r'.code))
