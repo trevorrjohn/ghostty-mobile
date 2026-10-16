@@ -31,6 +31,14 @@ final class TerminalSessionRecord: ObservableObject, Identifiable {
 
     var shortID: String { id.uuidString.prefix(4).uppercased() }
 
+    var statusDot: String {
+        switch session.state {
+        case .connected: "🟢"
+        case .disconnected, .failed: "⚪️"
+        default: "🔵"
+        }
+    }
+
     var status: String {
         switch session.state {
         case .disconnected: "Disconnected"

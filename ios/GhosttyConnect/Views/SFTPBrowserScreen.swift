@@ -24,6 +24,9 @@ struct SFTPBrowserScreen: View {
     @State private var terminalSessionID: UUID?
     @State private var pendingUpload: SFTPPendingUpload?
     @State private var showingRecent = false
+    @State private var showingQuickSwitch = false
+    @State private var quickSwitchAfterDetails = false
+    @State private var quickSwitchAction: (() -> Void)?
 
     private var selectedKey: StoredKey? { app.key(for: host) }
     private var hostTrustBinding: Binding<HostTrustRequest?> {
@@ -52,6 +55,7 @@ struct SFTPBrowserScreen: View {
             if showingRecent { recentLocations }
             else { fileList }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .background(Color.ghosttySurface.ignoresSafeArea())
         .toolbar(.hidden, for: .navigationBar)
         .toolbar(.hidden, for: .tabBar)
@@ -97,14 +101,28 @@ struct SFTPBrowserScreen: View {
         )) {
             Button("OK") { browser.errorMessage = nil }
         } message: { Text(browser.errorMessage ?? "") }
-        .sheet(item: $selectedEntry) { entry in
+        .sheet(isPresented: $showingQuickSwitch, onDismiss: {
+            let action = quickSwitchAction
+            quickSwitchAction = nil
+            action?()
+        }) { quickSwitcher }
+        .sheet(item: $selectedEntry, onDismiss: {
+            if quickSwitchAfterDetails {
+                quickSwitchAfterDetails = false
+                showingQuickSwitch = true
+            }
+        }) { entry in
             SFTPEntryDetails(
                 entry: entry,
                 allowDelete: host.allowSftpDelete == true,
                 open: { open(entry) },
                 download: { download(entry, preview: false) },
                 rename: { name in Task { await browser.rename(entry, to: name) } },
-                delete: { Task { await browser.delete(entry) } }
+                delete: { Task { await browser.delete(entry) } },
+                quickSwitch: {
+                    quickSwitchAfterDetails = true
+                    selectedEntry = nil
+                }
             )
         }
         .sheet(isPresented: $showingLocations) {
@@ -219,41 +237,124 @@ struct SFTPBrowserScreen: View {
     }
 
     private var fileList: some View {
-        List(browser.visibleEntries) { entry in
-            HStack(alignment: .top, spacing: 12) {
-                Image(systemName: icon(entry.kind))
-                    .foregroundStyle(entry.kind == .directory ? Color.ghosttyAccent : Color.ghosttySecondary)
-                    .frame(width: 28)
-                Text(entry.name)
-                    .font(.body.weight(.semibold))
-                    .fixedSize(horizontal: false, vertical: true)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+        GeometryReader { geometry in
+            ScrollView {
+                ZStack(alignment: .top) {
+                    Color.ghosttySurface
+                        .contentShape(Rectangle())
+                        .onLongPressGesture { showingQuickSwitch = true }
+                        .accessibilityAction(named: "Quick switch") { showingQuickSwitch = true }
+                    LazyVStack(spacing: 0) {
+                        ForEach(browser.visibleEntries) { entry in
+                            HStack(alignment: .top, spacing: 12) {
+                                Image(systemName: icon(entry.kind))
+                                    .foregroundStyle(entry.kind == .directory ? Color.ghosttyAccent : Color.ghosttySecondary)
+                                    .frame(width: 28)
+                                Text(entry.name)
+                                    .font(.body.weight(.semibold))
+                                    .fixedSize(horizontal: false, vertical: true)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                            }
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 14)
+                            .background(Color.ghosttySurface)
+                            .contentShape(Rectangle())
+                            .onTapGesture {
+                                if entry.kind == .directory { Task { await browser.open(entry) } }
+                                else if entry.kind == .file { open(entry) }
+                            }
+                            .onLongPressGesture {
+                                browser.recordFileInteraction(entry)
+                                selectedEntry = entry
+                            }
+                            .accessibilityElement(children: .combine)
+                            .accessibilityLabel("\(entry.kind.rawValue), \(entry.name)")
+                            .accessibilityHint("Double tap to open. Long press for details and actions.")
+                            Divider().padding(.leading, 56)
+                        }
+                    }
+                    if browser.connected && browser.visibleEntries.isEmpty {
+                        ContentUnavailableView(
+                            browser.entries.isEmpty ? "Empty directory" : "No matching files", systemImage: "folder"
+                        )
+                        .allowsHitTesting(false)
+                    }
+                }
+                .frame(minHeight: geometry.size.height, alignment: .top)
             }
-            .contentShape(Rectangle())
-            .onTapGesture {
-                if entry.kind == .directory { Task { await browser.open(entry) } }
-                else if entry.kind == .file { open(entry) }
-            }
-            .onLongPressGesture { selectedEntry = entry }
-            .accessibilityElement(children: .combine)
-            .accessibilityLabel("\(entry.kind.rawValue), \(entry.name)")
-            .accessibilityHint("Double tap to open. Long press for details and actions.")
+            .refreshable { await browser.refresh() }
         }
-        .listStyle(.plain)
-        .scrollContentBackground(.hidden)
-        .overlay {
-            if browser.connected && browser.visibleEntries.isEmpty {
-                ContentUnavailableView(
-                    browser.entries.isEmpty ? "Empty directory" : "No matching files",
-                    systemImage: "folder"
-                )
+    }
+
+    private func finishQuickSwitch(_ action: @escaping () -> Void) {
+        quickSwitchAction = action
+        showingQuickSwitch = false
+    }
+
+    private var quickSwitcher: some View {
+        VStack(alignment: .leading, spacing: 20) {
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(host.name).font(.system(size: 28, weight: .bold, design: .rounded))
+                    Label(browser.connected ? "Files · Connected" : "Files · Disconnected", systemImage: "circle.fill")
+                        .font(.subheadline).foregroundStyle(Color.ghosttySecondary)
+                }
+                Spacer()
+                Button { showingQuickSwitch = false } label: {
+                    Image(systemName: "xmark").frame(width: 44, height: 44)
+                        .background(Color.ghosttyRaised, in: Circle())
+                }
+                .accessibilityLabel("Close quick switcher")
+            }
+            HStack(spacing: 12) {
+                switchButton("Hosts", symbol: "server.rack") { finishQuickSwitch { goToHosts() } }
+                switchButton("New terminal", symbol: "terminal") {
+                    finishQuickSwitch {
+                        terminalSessionID = sessions.create(for: host)
+                        showingTerminal = true
+                    }
+                }
+            }
+            Text("OPEN SESSIONS").font(.caption.weight(.semibold)).tracking(1.2).foregroundStyle(Color.ghosttySecondary)
+            ScrollView {
+                VStack(spacing: 10) {
+                    ForEach(sessions.records) { candidate in
+                        switchButton("\(candidate.host.name) · \(candidate.shortID)\n\(candidate.statusDot) \(candidate.status)", symbol: "terminal") {
+                            finishQuickSwitch {
+                                terminalSessionID = candidate.id
+                                showingTerminal = true
+                            }
+                        }
+                    }
+                    if sessions.records.isEmpty {
+                        Text("No open terminal sessions").font(.subheadline).foregroundStyle(Color.ghosttySecondary)
+                            .frame(maxWidth: .infinity).padding(.vertical, 24)
+                    }
+                }
             }
         }
-        .refreshable { await browser.refresh() }
+        .padding(24).padding(.top, 12)
+        .background(Color.ghosttySurface)
+        .presentationDetents([.medium, .large])
+        .presentationDragIndicator(.visible)
+    }
+
+    private func switchButton(_ title: String, symbol: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Label(title, systemImage: symbol)
+                .font(.subheadline.weight(.semibold))
+                .frame(maxWidth: .infinity, minHeight: 52, alignment: .leading)
+                .padding(.horizontal, 16).padding(.vertical, 8)
+                .foregroundStyle(Color.ghosttyAccent)
+                .background(Color.ghosttyRaised, in: RoundedRectangle(cornerRadius: 14))
+                .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.ghosttyAccent.opacity(0.3)))
+        }
+        .buttonStyle(.plain)
     }
 
     private var browserMenu: some View {
         Menu {
+            Button("Quick switch", systemImage: "rectangle.2.swap") { showingQuickSwitch = true }
             Button("Hosts", systemImage: "server.rack") { goToHosts() }
             Button("Upload document", systemImage: "square.and.arrow.up") { showingImporter = true }
                 .disabled(!browser.connected || browser.transfer != nil)
@@ -359,7 +460,10 @@ struct SFTPBrowserScreen: View {
         .disabled(!browser.connected || browser.transfer != nil)
     }
 
-    private func open(_ entry: SFTPEntry) { download(entry, preview: true) }
+    private func open(_ entry: SFTPEntry) {
+        browser.recordFileInteraction(entry)
+        download(entry, preview: true)
+    }
 
     private func download(_ entry: SFTPEntry, preview: Bool) {
         let maximumBytes: UInt64 = preview ? 25 * 1024 * 1024 : 2 * 1024 * 1024 * 1024
@@ -395,6 +499,7 @@ private struct SFTPEntryDetails: View {
     let download: () -> Void
     let rename: (String) -> Void
     let delete: () -> Void
+    let quickSwitch: () -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var showingRename = false
     @State private var showingDelete = false
@@ -430,6 +535,13 @@ private struct SFTPEntryDetails: View {
                         }
                     }
                 }
+            }
+            .safeAreaInset(edge: .bottom) {
+                Button("Quick switch", systemImage: "rectangle.2.swap", action: quickSwitch)
+                    .buttonStyle(.bordered)
+                    .padding(12)
+                    .frame(maxWidth: .infinity)
+                    .background(Color.ghosttySurface)
             }
             .navigationTitle("Details")
             .navigationBarTitleDisplayMode(.inline)

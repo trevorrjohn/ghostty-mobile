@@ -529,7 +529,6 @@ class SshSessionService : Service() {
                 listener?.onSessionClosed(record.sessionId, message)
             }
             SshClosureKind.RETRYABLE -> {
-                appendTerminalMessage(record, "Connection lost. Terminal input is paused while the connection is restored.")
                 when (automaticReconnectAvailability(record.host.retryEnabled, record.autoReconnectEligible)) {
                     AutomaticReconnectAvailability.AVAILABLE -> scheduleReconnect(record)
                     AutomaticReconnectAvailability.DISABLED -> {

@@ -212,6 +212,7 @@ class MainActivity : Activity() {
         val name: EditText,
         val privateKey: EditText,
         val status: TextView,
+        var fromFile: Boolean = false,
     )
 
     private var pendingConnection: PendingConnection? = null
@@ -415,7 +416,7 @@ class MainActivity : Activity() {
             if (sessionId != selectedSessionId) return
             val retryable = sessionService?.summaries()?.firstOrNull { it.sessionId == sessionId }?.canRetry == true
             if (!retryable) terminalStatus?.text = if (error == null) "Disconnected" else "Connection failed"
-            terminalStatus?.visibility = View.VISIBLE
+            terminalStatus?.visibility = if (isModalConnectionStatus(sessionService?.status(sessionId).orEmpty())) View.GONE else View.VISIBLE
             setTerminalSystemBarsHidden(false)
             revealTerminalChrome(sessionId, autoHide = false)
             setTerminalEnabled(false)
@@ -1258,6 +1259,12 @@ class MainActivity : Activity() {
         }
         root.addView(button("Cancel", secondary) { showHosts() }.margins(top = 8))
         setContentView(scroll(root))
+        if (isDuplicate) {
+            val target = if (alias.text.isNullOrBlank()) hostname else alias
+            target.requestFocus()
+            target.selectAll()
+            target.post { getSystemService(InputMethodManager::class.java).showSoftInput(target, InputMethodManager.SHOW_IMPLICIT) }
+        }
     }
 
     private fun openKeyPicker() {
@@ -1295,12 +1302,15 @@ class MainActivity : Activity() {
         val encryptionStatus = label("", 13f, secondary).apply {
             accessibilityLiveRegion = View.ACCESSIBILITY_LIVE_REGION_POLITE
         }
+        val chooseFile = button("Choose file", secondary) { openKeyPicker() }
         var generatedName = ""
         privateKey.addTextChangedListener(object : TextWatcher {
             override fun beforeTextChanged(value: CharSequence?, start: Int, count: Int, after: Int) = Unit
             override fun onTextChanged(value: CharSequence?, start: Int, before: Int, count: Int) = Unit
             override fun afterTextChanged(value: Editable?) {
                 val text = value.toString()
+                chooseFile.isEnabled = text.isEmpty() || keyImportViews?.fromFile == true
+                chooseFile.alpha = if (chooseFile.isEnabled) 1f else 0.4f
                 val keyBytes = text.toByteArray()
                 try {
                     if (keyBytes.isEmpty()) {
@@ -1335,7 +1345,13 @@ class MainActivity : Activity() {
         })
         initialKey?.takeIf { it.isNotEmpty() }?.let { privateKey.setText(it, 0, it.size) }
         form.addView(privateKey, LinearLayout.LayoutParams(-1, dp(220)))
-        form.addView(button("Choose file", secondary) { openKeyPicker() }.margins(top = 10))
+        chooseFile.isEnabled = privateKey.text.isEmpty()
+        form.addView(chooseFile.margins(top = 10))
+        form.addView(button("Clear key", secondary) {
+            keyImportViews?.fromFile = false
+            privateKey.isEnabled = true
+            privateKey.text.clear()
+        }.margins(top = 8))
         form.addView(encryptionStatus.margins(top = 8))
         val dialog = AlertDialog.Builder(this)
             .setTitle("Add SSH key")
@@ -1424,7 +1440,9 @@ class MainActivity : Activity() {
             try {
                 val text = decodePrivateKeyText(bytes)
                 require(text.contains("PRIVATE KEY")) { "Select a private SSH key file" }
+                importViews.fromFile = true
                 importViews.privateKey.setText(text)
+                importViews.privateKey.isEnabled = false
                 importViews.status.setTextColor(secondary)
             } finally {
                 bytes.fill(0)
@@ -3035,6 +3053,7 @@ class MainActivity : Activity() {
             val hiddenId = 5
             val openTerminalId = 6
             val closeId = 7
+            val quickSwitchId = 8
             val sortNameAscendingId = 10
             val sortNameDescendingId = 11
             val sortUpdatedDescendingId = 12
@@ -3044,6 +3063,7 @@ class MainActivity : Activity() {
             val sortSizeDescendingId = 16
             val sortSizeAscendingId = 17
             PopupMenu(this, anchor).apply {
+                menu.add(0, quickSwitchId, 0, "Quick switch")
                 menu.add(0, uploadId, 0, "Upload document").isEnabled = remoteActionsEnabled
                 menu.add(0, newFolderId, 1, "New folder").isEnabled = remoteActionsEnabled
                 menu.add(0, locationsId, 2, "Locations").isEnabled = hostId != null
@@ -3079,6 +3099,7 @@ class MainActivity : Activity() {
                         }
                     }
                     when (item.itemId) {
+                        quickSwitchId -> showSftpQuickSwitcher(state)
                         uploadId -> openUploadPicker()
                         newFolderId -> showNewFolderDialog(state.browserId)
                         locationsId -> if (hostId != null) {
@@ -3166,169 +3187,218 @@ class MainActivity : Activity() {
             marginStart = dp(8)
         })
         toolbar.addView(navigationRow)
+        val contentScroll = ScrollView(this).apply {
+            setBackgroundColor(browserBackground)
+            isFillViewport = true
+        }
+        lateinit var updateContent: () -> Unit
+        val filesTab = barButton("Files", !sftpShowingRecent) {}
+        val recentTab = barButton("Recent", sftpShowingRecent) {}
+        fun selectSection(recent: Boolean) {
+            sftpShowingRecent = recent
+            filesTab.background = pressableBackground(if (!recent) accent else raised, Color.rgb(180, 255, 210), 10, accent)
+            recentTab.background = pressableBackground(if (recent) accent else raised, Color.rgb(180, 255, 210), 10, accent)
+            filesTab.setTextColor(if (!recent) Color.rgb(8, 15, 12) else primary)
+            recentTab.setTextColor(if (recent) Color.rgb(8, 15, 12) else primary)
+            updateContent()
+        }
+        filesTab.setOnClickListener { selectSection(false) }
+        recentTab.setOnClickListener { selectSection(true) }
         toolbar.addView(LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
-            addView(barButton("Files", !sftpShowingRecent) {
-                sftpShowingRecent = false
-                renderFileBrowser(state)
-            }, LinearLayout.LayoutParams(0, dp(44), 1f).apply { marginEnd = dp(4) })
-            addView(barButton("Recent", sftpShowingRecent) {
-                sftpShowingRecent = true
-                renderFileBrowser(state)
-            }, LinearLayout.LayoutParams(0, dp(44), 1f).apply { marginStart = dp(4) })
+            addView(filesTab, LinearLayout.LayoutParams(0, dp(44), 1f).apply { marginEnd = dp(4) })
+            addView(recentTab, LinearLayout.LayoutParams(0, dp(44), 1f).apply { marginStart = dp(4) })
         }.margins(top = 8))
-        val content = vertical(16).apply { setBackgroundColor(browserBackground) }
-        state.error?.takeUnless { it == state.transfer?.message }?.let {
-            content.addView(label(it, 13f, Color.rgb(255, 145, 145)).margins(top = 5))
-        }
-        if (!state.connected) {
-            content.addView(button("Reconnect") {
-                sftpService?.host(state.browserId)?.let { host ->
-                    requestCredential(host) { credential, privateKey ->
-                        val service = sftpService
-                        if (service == null) {
-                            credential.fill('\u0000')
-                            privateKey?.fill(0)
-                        } else service.retry(state.browserId, credential, privateKey)
+        updateContent = {
+            val recentFolders = hostId?.let { runCatching { sftpRecentFolderStore.load(it) }.getOrDefault(emptyList()) }.orEmpty()
+            val favorites = hostId?.let { runCatching { sftpFavoriteStore.load(it) }.getOrDefault(emptyList()) }.orEmpty()
+            val content = vertical(16).apply {
+                setBackgroundColor(browserBackground)
+                setOnLongClickListener { showSftpQuickSwitcher(state); true }
+            }
+            state.error?.takeUnless { it == state.transfer?.message }?.let {
+                content.addView(label(it, 13f, Color.rgb(255, 145, 145)).margins(top = 5))
+            }
+            if (!state.connected) {
+                content.addView(button("Reconnect") {
+                    sftpService?.host(state.browserId)?.let { host ->
+                        requestCredential(host) { credential, privateKey ->
+                            val service = sftpService
+                            if (service == null) {
+                                credential.fill('\u0000')
+                                privateKey?.fill(0)
+                            } else service.retry(state.browserId, credential, privateKey)
+                        }
                     }
+                }.margins(top = 10, bottom = 4))
+            }
+            state.transfer?.let { transfer ->
+                val transferCard = vertical(14).apply { background = roundedBackground(browserPanel, 18) }
+                val transferTitle = when (transfer.status) {
+                    SftpTransferStatus.RUNNING -> if (transfer.direction.name == "UPLOAD") "Uploading" else "Downloading"
+                    SftpTransferStatus.COMPLETED -> if (transfer.direction.name == "UPLOAD") "Upload complete" else "Download complete"
+                    SftpTransferStatus.CANCELED -> "Transfer canceled"
+                    SftpTransferStatus.FAILED -> "Transfer failed"
                 }
-            }.margins(top = 10, bottom = 4))
-        }
-        state.transfer?.let { transfer ->
-            val transferCard = vertical(14).apply { background = roundedBackground(browserPanel, 18) }
-            val transferTitle = when (transfer.status) {
-                SftpTransferStatus.RUNNING -> if (transfer.direction.name == "UPLOAD") "Uploading" else "Downloading"
-                SftpTransferStatus.COMPLETED -> if (transfer.direction.name == "UPLOAD") "Upload complete" else "Download complete"
-                SftpTransferStatus.CANCELED -> "Transfer canceled"
-                SftpTransferStatus.FAILED -> "Transfer failed"
-            }
-            transferCard.addView(label(
-                transferTitle,
-                16f,
-                primary,
-                Typeface.BOLD,
-            ))
-            transferCard.addView(label(transfer.displayName, 14f, secondary).margins(top = 4))
-            val amount = if (transfer.total == null) {
-                formatBytes(transfer.transferred)
-            } else {
-                "${formatBytes(transfer.transferred)} / ${formatBytes(transfer.total)}"
-            }
-            transferCard.addView(label(amount, 14f, accent).margins(top = 4))
-            transferCard.addView(ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
-                max = 100
-                val total = transfer.total
-                isIndeterminate = total == null || total <= 0
-                progress = if (total != null && total > 0) {
-                    ((transfer.transferred * 100) / total).toInt().coerceIn(0, 100)
-                } else 0
-                contentDescription = if (isIndeterminate) "Transfer in progress" else "$progress percent"
-            }.margins(top = 8))
-            transfer.message?.let { transferCard.addView(label(it, 13f, secondary).margins(top = 6)) }
-            if (transfer.status == SftpTransferStatus.RUNNING) {
-                transferCard.addView(button("Cancel transfer", secondary) {
-                    sftpService?.cancelTransfer(state.browserId)
-                }.margins(top = 10))
-            } else {
-                transfer.openUri?.takeIf { transfer.status == SftpTransferStatus.COMPLETED }?.let { uri ->
-                    transferCard.addView(button("Open", secondary) {
-                        openSftpUri(state.browserId, uri)
+                transferCard.addView(label(
+                    transferTitle,
+                    16f,
+                    primary,
+                    Typeface.BOLD,
+                ))
+                transferCard.addView(label(transfer.displayName, 14f, secondary).margins(top = 4))
+                val amount = if (transfer.total == null) {
+                    formatBytes(transfer.transferred)
+                } else {
+                    "${formatBytes(transfer.transferred)} / ${formatBytes(transfer.total)}"
+                }
+                transferCard.addView(label(amount, 14f, accent).margins(top = 4))
+                transferCard.addView(ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
+                    max = 100
+                    val total = transfer.total
+                    isIndeterminate = total == null || total <= 0
+                    progress = if (total != null && total > 0) {
+                        ((transfer.transferred * 100) / total).toInt().coerceIn(0, 100)
+                    } else 0
+                    contentDescription = if (isIndeterminate) "Transfer in progress" else "$progress percent"
+                }.margins(top = 8))
+                transfer.message?.let { transferCard.addView(label(it, 13f, secondary).margins(top = 6)) }
+                if (transfer.status == SftpTransferStatus.RUNNING) {
+                    transferCard.addView(button("Cancel transfer", secondary) {
+                        sftpService?.cancelTransfer(state.browserId)
+                    }.margins(top = 10))
+                } else {
+                    transfer.openUri?.takeIf { transfer.status == SftpTransferStatus.COMPLETED }?.let { uri ->
+                        transferCard.addView(button("Open", secondary) {
+                            openSftpUri(state.browserId, uri)
+                        }.margins(top = 10))
+                    }
+                    transferCard.addView(button("Dismiss", secondary) {
+                        sftpService?.acknowledgeTransfer(state.browserId)
                     }.margins(top = 10))
                 }
-                transferCard.addView(button("Dismiss", secondary) {
-                    sftpService?.acknowledgeTransfer(state.browserId)
-                }.margins(top = 10))
+                content.addView(transferCard.margins(bottom = 12))
             }
-            content.addView(transferCard.margins(bottom = 12))
-        }
-        if (sftpShowingRecent) {
-            hostId?.let { id ->
-                val currentPath = state.path
-                if (currentPath != null) {
-                    content.addView(compactButton("Open current folder", remoteActionsEnabled) {
-                        openSftpPath(state.browserId, currentPath)
-                    }.margins(bottom = 6))
-                    val isFavorite = currentPath in favorites
-                    content.addView(compactButton(
-                        if (isFavorite) "Remove current folder from favorites" else "Add current folder to favorites",
-                    ) {
-                        runCatching {
-                            if (isFavorite) sftpFavoriteStore.remove(id, currentPath)
-                            else sftpFavoriteStore.add(id, currentPath)
-                        }.onSuccess {
-                            toast(if (isFavorite) "Removed from favorites." else "Added to favorites.")
-                            renderFileBrowser(state)
-                        }.onFailure { toast(it.message ?: "Could not update favorites.") }
-                    })
-                }
-                if (favorites.isNotEmpty()) {
-                    content.addView(label("Favorites", 15f, primary, Typeface.BOLD).margins(top = 16, bottom = 4))
-                    favorites.forEach { path ->
-                        val row = LinearLayout(this).apply {
-                            orientation = LinearLayout.HORIZONTAL
-                            gravity = Gravity.CENTER_VERTICAL
+            if (sftpShowingRecent) {
+                hostId?.let { id ->
+                    val currentPath = state.path
+                    if (currentPath != null) {
+                        content.addView(compactButton("Open current folder", remoteActionsEnabled) {
+                            openSftpPath(state.browserId, currentPath)
+                        }.margins(bottom = 6))
+                        val isFavorite = currentPath in favorites
+                        content.addView(compactButton(
+                            if (isFavorite) "Remove current folder from favorites" else "Add current folder to favorites",
+                        ) {
+                            runCatching {
+                                if (isFavorite) sftpFavoriteStore.remove(id, currentPath)
+                                else sftpFavoriteStore.add(id, currentPath)
+                            }.onSuccess {
+                                toast(if (isFavorite) "Removed from favorites." else "Added to favorites.")
+                                renderFileBrowser(state)
+                            }.onFailure { toast(it.message ?: "Could not update favorites.") }
+                        })
+                    }
+                    if (favorites.isNotEmpty()) {
+                        content.addView(label("Favorites", 15f, primary, Typeface.BOLD).margins(top = 16, bottom = 4))
+                        favorites.forEach { path ->
+                            val row = LinearLayout(this).apply {
+                                orientation = LinearLayout.HORIZONTAL
+                                gravity = Gravity.CENTER_VERTICAL
+                            }
+                            row.addView(compactButton(path, state.connected) {
+                                val current = sftpService?.state(state.browserId)
+                                val available = current?.connected == true && current.status in setOf("Ready", "Empty") &&
+                                    current.transfer?.status != SftpTransferStatus.RUNNING
+                                if (!available) {
+                                    toast("Reconnect to open a favorite folder.")
+                                    return@compactButton
+                                }
+                                openSftpPath(state.browserId, path)
+                            }, LinearLayout.LayoutParams(0, dp(44), 1f))
+                            row.addView(compactButton("Remove") {
+                                runCatching { sftpFavoriteStore.remove(id, path) }
+                                    .onSuccess { renderFileBrowser(state) }
+                                    .onFailure { toast(it.message ?: "Could not remove favorite.") }
+                            }, LinearLayout.LayoutParams(-2, dp(44)).apply { marginStart = dp(6) })
+                            content.addView(row.margins(bottom = 4))
                         }
-                        row.addView(compactButton(path, state.connected) {
+                    }
+                }
+                val recent = recentFolders.filterNot { it in favorites }
+                content.addView(label("Recent folders", 15f, primary, Typeface.BOLD).margins(top = 16, bottom = 4))
+                if (recent.isEmpty()) {
+                    content.addView(label("No recent folders yet.", 14f, secondary))
+                } else {
+                    recent.forEach { path ->
+                        content.addView(compactButton(path, state.connected) {
                             val current = sftpService?.state(state.browserId)
                             val available = current?.connected == true && current.status in setOf("Ready", "Empty") &&
                                 current.transfer?.status != SftpTransferStatus.RUNNING
                             if (!available) {
-                                toast("Reconnect to open a favorite folder.")
+                                toast("Reconnect to open a recent folder.")
                                 return@compactButton
                             }
                             openSftpPath(state.browserId, path)
-                        }, LinearLayout.LayoutParams(0, dp(44), 1f))
-                        row.addView(compactButton("Remove") {
-                            runCatching { sftpFavoriteStore.remove(id, path) }
-                                .onSuccess { renderFileBrowser(state) }
-                                .onFailure { toast(it.message ?: "Could not remove favorite.") }
-                        }, LinearLayout.LayoutParams(-2, dp(44)).apply { marginStart = dp(6) })
-                        content.addView(row.margins(bottom = 4))
+                        }.margins(top = 4))
                     }
                 }
-            }
-            val recent = recentFolders.filterNot { it in favorites }
-            content.addView(label("Recent folders", 15f, primary, Typeface.BOLD).margins(top = 16, bottom = 4))
-            if (recent.isEmpty()) {
-                content.addView(label("No recent folders yet.", 14f, secondary))
-            } else {
-                recent.forEach { path ->
-                    content.addView(compactButton(path, state.connected) {
-                        val current = sftpService?.state(state.browserId)
-                        val available = current?.connected == true && current.status in setOf("Ready", "Empty") &&
-                            current.transfer?.status != SftpTransferStatus.RUNNING
-                        if (!available) {
-                            toast("Reconnect to open a recent folder.")
-                            return@compactButton
-                        }
-                        openSftpPath(state.browserId, path)
-                    }.margins(top = 4))
+                if (recentFolders.isNotEmpty() && hostId != null) {
+                    content.addView(compactButton("Clear recent folders") {
+                        runCatching { sftpRecentFolderStore.clear(hostId) }
+                            .onSuccess {
+                                toast("Recent folders cleared.")
+                                renderFileBrowser(state)
+                            }
+                            .onFailure { toast(it.message ?: "Could not clear recent folders.") }
+                    }.margins(top = 10))
                 }
+            } else {
+                updateDirectoryList()
+                (list.parent as? ViewGroup)?.removeView(list)
+                content.addView(list)
             }
-            if (recentFolders.isNotEmpty() && hostId != null) {
-                content.addView(compactButton("Clear recent folders") {
-                    runCatching { sftpRecentFolderStore.clear(hostId) }
-                        .onSuccess {
-                            toast("Recent folders cleared.")
-                            renderFileBrowser(state)
-                        }
-                        .onFailure { toast(it.message ?: "Could not clear recent folders.") }
-                }.margins(top = 10))
-            }
-        } else {
-            updateDirectoryList()
-            content.addView(list)
+            contentScroll.removeAllViews()
+            contentScroll.addView(content, ViewGroup.LayoutParams(-1, -2))
         }
+        updateContent()
         root.addView(toolbar)
-        root.addView(ScrollView(this).apply {
-            setBackgroundColor(browserBackground)
-            addView(content, ViewGroup.LayoutParams(-1, -2))
-        }, LinearLayout.LayoutParams(-1, 0, 1f))
+        root.addView(contentScroll, LinearLayout.LayoutParams(-1, 0, 1f))
         setContentView(root)
         if (keepSearchFocused) focusSftpSearch(search)
     }
 
+    private fun showSftpQuickSwitcher(state: SftpBrowserState) {
+        if (!browserVisible || selectedBrowserId != state.browserId) return
+        val host = sftpService?.host(state.browserId) ?: return
+        val content = vertical(24)
+        content.addView(label(host.name, 28f, primary, Typeface.BOLD))
+        content.addView(label("● ${state.status}", 14f, if (state.connected) accent else secondary).margins(top = 8, bottom = 20))
+        lateinit var dialog: AlertDialog
+        fun select(action: () -> Unit) {
+            dialog.dismiss()
+            if (browserVisible && selectedBrowserId == state.browserId) action()
+        }
+        content.addView(indexActionButton("Hosts", R.drawable.ic_terminal, false) { select { showHosts(disconnect = false) } }, LinearLayout.LayoutParams(-1, dp(52)))
+        content.addView(indexActionButton("New terminal", R.drawable.ic_terminal, false) { select { requestCredentialAndConnect(host) } }, LinearLayout.LayoutParams(-1, dp(52)).apply { topMargin = dp(10) })
+        val sessions = sessionService?.summaries().orEmpty()
+        if (sessions.isNotEmpty()) content.addView(label("OPEN SESSIONS", 12f, secondary, Typeface.BOLD).margins(top = 24, bottom = 12))
+        sessions.forEach { candidate ->
+            content.addView(indexActionButton(
+                "${candidate.hostName}\n${sessionStatusDot(candidate.status)} ${candidate.status} · ${candidate.shortId}",
+                R.drawable.ic_terminal, false,
+            ) { select { openSession(candidate.sessionId) } }.apply {
+                gravity = Gravity.CENTER_VERTICAL or Gravity.START
+                setPadding(dp(16), dp(12), dp(16), dp(12))
+            }, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(10) })
+        }
+        dialog = AlertDialog.Builder(this).setView(scroll(content)).setNegativeButton("Close", null).create()
+        dialog.show()
+        dialog.window?.setBackgroundDrawable(roundedBackground(surface, 24))
+    }
+
     private fun showEntryActions(browserId: String, entry: SftpEntry) {
+        sftpService?.recordFileInteraction(browserId, entry)
         val state = sftpService?.state(browserId)
         val host = sftpService?.host(browserId)
         val hostId = host?.id
@@ -3401,6 +3471,10 @@ class MainActivity : Activity() {
                 }
             }
         }
+        content.addView(compactButton("Quick switch") {
+            dialog.dismiss()
+            sftpService?.state(browserId)?.let(::showSftpQuickSwitcher)
+        }, LinearLayout.LayoutParams(-1, dp(48)).apply { topMargin = dp(16) })
         dialog = AlertDialog.Builder(this)
             .setTitle("Details")
             .setView(scroll(content))
@@ -3930,26 +4004,44 @@ class MainActivity : Activity() {
                     )
                 }
                 onQuickNavigation = { _, _, _ ->
-                    val textMode = sessionId in textModeSessions
-                    val actions = mutableListOf<Pair<String, () -> Unit>>()
-                    actions += (if (textMode) "Switch to Direct input" else "Switch to Text mode") to {
-                        setTextMode(sessionId, !textMode)
+                    val content = vertical(24)
+                    val currentStatus = service.status(sessionId).orEmpty()
+                    content.addView(label(host.name, 28f, primary, Typeface.BOLD))
+                    content.addView(label("● $currentStatus", 14f, if (currentStatus == "Connected") accent else secondary)
+                        .margins(top = 8, bottom = 22))
+                    lateinit var dialog: AlertDialog
+                    fun select(action: () -> Unit) {
+                        dialog.dismiss()
+                        if (selectedSessionId == sessionId && service.terminal(sessionId) === terminal) action()
                     }
-                    actions += "Files" to { browseFiles() }
-                    actions += "Hosts" to { showHosts(disconnect = false) }
-                    service.summaries().filter { it.status == "Connected" && it.sessionId != sessionId }.forEach { candidate ->
-                        actions += "${candidate.hostName} · ${candidate.shortId} · Connected" to {
-                            if (service.status(candidate.sessionId) == "Connected") openSession(candidate.sessionId)
-                        }
+                    val shortcuts = LinearLayout(this@MainActivity).apply { orientation = LinearLayout.HORIZONTAL }
+                    shortcuts.addView(indexActionButton("Files", R.drawable.ic_sftp_folder, false) { select { browseFiles() } },
+                        LinearLayout.LayoutParams(0, dp(52), 1f).apply { rightMargin = dp(6) })
+                    shortcuts.addView(indexActionButton("Hosts", R.drawable.ic_terminal, false) { select { showHosts(disconnect = false) } },
+                        LinearLayout.LayoutParams(0, dp(52), 1f).apply { leftMargin = dp(6) })
+                    content.addView(shortcuts)
+                    content.addView(label("OPEN SESSIONS", 12f, secondary, Typeface.BOLD).margins(top = 24, bottom = 12))
+                    val candidates = service.summaries().filter { it.sessionId != sessionId }
+                    candidates.forEach { candidate ->
+                        content.addView(indexActionButton(
+                            "${candidate.hostName}\n${sessionStatusDot(candidate.status)} ${candidate.status} · ${candidate.shortId}",
+                            R.drawable.ic_terminal,
+                            false,
+                        ) { select { openSession(candidate.sessionId) } }.apply {
+                            gravity = Gravity.CENTER_VERTICAL or Gravity.START
+                            minHeight = dp(72)
+                            setPadding(dp(16), dp(12), dp(16), dp(12))
+                        }, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(10) })
                     }
-                    AlertDialog.Builder(this@MainActivity)
-                        .setTitle("Terminal actions")
-                        .setItems(actions.map { it.first }.toTypedArray()) { _, index ->
-                            if (selectedSessionId != sessionId || service.terminal(sessionId) !== terminal) return@setItems
-                            actions[index].second()
-                        }
-                        .setNegativeButton("Cancel", null)
-                        .show()
+                    if (candidates.isEmpty()) {
+                        content.addView(label("No other open sessions", 14f, secondary).margins(top = 8, bottom = 16))
+                    }
+                    dialog = AlertDialog.Builder(this@MainActivity)
+                        .setView(scroll(content))
+                        .setNegativeButton("Close", null)
+                        .create()
+                    dialog.show()
+                    dialog.window?.setBackgroundDrawable(roundedBackground(surface, 24))
                 }
             }
             onInput = { input ->
@@ -4323,6 +4415,7 @@ class MainActivity : Activity() {
         activeModifiers.clear()
         lockedModifiers.clear()
         renderModifierBarItems()
+        updateModifierBarVisibility()
         textInputRow?.visibility = if (enabled) View.VISIBLE else View.GONE
         terminalTextInput?.text?.clear()
         val target = if (enabled) terminalTextInput else terminalView
@@ -4338,6 +4431,7 @@ class MainActivity : Activity() {
         activeModifiers.clear()
         lockedModifiers.clear()
         renderModifierBarItems()
+        updateModifierBarVisibility()
         terminalTextInput?.text?.clear()
         textInputRow?.visibility = View.GONE
         getSystemService(InputMethodManager::class.java)
@@ -4357,6 +4451,9 @@ class MainActivity : Activity() {
             textSize = 14f
             minLines = 1
             maxLines = 4
+            minHeight = dp(48)
+            minimumHeight = dp(48)
+            gravity = Gravity.CENTER_VERTICAL
             setPadding(dp(10), dp(6), dp(10), dp(6))
             background = roundedBackground(surface, 8)
             filters = arrayOf(android.text.InputFilter.LengthFilter(16_384))
@@ -4406,9 +4503,9 @@ class MainActivity : Activity() {
             gravity = Gravity.CENTER_VERTICAL
             setBackgroundColor(raised)
             setPadding(dp(6), dp(4), dp(6), dp(4))
-            addView(closeButton, LinearLayout.LayoutParams(dp(44), dp(48)).apply { rightMargin = dp(6) })
+            addView(closeButton, LinearLayout.LayoutParams(dp(44), -1).apply { rightMargin = dp(6) })
             addView(input, LinearLayout.LayoutParams(0, -2, 1f))
-            addView(sendButton, LinearLayout.LayoutParams(dp(48), dp(48)).apply { leftMargin = dp(6) })
+            addView(sendButton, LinearLayout.LayoutParams(dp(48), -1).apply { leftMargin = dp(6) })
             visibility = if (sessionId in textModeSessions) View.VISIBLE else View.GONE
         }
     }
@@ -4416,7 +4513,7 @@ class MainActivity : Activity() {
     private fun renderModifierBarItems() {
         val row = modifierBarRow ?: return
         row.removeAllViews()
-        val items = keyboardBarConfig.items.filter(::isKeyboardBarItemVisible)
+        val items = keyboardBarConfig.items.filter { isKeyboardBarItemVisible(it) && !(it.type == KeyboardBarItemType.MODIFIER && KeyboardModifier.SHIFT in it.modifiers) }
         val sessionId = selectedSessionId
         fun addInputModeToggle() {
             if (sessionId == null) return
@@ -4426,6 +4523,12 @@ class MainActivity : Activity() {
                     setTextMode(sessionId, sessionId !in textModeSessions)
                 }
             }.apply {
+                text = ""
+                val icon = getDrawable(R.drawable.ic_text_input)?.mutate()?.apply {
+                    setTint(if (textMode) Color.rgb(8, 15, 12) else primary)
+                    setBounds(0, 0, dp(22), dp(22))
+                }
+                setCompoundDrawables(icon, null, null, null)
                 isSelected = textMode
                 contentDescription = if (textMode) "Text mode. Switch to Direct input" else "Direct input. Switch to Text mode"
                 if (Build.VERSION.SDK_INT >= 30) {
@@ -4439,7 +4542,35 @@ class MainActivity : Activity() {
             row.addView(modifierBarButton(item), keyboardBarLayoutParams())
             if (index == escapeIndex) addInputModeToggle()
         }
-        row.addView(barButton("More") { showAllKeyboardKeys() }, keyboardBarLayoutParams(endMargin = 0))
+        row.addView(barButton("⋯") { showAllKeyboardKeys() }.apply { contentDescription = "More keys"; tooltipText = "More keys" }, keyboardBarLayoutParams(endMargin = 0))
+    }
+
+    private fun compactKeyboardLabel(item: KeyboardBarItem?, fallback: String): String {
+        if (item?.type == KeyboardBarItemType.MODIFIER) return when (item.modifiers.singleOrNull()) {
+            KeyboardModifier.CONTROL -> "⌃"
+            KeyboardModifier.ALT -> "⌥"
+            KeyboardModifier.META -> "⌘"
+            KeyboardModifier.SHIFT -> "⇧"
+            KeyboardModifier.CAPS_LOCK -> "⇪"
+            else -> fallback
+        }
+        if (item?.type != KeyboardBarItemType.KEY) return fallback
+        return when (item.key) {
+            "ESCAPE" -> "⎋"
+            "TAB" -> "⇥"
+            "ENTER" -> "↵"
+            "BACKSPACE" -> "⌫"
+            "DELETE" -> "⌦"
+            "HOME" -> "↖"
+            "END" -> "↘"
+            "PAGE_UP" -> "⇞"
+            "PAGE_DOWN" -> "⇟"
+            "ARROW_UP" -> "↑"
+            "ARROW_DOWN" -> "↓"
+            "ARROW_LEFT" -> "←"
+            "ARROW_RIGHT" -> "→"
+            else -> fallback
+        }
     }
 
     private fun modifierBarButton(item: KeyboardBarItem): View {
@@ -4458,9 +4589,11 @@ class MainActivity : Activity() {
         val modifier = resolved?.modifiers?.singleOrNull().takeIf {
             resolved?.type == KeyboardBarItemType.MODIFIER
         }
-        val button = barButton(label, modifier != null && modifier in activeModifiers) {
+        val button = barButton(compactKeyboardLabel(resolved, label), modifier != null && modifier in activeModifiers) {
             resolved?.let(::activateBarItem)
         }
+        button.contentDescription = label
+        button.tooltipText = label
         if (modifier != null) {
             button.setOnLongClickListener {
                 lastUsedModifier = modifier
@@ -4554,15 +4687,21 @@ class MainActivity : Activity() {
         return true
     }
 
+    private fun sessionStatusDot(status: String): String = when {
+        status == "Connected" -> "🟢"
+        status == "Disconnected" || status.contains("failed", ignoreCase = true) -> "⚪"
+        else -> "🔵"
+    }
+
     private fun showSessionChooser(sourceSessionId: String): Boolean {
         if (sourceSessionId != selectedSessionId) return false
-        val sessions = sessionService?.summaries().orEmpty().filter { it.status == "Connected" }
+        val sessions = sessionService?.summaries().orEmpty()
         if (sessions.isEmpty()) return false
         val repeatedHosts = sessions.groupingBy { it.hostId }.eachCount()
         AlertDialog.Builder(this)
             .setTitle("Choose session")
             .setItems(sessions.map {
-                if (repeatedHosts[it.hostId]!! > 1) "${it.hostName} · ${it.shortId}\n${it.status}" else "${it.hostName}\n${it.status}"
+                if (repeatedHosts[it.hostId]!! > 1) "${it.hostName} · ${it.shortId}\n${sessionStatusDot(it.status)} ${it.status}" else "${it.hostName}\n${sessionStatusDot(it.status)} ${it.status}"
             }.toTypedArray()) { _, index -> openSession(sessions[index].sessionId) }
             .setNegativeButton("Cancel", null)
             .show()
@@ -4806,7 +4945,7 @@ class MainActivity : Activity() {
     }
 
     private fun updateModifierBarVisibility() {
-        val rowVisible = keyboardBarConfig.enabled && imeVisible && terminalAtBottom
+        val rowVisible = keyboardBarConfig.enabled && imeVisible && terminalAtBottom && selectedSessionId !in textModeSessions
         modifierBar?.visibility = if (rowVisible) {
             View.VISIBLE
         } else {
@@ -5007,6 +5146,7 @@ class MainActivity : Activity() {
                     }
                 } else if (entry.type == SftpEntryType.FILE) row.setOnClickListener {
                     releaseSftpSearchFocus()
+                    sftpService?.recordFileInteraction(state.browserId, entry)
                     openRemoteFile(state.browserId, entry)
                 } else row.setOnClickListener { showEntryActions(state.browserId, entry) }
             }
@@ -5162,9 +5302,9 @@ class MainActivity : Activity() {
         ))
         backgroundTintList = null
         background = pressableBackground(if (active) accent else raised, Color.rgb(180, 255, 210), 10, accent)
-        minWidth = dp(52)
-        minimumWidth = dp(52)
-        setPadding(dp(10), 0, dp(10), 0)
+        minWidth = dp(44)
+        minimumWidth = dp(44)
+        setPadding(dp(8), 0, dp(8), 0)
         setOnClickListener {
             performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
             action()

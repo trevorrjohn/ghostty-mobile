@@ -4,7 +4,7 @@ import UIKit
 /// A transient, cursor-aware draft. It never emits input until the user explicitly sends it.
 struct TerminalTextInput: UIViewRepresentable {
     @Binding var text: String
-    let isFocused: Bool
+    @Binding var isFocused: Bool
     let insertNewline: Int
 
     func makeUIView(context: Context) -> UITextView {
@@ -56,6 +56,14 @@ struct TerminalTextInput: UIViewRepresentable {
         init(_ parent: TerminalTextInput) {
             self.parent = parent
             lastInsertion = parent.insertNewline
+        }
+
+        func textViewDidBeginEditing(_ textView: UITextView) {
+            parent.isFocused = true
+        }
+
+        func textViewDidEndEditing(_ textView: UITextView) {
+            parent.isFocused = false
         }
 
         func textViewDidChange(_ textView: UITextView) {

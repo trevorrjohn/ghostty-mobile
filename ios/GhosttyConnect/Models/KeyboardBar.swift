@@ -486,7 +486,7 @@ struct KeyboardBarConfig: Codable, Equatable {
     )
     static let defaultItems: [KeyboardBarItem] = [
         .builtIn(.escape), .builtIn(.control), .action(defaultControlB.id), .builtIn(.alt), .builtIn(.tab),
-        .builtIn(.shift), .builtIn(.up), .builtIn(.down), .builtIn(.left), .builtIn(.right),
+        .builtIn(.up), .builtIn(.down), .builtIn(.left), .builtIn(.right),
         .builtIn(.lastModifier),
     ]
     static let defaults = KeyboardBarConfig(

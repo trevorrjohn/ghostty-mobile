@@ -4,6 +4,7 @@ struct HostsView: View {
     @EnvironmentObject private var model: AppModel
     @EnvironmentObject private var sessions: TerminalSessionRegistry
     @State private var editedHost: Host?
+    @State private var duplicatingHost = false
     @State private var showingKeyImport = false
     @State private var showingPreview = false
     @State private var showingQuickConnect = false
@@ -57,7 +58,7 @@ struct HostsView: View {
                                     host: host,
                                     open: { startSession(for: host) },
                                     edit: { editedHost = host },
-                                    duplicate: { editedHost = host.duplicated(existingNames: model.hosts.map(\.name)) },
+                                    duplicate: { duplicatingHost = true; editedHost = host.duplicated(existingNames: model.hosts.map(\.name)) },
                                     delete: { model.delete(host: host) }
                                 )
                             }
@@ -90,7 +91,7 @@ struct HostsView: View {
                     ContentUnavailableView("Session Closed", systemImage: "terminal", description: Text("This session is no longer active."))
                 }
             }
-            .sheet(item: $editedHost) { HostEditorView(host: $0) }
+            .sheet(item: $editedHost, onDismiss: { duplicatingHost = false }) { HostEditorView(host: $0, isDuplicate: duplicatingHost) }
             .sheet(isPresented: $showingKeyImport) { KeyImportView() }
             .sheet(isPresented: $showingPreview) { TerminalPreview() }
             .confirmationDialog("Quick connect", isPresented: $showingQuickConnect) {

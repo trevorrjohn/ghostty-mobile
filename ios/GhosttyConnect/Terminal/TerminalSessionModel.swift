@@ -462,7 +462,6 @@ final class TerminalSessionModel: ObservableObject {
         guard shouldRetry, lifecycleGeneration == generation else { return }
         if !reconnectPending {
             reconnectPending = true
-            engine?.feed(Data("\r\n\u{1b}[33m[Connection lost. Terminal input is paused while reconnecting.]\u{1b}[0m\r\n".utf8))
             if let engine { snapshot = try? engine.snapshot() }
         }
         scheduleAutomaticRetry()

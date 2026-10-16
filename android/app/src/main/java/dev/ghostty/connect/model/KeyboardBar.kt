@@ -179,7 +179,6 @@ object KeyboardBarCatalog {
         controlB,
         modifiers.first { it.modifiers.contains(KeyboardModifier.ALT) },
         keys.first { it.key == "TAB" },
-        modifiers.first { it.modifiers.contains(KeyboardModifier.SHIFT) },
         keys.first { it.key == "ARROW_UP" },
         keys.first { it.key == "ARROW_DOWN" },
         keys.first { it.key == "ARROW_LEFT" },

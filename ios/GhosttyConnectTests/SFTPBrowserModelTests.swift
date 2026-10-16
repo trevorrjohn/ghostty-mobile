@@ -20,6 +20,30 @@ final class SFTPBrowserModelTests: XCTestCase {
         await browser.disconnect()
     }
 
+    func testRecentFoldersRequireFileInteractionAndIgnoreDirectoryNavigation() async throws {
+        let file = SFTPEntry(name: "notes.txt", kind: .file, size: 12, modifiedAt: nil, accessedAt: nil, permissions: nil)
+        let directory = SFTPEntry(name: "src", kind: .directory, size: nil, modifiedAt: nil, accessedAt: nil, permissions: nil)
+        let transport = DirectoryTestTransport(entries: [file, directory])
+        let browser = SFTPBrowserModel(transportFactory: { transport })
+        let host = Host()
+        defer { try? SecureStore().delete(account: "sftp-locations:\(host.id.uuidString.lowercased())") }
+
+        await browser.connect(to: host, secret: "test", key: nil, initialPath: "/srv")
+        await browser.open(directory)
+        browser.recordFileInteraction(directory)
+        XCTAssertTrue(browser.recentPaths.isEmpty)
+
+        browser.recordFileInteraction(file)
+        XCTAssertEqual(browser.recentPaths, ["/srv/src"])
+        await browser.navigate(to: "/tmp")
+        await browser.refresh()
+        XCTAssertEqual(browser.recentPaths, ["/srv/src"])
+        browser.recordFileInteraction(file)
+        browser.recordFileInteraction(file)
+        XCTAssertEqual(browser.recentPaths, ["/tmp", "/srv/src"])
+        await browser.disconnect()
+    }
+
     func testNoMetadataStartsAtHomeAndParentStopsAtRoot() async throws {
         let transport = DirectoryTestTransport()
         let browser = SFTPBrowserModel(transportFactory: { transport })
@@ -40,11 +64,14 @@ final class SFTPBrowserModelTests: XCTestCase {
 private actor DirectoryTestTransport: SFTPTransport {
     nonisolated let hostTrustRequests = AsyncStream<HostTrustRequest> { $0.finish() }
     private(set) var requests: [String] = []
+    private let entries: [SFTPEntry]
+
+    init(entries: [SFTPEntry] = []) { self.entries = entries }
 
     func connect(to host: Host, credential: SSHCredential) async throws {}
     func list(path: String) async throws -> SFTPDirectory {
         requests.append(path)
-        return SFTPDirectory(path: path == "." ? "/home/test" : (path as NSString).standardizingPath, entries: [])
+        return SFTPDirectory(path: path == "." ? "/home/test" : (path as NSString).standardizingPath, entries: entries)
     }
     func createDirectory(path: String) async throws { throw SFTPBrowserError.unsupportedEntry }
     func rename(from: String, to: String) async throws { throw SFTPBrowserError.unsupportedEntry }

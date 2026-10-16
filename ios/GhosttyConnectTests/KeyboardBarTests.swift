@@ -5,7 +5,7 @@ final class KeyboardBarTests: XCTestCase {
     func testDefaultsMatchSharedBasicOrder() {
         XCTAssertEqual(KeyboardBarConfig.defaults.items, [
             .builtIn(.escape), .builtIn(.control), .action(KeyboardBarConfig.defaultControlB.id), .builtIn(.alt), .builtIn(.tab),
-            .builtIn(.shift), .builtIn(.up), .builtIn(.down), .builtIn(.left), .builtIn(.right),
+            .builtIn(.up), .builtIn(.down), .builtIn(.left), .builtIn(.right),
             .builtIn(.lastModifier),
         ])
         XCTAssertEqual(KeyboardBarConfig.defaults.actions, [KeyboardBarConfig.defaultControlB])

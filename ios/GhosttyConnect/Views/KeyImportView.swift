@@ -8,6 +8,7 @@ struct KeyImportView: View {
     @State private var keyText = ""
     @State private var generatedName = ""
     @State private var showingImporter = false
+    @State private var keyFromFile = false
     @State private var errorMessage: String?
     private let onImport: (StoredKey) -> Void
 
@@ -28,6 +29,7 @@ struct KeyImportView: View {
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
                 TextEditor(text: $keyText)
+                    .disabled(keyFromFile)
                     .font(.system(.caption, design: .monospaced))
                     .autocorrectionDisabled()
                     .textInputAutocapitalization(.never)
@@ -37,6 +39,10 @@ struct KeyImportView: View {
                 if let errorMessage { Text(errorMessage).font(.caption).foregroundStyle(.red) }
                 Button("Choose file") { showingImporter = true }
                     .buttonStyle(.bordered)
+                    .disabled(!keyText.isEmpty && !keyFromFile)
+                if keyFromFile {
+                    Button("Clear selected file") { keyText = ""; keyFromFile = false }
+                }
             }
             .padding()
             .background(Color.ghosttySurface.ignoresSafeArea())
@@ -63,6 +69,7 @@ struct KeyImportView: View {
                     let size = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
                     guard size <= 1_048_576 else { throw KeyInspectionError.tooLarge }
                     keyText = String(decoding: try Data(contentsOf: url), as: UTF8.self)
+                    keyFromFile = true
                 } catch { errorMessage = error.localizedDescription }
             }
         }

@@ -157,6 +157,14 @@ final class SFTPBrowserModel: ObservableObject {
         persistLocations()
     }
 
+    func recordFileInteraction(_ entry: SFTPEntry) {
+        guard connected, entry.kind == .file, entries.contains(entry), !path.isEmpty else { return }
+        recentPaths.removeAll { $0 == path }
+        recentPaths.insert(path, at: 0)
+        recentPaths = Array(recentPaths.prefix(10))
+        persistLocations()
+    }
+
     func clearRecentPaths() {
         recentPaths = []
         persistLocations()
@@ -195,6 +203,7 @@ final class SFTPBrowserModel: ObservableObject {
     func download(_ entry: SFTPEntry, maxBytes: UInt64) async throws -> URL {
         guard entry.kind == .file, let transport else { throw SFTPBrowserError.unsupportedEntry }
         guard transfer == nil else { throw SFTPBrowserError.notConnected }
+        recordFileInteraction(entry)
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("sftp-downloads", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let localURL = directory.appendingPathComponent("\(UUID().uuidString)-\(entry.name)")
@@ -323,10 +332,6 @@ final class SFTPBrowserModel: ObservableObject {
         path = directory.path
         entries = directory.entries
         addressText = directory.path
-        recentPaths.removeAll { $0 == directory.path }
-        recentPaths.insert(directory.path, at: 0)
-        recentPaths = Array(recentPaths.prefix(10))
-        persistLocations()
         status = .ready
         errorMessage = nil
     }

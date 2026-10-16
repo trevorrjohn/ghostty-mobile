@@ -416,7 +416,6 @@ class SftpBrowserService : Service() {
                             connected = true,
                             error = null,
                         ))
-                         recordRecentFolder(record, directory)
                     }
                 } catch (error: Exception) {
                     onMain { fail(record, generation, error) }
@@ -604,6 +603,13 @@ class SftpBrowserService : Service() {
                 connected = true,
                 error = null,
             ))
+        }
+    }
+
+    fun recordFileInteraction(browserId: String, entry: SftpEntry) = onServiceMain {
+        val record = browsers[browserId] ?: return@onServiceMain
+        val path = record.state.path ?: return@onServiceMain
+        if (record.state.connected && entry.type == SftpEntryType.FILE && entry in record.state.entries) {
             recordRecentFolder(record, path)
         }
     }
@@ -611,10 +617,7 @@ class SftpBrowserService : Service() {
     private fun recordRecentFolder(record: BrowserRecord, path: String) {
         runCatching {
             record.executor.execute {
-                val changed = runCatching { recentFolderStore.record(record.host.id, path) }.getOrDefault(false)
-                if (changed) onMain {
-                    if (browsers[record.browserId] === record && record.state.path == path) emit(record)
-                }
+                runCatching { recentFolderStore.record(record.host.id, path) }
             }
         }
     }

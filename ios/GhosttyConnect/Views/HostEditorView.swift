@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 struct HostEditorView: View {
     @EnvironmentObject private var model: AppModel
@@ -6,14 +7,23 @@ struct HostEditorView: View {
     @State private var host: Host
     @State private var showingKeyImport = false
 
-    init(host: Host) { _host = State(initialValue: host) }
+    private let isDuplicate: Bool
+    @FocusState private var focusedField: String?
+    @State private var selectedDuplicateName = false
+
+    init(host: Host, isDuplicate: Bool = false) {
+        _host = State(initialValue: host)
+        self.isDuplicate = isDuplicate
+    }
 
     var body: some View {
         NavigationStack {
             Form {
                 Section("Connection") {
                     TextField("Alias (optional)", text: $host.alias)
+                        .focused($focusedField, equals: "alias")
                     TextField("Hostname or IP", text: $host.hostname)
+                        .focused($focusedField, equals: "hostname")
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                     TextField("Username", text: $host.username)
@@ -79,7 +89,16 @@ struct HostEditorView: View {
             }
             .scrollContentBackground(.hidden)
             .background(Color.ghosttySurface)
-            .navigationTitle(host.hostname.isEmpty ? "Add host" : "Edit host")
+            .navigationTitle(isDuplicate ? "Duplicate host" : host.hostname.isEmpty ? "Add host" : "Edit host")
+            .task {
+                if isDuplicate { focusedField = host.alias.isEmpty ? "hostname" : "alias" }
+            }
+            .onReceive(NotificationCenter.default.publisher(for: UITextField.textDidBeginEditingNotification)) { notification in
+                guard isDuplicate, !selectedDuplicateName,
+                      let field = notification.object as? UITextField, field.isFirstResponder else { return }
+                selectedDuplicateName = true
+                DispatchQueue.main.async { field.selectAll(nil) }
+            }
             .onChange(of: host.authenticationType) { _, authenticationType in
                 guard authenticationType == .sshKey,
                       host.identityID == nil,

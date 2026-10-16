@@ -27,6 +27,7 @@ struct TerminalScreen: View {
     @State private var textDraft = ""
     @State private var newlineInsertion = 0
     @State private var showingQuickNavigation = false
+    @State private var quickNavigationAction: (() -> Void)?
     @State private var filesInitialPath: String?
 
     private var host: Host { record.host }
@@ -36,7 +37,7 @@ struct TerminalScreen: View {
         let theme = TerminalTheme.theme(id: model.settings.themeID)
         let terminalFontSize = transientFontSize ?? model.settings.fontSize
         VStack(spacing: 0) {
-            if session.state != .connected || !remoteMetadata.isEmpty {
+            if !connectionOverlayVisible && (session.state != .connected || !remoteMetadata.isEmpty) {
                 statusBar
             }
             if let snapshot = session.snapshot {
@@ -96,20 +97,25 @@ struct TerminalScreen: View {
             if record.textMode && session.state == .connected {
                 textInputBar
             }
-            if model.keyboardBarConfig.enabled && keyboardFocused && session.state == .connected {
+            if model.keyboardBarConfig.enabled && !record.textMode && keyboardFocused && session.state == .connected {
+                HStack(spacing: 0) {
                 ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 8) {
+                    HStack(spacing: 4) {
                         if !model.keyboardBarConfig.items.contains(.builtIn(.escape)) { inputModeToggle }
-                        ForEach(model.keyboardBarConfig.items) { item in
+                        ForEach(model.keyboardBarConfig.items.filter { $0 != .builtIn(.shift) }) { item in
                             HStack(spacing: 4) {
-                                Text(keyboardBarLabel(item))
+                                if let symbol = keyboardBarSymbol(item) {
+                                    Image(systemName: symbol).font(.system(size: 17, weight: .medium))
+                                } else {
+                                    Text(keyboardBarLabel(item))
+                                }
                                 if isLocked(item) {
                                     Image(systemName: "lock.fill")
                                         .font(.system(size: 9, weight: .bold))
                                 }
                             }
                                 .font(.system(.caption2, design: .monospaced).weight(.semibold))
-                                .padding(.horizontal, 9)
+                                .padding(.horizontal, 4)
                                 .frame(minWidth: 44, minHeight: 44)
                                 .foregroundStyle(
                                     isActive(item) || pressedKeyboardBarItem == item
@@ -158,6 +164,8 @@ struct TerminalScreen: View {
                     .padding(.horizontal, 10)
                 }
                 .frame(height: 44)
+                dismissKeyboardButton
+                }
                 .background(Color.ghosttyRaised)
                 .opacity(session.snapshot?.viewport.isAtBottom == false ? 0 : 1)
                 .allowsHitTesting(session.snapshot?.viewport.isAtBottom != false)
@@ -175,12 +183,30 @@ struct TerminalScreen: View {
             }
         }
         .background(theme.background)
+        .overlay {
+            if connectionOverlayVisible {
+                VStack(spacing: 14) {
+                    ProgressView()
+                    Text(host.name).font(.headline)
+                    Text(statusText).font(.subheadline).foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                }
+                .padding(24)
+                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 20))
+                .padding(24)
+            }
+        }
         .overlay(alignment: .top) {
             if showingHistorySearch { historySearchBar }
         }
         .persistentSystemOverlays(session.state == .connected ? .hidden : .automatic)
         .navigationTitle(host.name)
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            if keyboardFocused && !model.keyboardBarConfig.enabled && !record.textMode {
+                ToolbarItem(placement: .topBarTrailing) { dismissKeyboardButton }
+            }
+        }
         .toolbar(.hidden, for: .tabBar)
         .onAppear {
             if !record.hasRequestedConnection { requestConnection(isReconnect: false) }
@@ -200,18 +226,11 @@ struct TerminalScreen: View {
             Button(record.textMode ? "Direct input" : "Direct input ✓") { setTextMode(false) }
             Button(record.textMode ? "Text mode ✓" : "Text mode") { setTextMode(true) }
         }
-        .confirmationDialog("Terminal actions", isPresented: $showingQuickNavigation, titleVisibility: .visible) {
-            Button(record.textMode ? "Switch to Direct input" : "Switch to Text mode") { setTextMode(!record.textMode) }
-            Button("Files") { openFiles() }
-            Button("Hosts") { goToHosts() }
-            ForEach(sessions.records.filter { $0.id != record.id && $0.session.state == .connected }) { candidate in
-                Button("\(candidate.host.name) · \(candidate.shortID)") {
-                    guard candidate.session.state == .connected else { return }
-                    textDraft = ""
-                    switchSession(candidate.id)
-                }
-            }
-        }
+        .sheet(isPresented: $showingQuickNavigation, onDismiss: {
+            let action = quickNavigationAction
+            quickNavigationAction = nil
+            action?()
+        }) { quickNavigationSheet }
         .onDisappear {
             secret = ""
             keyboardFocused = false
@@ -306,6 +325,103 @@ struct TerminalScreen: View {
         }
     }
 
+    private func finishQuickNavigation(_ action: @escaping () -> Void) {
+        quickNavigationAction = action
+        showingQuickNavigation = false
+    }
+
+    private var quickNavigationSheet: some View {
+        VStack(alignment: .leading, spacing: 20) {
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(host.name)
+                        .font(.system(size: 28, weight: .bold, design: .rounded))
+                        .foregroundStyle(Color.primary)
+                    HStack(spacing: 6) {
+                        Circle().fill(session.state == .connected ? Color.ghosttyAccent : Color.ghosttySecondary)
+                            .frame(width: 8, height: 8)
+                        Text(record.status).font(.subheadline.weight(.medium))
+                    }
+                    .foregroundStyle(Color.ghosttySecondary)
+                }
+                Spacer()
+                Button { showingQuickNavigation = false } label: {
+                    Image(systemName: "xmark").font(.subheadline.bold()).frame(width: 44, height: 44)
+                        .background(Color.ghosttyRaised, in: Circle())
+                }
+                .accessibilityLabel("Close quick switcher")
+            }
+            HStack(spacing: 12) {
+                quickSwitchAction("Files", symbol: "folder") { finishQuickNavigation { openFiles() } }
+                quickSwitchAction("Hosts", symbol: "server.rack") { finishQuickNavigation { goToHosts() } }
+            }
+            Text("OPEN SESSIONS").font(.caption.weight(.semibold)).tracking(1.2)
+                .foregroundStyle(Color.ghosttySecondary)
+            ScrollView {
+                VStack(spacing: 10) {
+                    ForEach(sessions.records.filter { $0.id != record.id }) { candidate in
+                        Button {
+                            finishQuickNavigation {
+                                textDraft = ""
+                                switchSession(candidate.id)
+                            }
+                        } label: {
+                            HStack(spacing: 12) {
+                                Image(systemName: "terminal").font(.title3).foregroundStyle(Color.ghosttyAccent)
+                                VStack(alignment: .leading, spacing: 5) {
+                                    Text(candidate.host.name).font(.headline).foregroundStyle(Color.primary)
+                                    HStack(spacing: 6) {
+                                        Circle().fill(candidate.session.state == .connected ? Color.ghosttyAccent : Color.ghosttySecondary)
+                                            .frame(width: 7, height: 7)
+                                        Text("\(candidate.status) · \(candidate.shortID)").font(.caption)
+                                    }
+                                    .foregroundStyle(Color.ghosttySecondary)
+                                }
+                                Spacer()
+                                Image(systemName: "chevron.right").font(.caption.bold()).foregroundStyle(Color.ghosttySecondary)
+                            }
+                            .padding(16)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(Color.ghosttyRaised, in: RoundedRectangle(cornerRadius: 14))
+                            .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.ghosttySecondary.opacity(0.2)))
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    if sessions.records.count < 2 {
+                        Text("No other open sessions").font(.subheadline).foregroundStyle(Color.ghosttySecondary)
+                            .frame(maxWidth: .infinity).padding(.vertical, 24)
+                    }
+                }
+            }
+        }
+        .padding(24)
+        .padding(.top, 12)
+        .background(Color.ghosttySurface)
+        .presentationDetents([.medium, .large])
+        .presentationDragIndicator(.visible)
+    }
+
+    private func quickSwitchAction(_ title: String, symbol: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Label(title, systemImage: symbol)
+                .font(.subheadline.weight(.semibold))
+                .frame(maxWidth: .infinity, minHeight: 52)
+                .foregroundStyle(Color.ghosttyAccent)
+                .background(Color.ghosttyRaised, in: RoundedRectangle(cornerRadius: 14))
+                .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.ghosttyAccent.opacity(0.3)))
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var dismissKeyboardButton: some View {
+        Button { keyboardFocused = false } label: {
+            Image(systemName: "keyboard.chevron.compact.down")
+                .font(.system(size: 19))
+                .frame(width: 44, height: 44)
+        }
+        .accessibilityLabel("Dismiss keyboard")
+    }
+
     private var textInputBar: some View {
         HStack(spacing: 6) {
             Button { dismissTextMode() } label: {
@@ -315,7 +431,7 @@ struct TerminalScreen: View {
             }
                 .background(Color.ghosttySurface, in: RoundedRectangle(cornerRadius: 8))
                 .accessibilityLabel("Close text input")
-            TerminalTextInput(text: $textDraft, isFocused: keyboardFocused, insertNewline: newlineInsertion)
+            TerminalTextInput(text: $textDraft, isFocused: $keyboardFocused, insertNewline: newlineInsertion)
                 .background(Color.ghosttySurface, in: RoundedRectangle(cornerRadius: 8))
             Button { requestTextSubmission(enter: true) } label: {
                 Image(systemName: "paperplane.fill").frame(width: 44, height: 44)
@@ -332,6 +448,7 @@ struct TerminalScreen: View {
                     Button("Send only") { requestTextSubmission(enter: false) }
                     Button("Insert newline") { newlineInsertion += 1 }
                 }
+            if keyboardFocused { dismissKeyboardButton }
         }
         .padding(6)
         .background(Color.ghosttyRaised)
@@ -390,7 +507,9 @@ struct TerminalScreen: View {
     }
 
     private var inputModeToggle: some View {
-        Button("Text") { setTextMode(!record.textMode) }
+        Button { setTextMode(!record.textMode) } label: {
+            Image(systemName: "text.cursor").font(.system(size: 19, weight: .medium))
+        }
             .font(.system(.caption2, design: .monospaced).weight(.semibold))
             .frame(minWidth: 44, minHeight: 44)
             .foregroundStyle(record.textMode ? Color.ghosttySurface : Color.ghosttyAccent)
@@ -513,6 +632,13 @@ struct TerminalScreen: View {
             return
         }
         historySearchMessage = session.search(record.searchQuery, direction: direction) ? nil : "No match"
+    }
+
+    private var connectionOverlayVisible: Bool {
+        switch session.state {
+        case .connecting, .waitingForNetwork, .retrying, .verifyingHost, .authenticating: true
+        default: false
+        }
     }
 
     private var statusBar: some View {
@@ -791,6 +917,36 @@ struct TerminalScreen: View {
         case .builtIn(.lastAction):
             return keyboardBarState.lastUsedActionID.flatMap(model.keyboardBarConfig.action(id:))
         case .builtIn: return nil
+        }
+    }
+
+    private func keyboardBarSymbol(_ item: KeyboardBarItem) -> String? {
+        if let modifier = resolvedModifier(item) {
+            return switch modifier {
+            case .control: "control"
+            case .alt: "option"
+            case .meta: "command"
+            case .shift: "shift"
+            case .capsLock: "capslock"
+            case .numLock: nil
+            }
+        }
+        guard case .builtIn(let key) = item else { return nil }
+        return switch key {
+        case .escape: "escape"
+        case .tab: "arrow.right.to.line"
+        case .enter: "return"
+        case .backspace: "delete.left"
+        case .delete: "delete.right"
+        case .home: "arrow.up.left"
+        case .end: "arrow.down.right"
+        case .pageUp: "arrow.up.to.line"
+        case .pageDown: "arrow.down.to.line"
+        case .up: "arrow.up"
+        case .down: "arrow.down"
+        case .left: "arrow.left"
+        case .right: "arrow.right"
+        default: nil
         }
     }
 
