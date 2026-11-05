@@ -270,6 +270,7 @@ struct KeyboardAction: Codable, Equatable, Identifiable {
     var id: UUID
     var label: String
     var steps: [KeyboardActionStep]
+    var titleContains: String?
 
     var key: KeyboardActionKey {
         get { steps.first?.key ?? .c }
@@ -296,10 +297,16 @@ struct KeyboardAction: Codable, Equatable, Identifiable {
         self.init(id: id, label: label, steps: [KeyboardActionStep(key: key, modifiers: modifiers)])
     }
 
-    init(id: UUID = UUID(), label: String, steps: [KeyboardActionStep]) {
+    init(id: UUID = UUID(), label: String, steps: [KeyboardActionStep], titleContains: String? = nil) {
         self.id = id
         self.label = Self.normalizedLabel(label)
+        self.titleContains = titleContains.map { String($0.prefix(128)) }
         self.steps = Array(steps.prefix(Self.maximumSteps))
+    }
+
+    func isVisible(for title: String) -> Bool {
+        guard let filter = titleContains, !filter.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return true }
+        return title.range(of: filter, options: .caseInsensitive) != nil
     }
 
     var isValid: Bool {
@@ -323,6 +330,7 @@ struct KeyboardAction: Codable, Equatable, Identifiable {
         case key
         case modifiers
         case steps
+        case titleContains
     }
 
     init(from decoder: Decoder) throws {
@@ -351,6 +359,7 @@ struct KeyboardAction: Codable, Equatable, Identifiable {
                 modifiers: try Self.decodeModifiers(from: container)
             )
         }
+        titleContains = try container.decodeIfPresent(String.self, forKey: .titleContains).map { String($0.prefix(128)) }
     }
 
     func encode(to encoder: Encoder) throws {
@@ -358,6 +367,7 @@ struct KeyboardAction: Codable, Equatable, Identifiable {
         try container.encode(id, forKey: .id)
         try container.encode(label, forKey: .label)
         try container.encode(steps, forKey: .steps)
+        try container.encodeIfPresent(titleContains, forKey: .titleContains)
     }
 
     private static func normalizedLabel(_ label: String) -> String {
@@ -474,7 +484,7 @@ extension KeyboardBarItem: Codable {
 }
 
 struct KeyboardBarConfig: Codable, Equatable {
-    static let currentVersion = 4
+    static let currentVersion = 5
     static let maximumEncodedBytes = 16_384
     static let maximumActions = 16
     static let maximumItems = KeyboardBarItemID.allCases.count + maximumActions
@@ -495,6 +505,8 @@ struct KeyboardBarConfig: Codable, Equatable {
         actions: [defaultControlB]
     )
 
+    var quickActionsEnabled = true
+    var quickActions = TerminalQuickAction.defaults
     var enabled: Bool
     private(set) var items: [KeyboardBarItem]
     private(set) var actions: [KeyboardAction]
@@ -534,7 +546,8 @@ struct KeyboardBarConfig: Codable, Equatable {
         let normalized = KeyboardAction(
             id: action.id,
             label: action.label,
-            steps: action.steps
+            steps: action.steps,
+            titleContains: action.titleContains
         )
         guard normalized.isValid else { return false }
         if let index = actions.firstIndex(where: { $0.id == normalized.id }) {
@@ -551,10 +564,15 @@ struct KeyboardBarConfig: Codable, Equatable {
     mutating func deleteAction(id: UUID) {
         actions.removeAll { $0.id == id }
         items.removeAll { $0 == .action(id) }
+        for direction in TerminalQuickDirection.allCases where quickActions[direction] == KeyboardBarItem.action(id).id {
+            quickActions[direction] = TerminalQuickAction.defaults[direction]
+        }
     }
 
     private enum CodingKeys: String, CodingKey {
         case version
+        case quickActionsEnabled
+        case quickActions
         case enabled
         case itemIDs
         case items
@@ -565,6 +583,12 @@ struct KeyboardBarConfig: Codable, Equatable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         let version = try container.decode(Int.self, forKey: .version)
         enabled = try container.decode(Bool.self, forKey: .enabled)
+        quickActionsEnabled = try container.decodeIfPresent(Bool.self, forKey: .quickActionsEnabled) ?? true
+        if let stored = try container.decodeIfPresent([String: String].self, forKey: .quickActions) {
+            for direction in TerminalQuickDirection.allCases {
+                if let value = stored[direction.rawValue] { quickActions[direction] = value }
+            }
+        }
         switch version {
         case 1:
             var ids: [String] = []
@@ -584,7 +608,7 @@ struct KeyboardBarConfig: Codable, Equatable {
                 ids.compactMap(KeyboardBarItemID.init(rawValue:)).map(KeyboardBarItem.builtIn),
                 actionIDs: []
             )
-        case 2, 3, Self.currentVersion:
+        case 2, 3, 4, Self.currentVersion:
             var decodedActions: [KeyboardAction] = []
             var actionContainer = try container.nestedUnkeyedContainer(forKey: .actions)
             while !actionContainer.isAtEnd {
@@ -621,6 +645,14 @@ struct KeyboardBarConfig: Codable, Equatable {
                 debugDescription: "Unsupported keyboard bar configuration version."
             )
         }
+        let validQuickActions = Set(TerminalQuickAction.builtIns.map(\.id)
+            + KeyboardBarItemID.allCases.filter { $0.key != nil }.map { KeyboardBarItem.builtIn($0).id }
+            + actions.map { KeyboardBarItem.action($0.id).id })
+        for direction in TerminalQuickDirection.allCases {
+            if !validQuickActions.contains(quickActions[direction] ?? "") {
+                quickActions[direction] = TerminalQuickAction.defaults[direction]
+            }
+        }
         if items == Self.defaultItems.filter({ $0 != .builtIn(.control) }) {
             items = Self.defaultItems
         }
@@ -630,6 +662,8 @@ struct KeyboardBarConfig: Codable, Equatable {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(Self.currentVersion, forKey: .version)
         try container.encode(enabled, forKey: .enabled)
+        try container.encode(quickActionsEnabled, forKey: .quickActionsEnabled)
+        try container.encode(Dictionary(uniqueKeysWithValues: quickActions.map { ($0.key.rawValue, $0.value) }), forKey: .quickActions)
         try container.encode(items, forKey: .items)
         try container.encode(actions, forKey: .actions)
     }
@@ -697,4 +731,27 @@ struct KeyboardBarRuntimeState: Equatable {
         lastUsedModifier = nil
         lastUsedActionID = nil
     }
+}
+
+
+enum TerminalQuickDirection: String, CaseIterable, Identifiable {
+    case up, right, down, left
+    var id: String { rawValue }
+    var label: String { rawValue.capitalized }
+
+    static func resolve(dx: CGFloat, dy: CGFloat) -> Self? {
+        guard max(abs(dx), abs(dy)) >= 42 else { return nil }
+        if abs(dx) > abs(dy) { return dx > 0 ? .right : .left }
+        return dy > 0 ? .down : .up
+    }
+}
+
+enum TerminalQuickAction {
+    static let builtIns: [(id: String, label: String)] = [
+        ("select", "Select here"), ("paste", "Paste"), ("search", "Search"),
+        ("next-session", "Next session"), ("choose-session", "Choose session"),
+    ]
+    static let defaults: [TerminalQuickDirection: String] = [
+        .up: "search", .right: "paste", .down: "built-in:escape", .left: "next-session",
+    ]
 }

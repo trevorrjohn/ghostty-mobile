@@ -72,6 +72,7 @@ class SshSessionService : Service() {
         val autoReconnectEligible: Boolean,
         val startedAtElapsedRealtime: Long = SystemClock.elapsedRealtime(),
     ) {
+        var lastUsedAtElapsedRealtime = startedAtElapsedRealtime
         val outputLock = Any()
         val pendingEffects = ArrayDeque<TerminalEffects>()
         val framePending = AtomicBoolean(false)
@@ -278,9 +279,13 @@ class SshSessionService : Service() {
         }
     }
 
+    private var lastSelectionTimestamp = 0L
+
     fun selectListenerSession(sessionId: String?) = onServiceMain {
         listenerSessionId = sessionId?.takeIf(sessions::containsKey)
         val record = listenerSessionId?.let(sessions::get) ?: return@onServiceMain
+        lastSelectionTimestamp = maxOf(SystemClock.elapsedRealtime(), lastSelectionTimestamp + 1)
+        record.lastUsedAtElapsedRealtime = lastSelectionTimestamp
         listener?.onSessionStatus(record.sessionId, record.status)
         listener?.onTerminalChanged(record.sessionId)
         while (record.pendingEffects.isNotEmpty()) {
@@ -342,7 +347,7 @@ class SshSessionService : Service() {
 
     fun summaries(): List<SessionSummary> = onServiceMainResult {
         sessions.values.map {
-            sessionSummary(it.sessionId, it.host, it.startedAtElapsedRealtime, it.status, it.manualRetryAvailable)
+            sessionSummary(it.sessionId, it.host, it.startedAtElapsedRealtime, it.status, it.manualRetryAvailable, it.lastUsedAtElapsedRealtime)
         }
     }
 

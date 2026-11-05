@@ -11,6 +11,18 @@ class SessionSummaryTest {
     private val host = Host(id = "saved-host", hostname = "example.com", username = "ghost")
 
     @Test
+    fun quickSwitcherUsesLastSelectionRatherThanCreationOrder() {
+        val oldest = sessionSummary("oldest", host, 100L, "Connected", lastUsedAtElapsedRealtime = 400L)
+        val newest = sessionSummary("newest", host, 300L, "Connected")
+        val middle = sessionSummary("middle", host, 200L, "Connected")
+        val sessions = listOf(middle, oldest, newest)
+        assertEquals(listOf("oldest", "newest", "middle"), recentSessions(sessions).map { it.sessionId })
+        assertEquals(listOf("middle", "oldest", "newest"), recentSessions(
+            sessions.map { if (it.sessionId == "middle") it.copy(lastUsedAtElapsedRealtime = 500L) else it },
+        ).map { it.sessionId })
+    }
+
+    @Test
     fun sessionIdentityIsIndependentFromHostIdentity() {
         val first = sessionSummary("session-1", host, 100L, "Connected")
         val second = sessionSummary("session-2", host, 200L, "Connected")

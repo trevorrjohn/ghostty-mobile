@@ -6,6 +6,7 @@ struct TerminalTextInput: UIViewRepresentable {
     @Binding var text: String
     @Binding var isFocused: Bool
     let insertNewline: Int
+    var presentationRequest = 0
 
     func makeUIView(context: Context) -> UITextView {
         let view = UITextView()
@@ -34,7 +35,14 @@ struct TerminalTextInput: UIViewRepresentable {
                 view.insertText("\n")
             }
         }
-        if isFocused && !view.isFirstResponder {
+        let requested = context.coordinator.lastPresentationRequest != presentationRequest
+        context.coordinator.lastPresentationRequest = presentationRequest
+        if requested && isFocused {
+            DispatchQueue.main.async {
+                if view.isFirstResponder { view.resignFirstResponder() }
+                view.becomeFirstResponder()
+            }
+        } else if isFocused && !view.isFirstResponder {
             view.becomeFirstResponder()
         } else if !isFocused && view.isFirstResponder {
             view.resignFirstResponder()
@@ -52,10 +60,12 @@ struct TerminalTextInput: UIViewRepresentable {
     final class Coordinator: NSObject, UITextViewDelegate {
         var parent: TerminalTextInput
         var lastInsertion: Int
+        var lastPresentationRequest: Int
 
         init(_ parent: TerminalTextInput) {
             self.parent = parent
             lastInsertion = parent.insertNewline
+            lastPresentationRequest = parent.presentationRequest
         }
 
         func textViewDidBeginEditing(_ textView: UITextView) {

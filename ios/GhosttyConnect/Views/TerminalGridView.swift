@@ -4,6 +4,7 @@ import UIKit
 struct TerminalGridView: View {
     let snapshot: TerminalSnapshot
     let fontSize: Double
+    let scrollMultiplier: Double
     let onTap: () -> Void
     let onDoubleTap: (Int, Int) -> Void
     let onScrollRows: (Int) -> Void
@@ -12,6 +13,9 @@ struct TerminalGridView: View {
     let onSelectionFinished: () -> Void
     let onMagnify: (Double, Bool) -> Void
     let onQuickNavigation: (() -> Void)?
+    let quickActionLabels: [TerminalQuickDirection: String]
+    let onQuickAction: (TerminalQuickDirection, Int, Int) -> Void
+    let interactionID: UUID?
 
     private var cellWidth: CGFloat { Self.cellWidth(fontSize: fontSize) }
     private var cellHeight: CGFloat { Self.cellHeight(fontSize: fontSize) }
@@ -22,6 +26,7 @@ struct TerminalGridView: View {
     init(
         snapshot: TerminalSnapshot,
         fontSize: Double,
+        scrollMultiplier: Double = 1,
         onTap: @escaping () -> Void = {},
         onDoubleTap: @escaping (Int, Int) -> Void = { _, _ in },
         onScrollRows: @escaping (Int) -> Void = { _ in },
@@ -29,10 +34,14 @@ struct TerminalGridView: View {
         onSelectionEndpointChanged: @escaping (Bool, Int, Int) -> Void = { _, _, _ in },
         onSelectionFinished: @escaping () -> Void = {},
         onMagnify: @escaping (Double, Bool) -> Void = { _, _ in },
-        onQuickNavigation: (() -> Void)? = nil
+        onQuickNavigation: (() -> Void)? = nil,
+        quickActionLabels: [TerminalQuickDirection: String] = [:],
+        onQuickAction: @escaping (TerminalQuickDirection, Int, Int) -> Void = { _, _, _ in },
+        interactionID: UUID? = nil
     ) {
         self.snapshot = snapshot
         self.fontSize = fontSize
+        self.scrollMultiplier = scrollMultiplier
         self.onTap = onTap
         self.onDoubleTap = onDoubleTap
         self.onScrollRows = onScrollRows
@@ -41,6 +50,9 @@ struct TerminalGridView: View {
         self.onSelectionFinished = onSelectionFinished
         self.onMagnify = onMagnify
         self.onQuickNavigation = onQuickNavigation
+        self.quickActionLabels = quickActionLabels
+        self.onQuickAction = onQuickAction
+        self.interactionID = interactionID
     }
 
     var body: some View {
@@ -57,6 +69,7 @@ struct TerminalGridView: View {
             cursorLayer
 
             TerminalInteractionOverlay(
+                scrollMultiplier: scrollMultiplier,
                 cellWidth: cellWidth,
                 cellHeight: cellHeight,
                 columns: snapshot.columns,
@@ -69,7 +82,10 @@ struct TerminalGridView: View {
                 onSelectionEndpointChanged: onSelectionEndpointChanged,
                 onSelectionFinished: onSelectionFinished,
                 onMagnify: onMagnify,
-                onQuickNavigation: onQuickNavigation
+                onQuickNavigation: onQuickNavigation,
+                quickActionLabels: quickActionLabels,
+                onQuickAction: onQuickAction,
+                interactionID: interactionID
             )
         }
         .background(Color(snapshot.background))
@@ -263,7 +279,8 @@ struct TerminalSelectionHandleDragState {
     }
 }
 
-private struct TerminalInteractionOverlay: UIViewRepresentable {
+struct TerminalInteractionOverlay: UIViewRepresentable {
+    let scrollMultiplier: Double
     let cellWidth: CGFloat
     let cellHeight: CGFloat
     let columns: Int
@@ -277,6 +294,9 @@ private struct TerminalInteractionOverlay: UIViewRepresentable {
     let onSelectionFinished: () -> Void
     let onMagnify: (Double, Bool) -> Void
     let onQuickNavigation: (() -> Void)?
+    let quickActionLabels: [TerminalQuickDirection: String]
+    let onQuickAction: (TerminalQuickDirection, Int, Int) -> Void
+    let interactionID: UUID?
 
     func makeCoordinator() -> Coordinator { Coordinator(parent: self) }
 
@@ -318,6 +338,9 @@ private struct TerminalInteractionOverlay: UIViewRepresentable {
     }
 
     func updateUIView(_ view: UIView, context: Context) {
+        if context.coordinator.parent.interactionID != interactionID || quickActionLabels.isEmpty || context.coordinator.parent.columns != columns || context.coordinator.parent.rows != rows {
+            context.coordinator.dismissQuickActions()
+        }
         context.coordinator.parent = self
         context.coordinator.updateSelectionHandles(in: view)
     }
@@ -331,6 +354,13 @@ private struct TerminalInteractionOverlay: UIViewRepresentable {
         private var selectionDrag = TerminalSelectionDragState()
         private var selectionDragActive = false
         private var quickNavigationActive = false
+        private var quickActionOrigin = CGPoint.zero
+        private var quickActionColumn = 0
+        private var quickActionRow = 0
+        private var quickActionPanel: UIView?
+        private var quickActionButtons: [TerminalQuickDirection: UIButton] = [:]
+        private var heldAction: ((TerminalQuickDirection, Int, Int) -> Void)?
+        private var heldNavigation: (() -> Void)?
         private var selectionAutoscroll = TerminalSelectionAutoscrollState()
         private var selectionAutoscrollTimer: Timer?
         private var selectionColumn = 0
@@ -377,7 +407,7 @@ private struct TerminalInteractionOverlay: UIViewRepresentable {
             case .ended:
                 consumeScroll(recognizer)
                 guard !UIAccessibility.isReduceMotionEnabled else { return }
-                startInertia(velocity: -recognizer.velocity(in: recognizer.view).y)
+                startInertia(velocity: -recognizer.velocity(in: recognizer.view).y * parent.scrollMultiplier)
             case .cancelled, .failed:
                 scrollAccumulator.reset()
             default:
@@ -398,7 +428,7 @@ private struct TerminalInteractionOverlay: UIViewRepresentable {
         private func consumeScroll(_ recognizer: UIPanGestureRecognizer) {
             let translation = recognizer.translation(in: recognizer.view)
             recognizer.setTranslation(.zero, in: recognizer.view)
-            let rows = scrollAccumulator.consume(points: -translation.y, cellHeight: parent.cellHeight)
+            let rows = scrollAccumulator.consume(points: -translation.y * parent.scrollMultiplier, cellHeight: parent.cellHeight)
             if rows != 0 { parent.onScrollRows(rows) }
         }
 
@@ -460,6 +490,70 @@ private struct TerminalInteractionOverlay: UIViewRepresentable {
             min(30, max(9, fontSize))
         }
 
+        func dismissQuickActions() {
+            quickActionPanel?.removeFromSuperview()
+            quickActionPanel = nil
+            quickActionButtons = [:]
+            heldAction = nil
+            heldNavigation = nil
+            quickNavigationActive = false
+        }
+
+        private func performHeldAction(_ direction: TerminalQuickDirection) {
+            let action = heldAction
+            let column = quickActionColumn
+            let row = quickActionRow
+            dismissQuickActions()
+            action?(direction, column, row)
+        }
+
+        private func showQuickActions(in view: UIView) {
+            let panel = UIView()
+            panel.backgroundColor = .secondarySystemBackground
+            panel.layer.cornerRadius = 14
+            panel.layer.shadowOpacity = 0.3
+            panel.layer.shadowRadius = 8
+            let width = min(300, view.bounds.width - 12)
+            let height: CGFloat = 156
+            panel.frame = CGRect(x: max(6, min(view.bounds.width - width - 6, quickActionOrigin.x - width / 2)),
+                                 y: max(0, min(view.bounds.height - height, quickActionOrigin.y - height / 2)),
+                                 width: width, height: height)
+            func button(_ title: String, column: Int, row: Int, action: @escaping () -> Void) -> UIButton {
+                let button = UIButton(type: .system)
+                var config = UIButton.Configuration.tinted()
+                config.title = title
+                config.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { attributes in
+                    var attributes = attributes
+                    attributes.font = .preferredFont(forTextStyle: .caption1)
+                    return attributes
+                }
+                button.configuration = config
+                button.titleLabel?.numberOfLines = 2
+                button.frame = CGRect(x: CGFloat(column) * width / 3 + 2, y: CGFloat(row) * 52 + 2,
+                                      width: width / 3 - 4, height: 48)
+                button.addAction(UIAction { _ in action() }, for: .touchUpInside)
+                panel.addSubview(button)
+                return button
+            }
+            let positions: [(TerminalQuickDirection, Int, Int, String)] = [
+                (.up, 1, 0, "↑"), (.left, 0, 1, "←"), (.right, 2, 1, "→"), (.down, 1, 2, "↓"),
+            ]
+            for (direction, column, row, arrow) in positions {
+                quickActionButtons[direction] = button("\(arrow) \(parent.quickActionLabels[direction] ?? "Unavailable")", column: column, row: row) { [weak self] in
+                    self?.performHeldAction(direction)
+                }
+            }
+            _ = button("Sessions", column: 1, row: 1) { [weak self] in
+                let action = self?.heldNavigation
+                self?.dismissQuickActions()
+                action?()
+            }
+            _ = button("Cancel", column: 2, row: 0) { [weak self] in self?.dismissQuickActions() }
+            view.addSubview(panel)
+            quickActionPanel = panel
+            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        }
+
         @objc func longPress(_ recognizer: UILongPressGestureRecognizer) {
             guard let view = recognizer.view else { return }
             let location = recognizer.location(in: view)
@@ -468,6 +562,17 @@ private struct TerminalInteractionOverlay: UIViewRepresentable {
             switch recognizer.state {
             case .began:
                 stopInertia()
+                if !parent.quickActionLabels.isEmpty, !UIAccessibility.isVoiceOverRunning {
+                    dismissQuickActions()
+                    quickNavigationActive = true
+                    quickActionOrigin = location
+                    quickActionColumn = column
+                    quickActionRow = row
+                    heldAction = parent.onQuickAction
+                    heldNavigation = parent.onQuickNavigation
+                    showQuickActions(in: view)
+                    return
+                }
                 if let quickNavigation = parent.onQuickNavigation, !UIAccessibility.isVoiceOverRunning {
                     quickNavigationActive = true
                     quickNavigation()
@@ -477,18 +582,31 @@ private struct TerminalInteractionOverlay: UIViewRepresentable {
                 selectionDrag.begin(column: column, row: row)
                 parent.onSelectWord(column, row)
             case .changed:
+                if quickActionPanel != nil {
+                    let direction = TerminalQuickDirection.resolve(dx: location.x - quickActionOrigin.x, dy: location.y - quickActionOrigin.y)
+                    for (candidate, button) in quickActionButtons { button.isHighlighted = candidate == direction }
+                    return
+                }
                 guard selectionDragActive else { return }
                 if let endpoint = selectionDrag.update(column: column, row: row) {
                     parent.onSelectionEndpointChanged(endpoint == .start, column, row)
                 }
                 updateSelectionAutoscroll(location: location, in: view)
             case .ended:
+                if quickActionPanel != nil {
+                    if let direction = TerminalQuickDirection.resolve(dx: location.x - quickActionOrigin.x, dy: location.y - quickActionOrigin.y) {
+                        performHeldAction(direction)
+                    }
+                    // A centered release pins the native buttons until selection or Cancel.
+                    return
+                }
                 quickNavigationActive = false
                 stopSelectionAutoscroll()
                 if selectionDragActive { parent.onSelectionFinished() }
                 selectionDragActive = false
                 selectionDrag.reset()
             case .cancelled, .failed:
+                dismissQuickActions()
                 quickNavigationActive = false
                 stopSelectionAutoscroll()
                 selectionDragActive = false
@@ -602,7 +720,9 @@ private struct TerminalInteractionOverlay: UIViewRepresentable {
         }
 
         func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
+            if let panel = quickActionPanel, touch.view?.isDescendant(of: panel) == true { return false }
             if gestureRecognizer === wheelRecognizer { return false }
+            if quickActionPanel != nil { dismissQuickActions(); return false }
             return !(touch.view is TerminalSelectionHandleView)
         }
     }

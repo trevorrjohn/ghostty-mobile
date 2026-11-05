@@ -57,6 +57,13 @@ class GhosttyTerminalView(
     private val terminal: GhosttyTerminal,
     initialTextSizeSp: Float = 15f,
 ) : View(context) {
+    private val scrollSettings = context.getSharedPreferences("app_settings", Context.MODE_PRIVATE)
+    private fun scrollMultiplier(): Float {
+        val saved = scrollSettings.getFloat("scroll_sensitivity", 1f)
+        val sensitivity = (if (saved.isFinite()) saved else 1f).coerceIn(0.25f, 4f)
+        return sensitivity * if (scrollSettings.getBoolean("reverse_scroll_direction", false)) -1f else 1f
+    }
+
     var onInput: (String) -> Unit = {}
     var acceptsInput = true
     var onSpecialKey: (String) -> Unit = {}
@@ -655,6 +662,7 @@ class GhosttyTerminalView(
                 scaleGesture = false
                 remoteMouseGesture = shouldRouteRemoteMouse(isMouseTracking(), isLocalSelectionMode)
                 remotePressSent = false
+                remoteWheelPixels = 0f
                 remoteTwoFingerGesture = false
                 remoteEdgeScrollGesture = remoteMouseGesture && isEdgeScrollTouch(event.x)
                 if (remoteEdgeScrollGesture) remoteMouseGesture = false
@@ -717,12 +725,12 @@ class GhosttyTerminalView(
                 }
                 if (remoteTwoFingerGesture && event.pointerCount >= 2) {
                     val y = pointerAverageY(event)
-                    sendRemoteWheelFromDelta(y - lastTouchY, event.x, y)
+                    sendRemoteWheelFromDelta((y - lastTouchY) * scrollMultiplier(), event.x, y)
                     lastTouchY = y
                     return true
                 }
                 if (remoteEdgeScrollGesture) {
-                    sendRemoteWheelFromDelta(lastTouchY - event.y, event.x, event.y)
+                    sendRemoteWheelFromDelta((event.y - lastTouchY) * scrollMultiplier(), event.x, event.y)
                     lastTouchY = event.y
                     return true
                 }
@@ -866,7 +874,7 @@ class GhosttyTerminalView(
             if (event.actionMasked == MotionEvent.ACTION_SCROLL) {
                 val vertical = event.getAxisValue(MotionEvent.AXIS_VSCROLL)
                 if (vertical != 0f) {
-                    terminal.scrollRows(if (vertical > 0) -3 else 3)
+                    scrollByPixels(vertical * 3 * cellHeight)
                     refresh()
                 }
             }
@@ -877,13 +885,7 @@ class GhosttyTerminalView(
             MotionEvent.ACTION_SCROLL -> {
                 val vertical = event.getAxisValue(MotionEvent.AXIS_VSCROLL)
                 if (vertical != 0f) {
-                    sendRemoteMouse(
-                        MOUSE_PRESS,
-                        if (vertical > 0) MOUSE_WHEEL_UP else MOUSE_WHEEL_DOWN,
-                        event.x,
-                        event.y,
-                        false,
-                    )
+                    sendRemoteWheelFromDelta(vertical * cellHeight * scrollMultiplier(), event.x, event.y)
                     return true
                 }
             }
@@ -1100,7 +1102,7 @@ class GhosttyTerminalView(
     }
 
     private fun scrollByPixels(delta: Float) {
-        scrollPixels += delta
+        scrollPixels += delta * scrollMultiplier()
         val rows = (scrollPixels / cellHeight).toInt()
         if (rows == 0) return
         scrollPixels -= rows * cellHeight

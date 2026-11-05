@@ -253,6 +253,23 @@ enum IdentityMetadataMigration {
 struct AppSettings: Codable, Equatable {
     var themeID = "ghostty"
     var fontSize = 15.0
+    var reverseScrollDirection = false
+    var scrollSensitivity = 1.0
+
+    init() {}
+
+    private enum CodingKeys: String, CodingKey {
+        case themeID, fontSize, reverseScrollDirection, scrollSensitivity
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        themeID = try values.decodeIfPresent(String.self, forKey: .themeID) ?? "ghostty"
+        fontSize = try values.decodeIfPresent(Double.self, forKey: .fontSize) ?? 15
+        reverseScrollDirection = try values.decodeIfPresent(Bool.self, forKey: .reverseScrollDirection) ?? false
+        let sensitivity = try values.decodeIfPresent(Double.self, forKey: .scrollSensitivity) ?? 1
+        scrollSensitivity = sensitivity.isFinite ? min(4, max(0.25, sensitivity)) : 1
+    }
 }
 
 struct TerminalTheme: Identifiable {

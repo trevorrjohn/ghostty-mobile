@@ -10,6 +10,7 @@ data class SessionSummary(
     val startedAtElapsedRealtime: Long,
     val status: String,
     val canRetry: Boolean = false,
+    val lastUsedAtElapsedRealtime: Long = startedAtElapsedRealtime,
 ) {
     val shortId: String get() = sessionDisplayId(sessionId)
 }
@@ -27,12 +28,17 @@ internal fun nextSessionId(currentSessionId: String, sessions: List<SessionSumma
     return ordered[(index + 1) % ordered.size].sessionId
 }
 
+internal fun recentSessions(sessions: List<SessionSummary>): List<SessionSummary> =
+    sessions.sortedWith(compareByDescending<SessionSummary> { it.lastUsedAtElapsedRealtime }
+        .thenByDescending { it.startedAtElapsedRealtime })
+
 internal fun sessionSummary(
     sessionId: String,
     host: Host,
     startedAtElapsedRealtime: Long,
     status: String,
     canRetry: Boolean = false,
+    lastUsedAtElapsedRealtime: Long = startedAtElapsedRealtime,
 ) = SessionSummary(
     sessionId = sessionId,
     hostId = host.id,
@@ -41,4 +47,5 @@ internal fun sessionSummary(
     startedAtElapsedRealtime = startedAtElapsedRealtime,
     status = status,
     canRetry = canRetry,
+    lastUsedAtElapsedRealtime = lastUsedAtElapsedRealtime,
 )

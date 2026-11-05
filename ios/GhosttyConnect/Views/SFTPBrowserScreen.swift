@@ -318,7 +318,7 @@ struct SFTPBrowserScreen: View {
             Text("OPEN SESSIONS").font(.caption.weight(.semibold)).tracking(1.2).foregroundStyle(Color.ghosttySecondary)
             ScrollView {
                 VStack(spacing: 10) {
-                    ForEach(sessions.records) { candidate in
+                    ForEach(sessions.recentRecords) { candidate in
                         switchButton("\(candidate.host.name) · \(candidate.shortID)\n\(candidate.statusDot) \(candidate.status)", symbol: "terminal") {
                             finishQuickSwitch {
                                 terminalSessionID = candidate.id

@@ -3,6 +3,27 @@ import UIKit
 @testable import GhosttyConnect
 
 final class TerminalInteractionTests: XCTestCase {
+    func testExistingSettingsKeepAppearanceAndDefaultScrolling() throws {
+        let settings = try JSONDecoder().decode(AppSettings.self, from: Data(#"{"themeID":"nord","fontSize":19}"#.utf8))
+        XCTAssertEqual(settings.themeID, "nord")
+        XCTAssertEqual(settings.fontSize, 19)
+        XCTAssertFalse(settings.reverseScrollDirection)
+        XCTAssertEqual(settings.scrollSensitivity, 1)
+    }
+
+    func testScrollSettingsRoundTrip() throws {
+        var settings = AppSettings()
+        settings.reverseScrollDirection = true
+        settings.scrollSensitivity = 0.25
+        let restored = try JSONDecoder().decode(AppSettings.self, from: JSONEncoder().encode(settings))
+        XCTAssertEqual(restored, settings)
+    }
+
+    func testScrollSensitivityIsClampedWhenLoading() throws {
+        let settings = try JSONDecoder().decode(AppSettings.self, from: Data(#"{"scrollSensitivity":100}"#.utf8))
+        XCTAssertEqual(settings.scrollSensitivity, 4)
+    }
+
     func testScrollAccumulatorPreservesSubrowMovement() {
         var accumulator = TerminalScrollAccumulator()
         XCTAssertEqual(accumulator.consume(points: 5, cellHeight: 12), 0)

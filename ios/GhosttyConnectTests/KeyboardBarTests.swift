@@ -45,7 +45,7 @@ final class KeyboardBarTests: XCTestCase {
     }
 
     func testRejectsUnsupportedConfigurationVersion() {
-        let data = Data(#"{"version":5,"enabled":true,"items":[],"actions":[]}"#.utf8)
+        let data = Data(#"{"version":99,"enabled":true,"items":[],"actions":[]}"#.utf8)
 
         XCTAssertThrowsError(try JSONDecoder().decode(KeyboardBarConfig.self, from: data))
     }
@@ -261,4 +261,52 @@ final class KeyboardBarTests: XCTestCase {
 
         XCTAssertThrowsError(try JSONDecoder().decode(KeyboardBarConfig.self, from: data))
     }
+    func testQuickActionsAndTitleFiltersRoundTrip() throws {
+        let action = KeyboardAction(label: "Tmux next", steps: [
+            KeyboardActionStep(key: .b, modifiers: [.control]),
+            KeyboardActionStep(key: .n, modifiers: []),
+        ], titleContains: "tmux")
+        var config = KeyboardBarConfig(items: [.builtIn(.shift), .action(action.id)], actions: [action])
+        config.quickActionsEnabled = false
+        config.quickActions[.left] = KeyboardBarItem.action(action.id).id
+        let decoded = try JSONDecoder().decode(KeyboardBarConfig.self, from: JSONEncoder().encode(config))
+        XCTAssertEqual(decoded, config)
+        XCTAssertTrue(decoded.actions[0].isVisible(for: "Work TMUX session"))
+        XCTAssertFalse(decoded.actions[0].isVisible(for: "bash"))
+        config.deleteAction(id: action.id)
+        XCTAssertEqual(config.quickActions[.left], TerminalQuickAction.defaults[.left])
+    }
+
+    func testLegacyConfigurationGetsQuickActionDefaultsWithoutChangingCustomLayout() throws {
+        let data = Data(#"{"version":4,"enabled":false,"items":["built-in:shift"],"actions":[]}"#.utf8)
+        let config = try JSONDecoder().decode(KeyboardBarConfig.self, from: data)
+        XCTAssertTrue(config.quickActionsEnabled)
+        XCTAssertEqual(config.quickActions, TerminalQuickAction.defaults)
+        XCTAssertEqual(config.items, [.builtIn(.shift)])
+        XCTAssertFalse(config.enabled)
+    }
+
+    func testSavingFilteredActionPreservesItsFilter() {
+        var config = KeyboardBarConfig.defaults
+        let action = KeyboardAction(label: "Interrupt", steps: [KeyboardActionStep(key: .c, modifiers: [.control])], titleContains: "vim")
+        XCTAssertTrue(config.saveAction(action, addToBar: true))
+        XCTAssertEqual(config.action(id: action.id)?.titleContains, "vim")
+    }
+
+    func testHoldSwipeDeadZoneAndDirectionalResolution() {
+        XCTAssertNil(TerminalQuickDirection.resolve(dx: 41, dy: -41))
+        XCTAssertEqual(TerminalQuickDirection.resolve(dx: 42, dy: 10), .right)
+        XCTAssertEqual(TerminalQuickDirection.resolve(dx: -60, dy: 10), .left)
+        XCTAssertEqual(TerminalQuickDirection.resolve(dx: 10, dy: -60), .up)
+        XCTAssertEqual(TerminalQuickDirection.resolve(dx: 10, dy: 60), .down)
+        // Returning to the center cancels the directional selection.
+        XCTAssertNil(TerminalQuickDirection.resolve(dx: 0, dy: 0))
+    }
+
+    func testUnknownAndDeletedQuickActionReferencesFallBackToDefaults() throws {
+        let data = Data(#"{"version":5,"enabled":true,"items":[],"actions":[],"quickActions":{"left":"action:dead","up":"future-action","right":"paste","unknown":"search"}}"#.utf8)
+        let config = try JSONDecoder().decode(KeyboardBarConfig.self, from: data)
+        XCTAssertEqual(config.quickActions, TerminalQuickAction.defaults)
+    }
+
 }

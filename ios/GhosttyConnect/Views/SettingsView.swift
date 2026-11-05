@@ -24,6 +24,19 @@ struct SettingsView: View {
                         )
                     }
                 }
+                Section {
+                    Toggle("Reverse scroll direction", isOn: $model.settings.reverseScrollDirection)
+                    VStack(alignment: .leading) {
+                        LabeledContent("Scroll sensitivity", value: String(format: "%.2g×", model.settings.scrollSensitivity))
+                        Slider(value: $model.settings.scrollSensitivity, in: 0.25...4, step: 0.25) {
+                            Text("Scroll sensitivity")
+                        }.tint(.ghosttyAccent)
+                    }
+                } header: {
+                    Text("Scrolling")
+                } footer: {
+                    Text("Adjust terminal swipe scrolling. Lower sensitivity scrolls more slowly; 1× is the default.")
+                }
                 Section("Security") {
                     LabeledContent("Saved hosts", value: "\(model.hosts.count)")
                     NavigationLink {
@@ -174,6 +187,30 @@ private struct KeyboardBarSettingsView: View {
                 Text("Tap a modifier for one use or hold it to lock. Locked modifiers remain active until tapped again.")
             }
 
+            Section {
+                Toggle("Hold quick actions", isOn: $model.keyboardBarConfig.quickActionsEnabled)
+                ForEach(TerminalQuickDirection.allCases) { direction in
+                    Picker(direction.label, selection: Binding(
+                        get: { model.keyboardBarConfig.quickActions[direction] ?? TerminalQuickAction.defaults[direction]! },
+                        set: { model.keyboardBarConfig.quickActions[direction] = $0 }
+                    )) {
+                        ForEach(TerminalQuickAction.builtIns, id: \.id) { action in
+                            Text(action.label).tag(action.id)
+                        }
+                        ForEach(KeyboardBarItemID.allCases.filter { $0.key != nil }) { key in
+                            Text(key.accessibilityLabel).tag(KeyboardBarItem.builtIn(key).id)
+                        }
+                        ForEach(model.keyboardBarConfig.actions) { action in
+                            Text(action.label).tag(KeyboardBarItem.action(action.id).id)
+                        }
+                    }
+                }
+            } header: {
+                Text("Quick Actions")
+            } footer: {
+                Text("Hold the terminal, then swipe toward an action and release. Release in the center to keep the controls open, or use Terminal actions with VoiceOver.")
+            }
+
             Section("Controls") {
                 if model.keyboardBarConfig.items.isEmpty {
                     Text("No controls configured")
@@ -318,6 +355,12 @@ private struct KeyboardActionEditor: View {
         NavigationStack {
             Form {
                 Section("Action") {
+                    TextField("Show when terminal title contains", text: Binding(
+                        get: { action.titleContains ?? "" },
+                        set: { action.titleContains = $0.isEmpty ? nil : String($0.prefix(128)) }
+                    ))
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
                     TextField("Label", text: $action.label)
                         .textInputAutocapitalization(.characters)
                 }

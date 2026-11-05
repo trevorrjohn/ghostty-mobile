@@ -3,6 +3,38 @@ import XCTest
 
 @MainActor
 final class TerminalSessionRegistryTests: XCTestCase {
+    func testNextSessionCyclesCreationOrderRegardlessOfRecencyAndSkipsClosedSessions() async {
+        let registry = TerminalSessionRegistry(networkMonitor: nil)
+        let host = Host(hostname: "example.com", username: "tj")
+        let first = registry.create(for: host)
+        XCTAssertNil(registry.nextRecord(after: first))
+        let second = registry.create(for: host)
+        let third = registry.create(for: host)
+        registry.markUsed(second)
+        XCTAssertEqual(registry.nextRecord(after: first)?.id, second)
+        XCTAssertEqual(registry.nextRecord(after: second)?.id, third)
+        XCTAssertEqual(registry.nextRecord(after: third)?.id, first)
+        XCTAssertNil(registry.nextRecord(after: UUID()))
+        await registry.close(id: second)
+        XCTAssertEqual(registry.nextRecord(after: first)?.id, third)
+    }
+
+    func testQuickSwitchUsesMostRecentlySelectedSession() async {
+        let registry = TerminalSessionRegistry(networkMonitor: nil)
+        let host = Host(hostname: "example.com", username: "tj")
+        let first = registry.create(for: host)
+        let second = registry.create(for: host)
+        let third = registry.create(for: host)
+        XCTAssertEqual(registry.recentRecords.map(\.id), [third, second, first])
+        registry.markUsed(first)
+        XCTAssertEqual(registry.recentRecords.map(\.id), [first, third, second])
+        registry.markUsed(second)
+        registry.markUsed(second)
+        XCTAssertEqual(registry.recentRecords.map(\.id), [second, first, third])
+        await registry.close(id: first)
+        XCTAssertEqual(registry.recentRecords.map(\.id), [second, third])
+    }
+
     func testSameHostCreatesIsolatedRuntimeSessions() {
         let registry = TerminalSessionRegistry(networkMonitor: nil)
         let host = Host(alias: "Production", hostname: "example.com", username: "tj")

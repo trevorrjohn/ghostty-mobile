@@ -16,6 +16,7 @@ struct TerminalKeyboardCapture: UIViewRepresentable {
     let canCopy: Bool
     let onCopy: () -> Void
     let onPaste: () -> Void
+    var presentationRequest = 0
 
     func makeUIView(context: Context) -> TerminalKeyboardInputView {
         let view = TerminalKeyboardInputView()
@@ -33,15 +34,21 @@ struct TerminalKeyboardCapture: UIViewRepresentable {
         view.onCopy = onCopy
         view.onPaste = onPaste
         view.onFocusChange = { isFocused = $0 }
-        guard view.isFirstResponder != isFocused else { return }
+        let requested = view.presentationRequest != presentationRequest
+        view.presentationRequest = presentationRequest
+        guard view.isFirstResponder != isFocused || requested else { return }
         DispatchQueue.main.async {
-            if isFocused { _ = view.becomeFirstResponder() }
-            else { _ = view.resignFirstResponder() }
+            if isFocused {
+                // iPad can hide the software keyboard while retaining the first responder.
+                if requested && view.isFirstResponder { _ = view.resignFirstResponder() }
+                _ = view.becomeFirstResponder()
+            } else { _ = view.resignFirstResponder() }
         }
     }
 }
 
 final class TerminalKeyboardInputView: UIView, UIKeyInput {
+    var presentationRequest = 0
     var onInput: ((TerminalInputEvent) -> Void)?
     var onFocusChange: ((Bool) -> Void)?
     var canCopy = false

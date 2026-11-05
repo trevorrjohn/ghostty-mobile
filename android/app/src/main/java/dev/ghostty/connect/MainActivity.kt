@@ -125,6 +125,7 @@ import dev.ghostty.connect.sftp.remoteChildNameError
 import dev.ghostty.connect.sftp.remoteFolderPath
 import dev.ghostty.connect.sftp.sftpEntryAccessibilityDescription
 import dev.ghostty.connect.sftp.terminalDirectoryPath
+import dev.ghostty.connect.terminal.recentSessions
 import dev.ghostty.connect.terminal.SshSessionService
 import dev.ghostty.connect.terminal.AuthenticationChallenge
 import dev.ghostty.connect.terminal.ContextualSelection
@@ -1696,6 +1697,37 @@ class MainActivity : Activity() {
                 toast("Font size saved")
             }
         }.margins(bottom = 18))
+
+        root.addView(label("Scrolling", 18f, primary, Typeface.BOLD))
+        root.addView(CheckBox(this).apply {
+            text = "Reverse scroll direction"
+            setTextColor(primary)
+            isChecked = appSettings.getBoolean("reverse_scroll_direction", false)
+            setOnCheckedChangeListener { _, checked ->
+                appSettings.edit().putBoolean("reverse_scroll_direction", checked).apply()
+            }
+        })
+        val sensitivityLabel = label("", 14f, secondary)
+        root.addView(sensitivityLabel)
+        root.addView(android.widget.SeekBar(this).apply {
+            contentDescription = "Scroll sensitivity"
+            max = 15
+            val saved = appSettings.getFloat("scroll_sensitivity", 1f)
+            progress = (((if (saved.isFinite()) saved else 1f).coerceIn(0.25f, 4f) - 0.25f) / 0.25f).toInt()
+            fun updateLabel() {
+                sensitivityLabel.text = "Scroll sensitivity: ${java.lang.String.format(java.util.Locale.getDefault(), "%.2f", (progress + 1) * 0.25f)}×"
+            }
+            updateLabel()
+            setOnSeekBarChangeListener(object : android.widget.SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(bar: android.widget.SeekBar?, value: Int, fromUser: Boolean) {
+                    updateLabel()
+                    if (fromUser) appSettings.edit().putFloat("scroll_sensitivity", (value + 1) * 0.25f).apply()
+                }
+                override fun onStartTrackingTouch(bar: android.widget.SeekBar?) = Unit
+                override fun onStopTrackingTouch(bar: android.widget.SeekBar?) = Unit
+            })
+        })
+        root.addView(label("Adjust terminal swipes and side-screen scrolling. Lower sensitivity scrolls more slowly; 1× is the default.", 14f, secondary).margins(bottom = 18))
 
         root.addView(label("Security", 18f, primary, Typeface.BOLD))
         root.addView(label(
@@ -3381,7 +3413,7 @@ class MainActivity : Activity() {
         }
         content.addView(indexActionButton("Hosts", R.drawable.ic_terminal, false) { select { showHosts(disconnect = false) } }, LinearLayout.LayoutParams(-1, dp(52)))
         content.addView(indexActionButton("New terminal", R.drawable.ic_terminal, false) { select { requestCredentialAndConnect(host) } }, LinearLayout.LayoutParams(-1, dp(52)).apply { topMargin = dp(10) })
-        val sessions = sessionService?.summaries().orEmpty()
+        val sessions = recentSessions(sessionService?.summaries().orEmpty())
         if (sessions.isNotEmpty()) content.addView(label("OPEN SESSIONS", 12f, secondary, Typeface.BOLD).margins(top = 24, bottom = 12))
         sessions.forEach { candidate ->
             content.addView(indexActionButton(
@@ -4021,7 +4053,7 @@ class MainActivity : Activity() {
                         LinearLayout.LayoutParams(0, dp(52), 1f).apply { leftMargin = dp(6) })
                     content.addView(shortcuts)
                     content.addView(label("OPEN SESSIONS", 12f, secondary, Typeface.BOLD).margins(top = 24, bottom = 12))
-                    val candidates = service.summaries().filter { it.sessionId != sessionId }
+                    val candidates = recentSessions(service.summaries()).filter { it.sessionId != sessionId }
                     candidates.forEach { candidate ->
                         content.addView(indexActionButton(
                             "${candidate.hostName}\n${sessionStatusDot(candidate.status)} ${candidate.status} · ${candidate.shortId}",

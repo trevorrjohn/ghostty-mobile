@@ -13,6 +13,8 @@ struct TerminalScreen: View {
     @State private var secret = ""
     @State private var showingCredential = false
     @State private var keyboardFocused = false
+    @State private var softwareKeyboardVisible = false
+    @State private var keyboardPresentationRequest = 0
     @State private var pendingReconnect = false
     @State private var showingFiles = false
     @State private var keyboardBarState = KeyboardBarRuntimeState()
@@ -46,6 +48,7 @@ struct TerminalScreen: View {
                         TerminalGridView(
                             snapshot: snapshot,
                             fontSize: terminalFontSize,
+                            scrollMultiplier: model.settings.scrollSensitivity * (model.settings.reverseScrollDirection ? -1 : 1),
                             onTap: { if session.state == .connected { keyboardFocused = true } },
                             onDoubleTap: { column, row in
                                 if session.state == .connected { keyboardFocused = true }
@@ -63,7 +66,12 @@ struct TerminalScreen: View {
                                 }
                             },
                             onMagnify: updateFontSize(_:commit:),
-                            onQuickNavigation: snapshot.hasSelection ? nil : { showingQuickNavigation = true }
+                            onQuickNavigation: snapshot.hasSelection ? nil : { showingQuickNavigation = true },
+                            quickActionLabels: model.keyboardBarConfig.quickActionsEnabled && !snapshot.hasSelection && session.state == .connected ? quickActionLabels : [:],
+                            onQuickAction: { direction, column, row in
+                                performQuickAction(direction, column: column, row: row, selectionSnapshot: snapshot)
+                            },
+                            interactionID: record.id
                         )
                         .accessibilityAction(named: "Scroll backward") {
                             session.scrollViewport(byRows: -max(1, snapshot.rows - 1))
@@ -72,6 +80,14 @@ struct TerminalScreen: View {
                             session.scrollViewport(byRows: max(1, snapshot.rows - 1))
                         }
                         .accessibilityAction(named: "Terminal actions") { showingQuickNavigation = true }
+                        .accessibilityActions {
+                            ForEach(TerminalQuickDirection.allCases) { direction in
+                                Button(quickActionLabel(direction)) {
+                                    performQuickAction(direction, column: snapshot.cursor?.column ?? 0,
+                                                       row: snapshot.cursor?.row ?? 0, selectionSnapshot: snapshot)
+                                }
+                            }
+                        }
                         .accessibilityAction(named: "Session settings") { record.showingSettings = true }
 
                         if !snapshot.viewport.isAtBottom {
@@ -102,7 +118,7 @@ struct TerminalScreen: View {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 4) {
                         if !model.keyboardBarConfig.items.contains(.builtIn(.escape)) { inputModeToggle }
-                        ForEach(model.keyboardBarConfig.items.filter { $0 != .builtIn(.shift) }) { item in
+                        ForEach(model.keyboardBarConfig.items.filter(isKeyboardBarItemVisible)) { item in
                             HStack(spacing: 4) {
                                 if let symbol = keyboardBarSymbol(item) {
                                     Image(systemName: symbol).font(.system(size: 17, weight: .medium))
@@ -164,7 +180,6 @@ struct TerminalScreen: View {
                     .padding(.horizontal, 10)
                 }
                 .frame(height: 44)
-                dismissKeyboardButton
                 }
                 .background(Color.ghosttyRaised)
                 .opacity(session.snapshot?.viewport.isAtBottom == false ? 0 : 1)
@@ -176,7 +191,8 @@ struct TerminalScreen: View {
                 onInput: handleInput,
                 canCopy: session.snapshot?.hasSelection == true,
                 onCopy: copySelection,
-                onPaste: requestPaste
+                onPaste: requestPaste,
+                presentationRequest: keyboardPresentationRequest
             )
                 .frame(width: 1, height: 1)
                 .opacity(0.01)
@@ -203,12 +219,21 @@ struct TerminalScreen: View {
         .navigationTitle(host.name)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
-            if keyboardFocused && !model.keyboardBarConfig.enabled && !record.textMode {
-                ToolbarItem(placement: .topBarTrailing) { dismissKeyboardButton }
+            if session.state == .connected {
+                ToolbarItem(placement: .topBarTrailing) { keyboardVisibilityButton }
             }
         }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardDidChangeFrameNotification)) { notification in
+            guard let frame = notification.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect else { return }
+            softwareKeyboardVisible = frame.intersects(UIScreen.main.bounds) && frame.height > 0
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardDidHideNotification)) { _ in
+            softwareKeyboardVisible = false
+        }
         .toolbar(.hidden, for: .tabBar)
+        .onChange(of: record.id) { _, id in sessions.markUsed(id) }
         .onAppear {
+            sessions.markUsed(record.id)
             if !record.hasRequestedConnection { requestConnection(isReconnect: false) }
         }
         .sheet(isPresented: $showingFiles) {
@@ -325,6 +350,51 @@ struct TerminalScreen: View {
         }
     }
 
+    private var quickActionLabels: [TerminalQuickDirection: String] {
+        Dictionary(uniqueKeysWithValues: TerminalQuickDirection.allCases.map { ($0, quickActionLabel($0)) })
+    }
+
+    private func quickActionLabel(_ direction: TerminalQuickDirection) -> String {
+        let id = model.keyboardBarConfig.quickActions[direction] ?? ""
+        if let action = TerminalQuickAction.builtIns.first(where: { $0.id == id }) { return action.label }
+        if let item = quickActionItem(id) { return keyboardBarAccessibilityLabel(item) }
+        return "Unavailable"
+    }
+
+    private func quickActionItem(_ id: String) -> KeyboardBarItem? {
+        if let key = KeyboardBarItemID.allCases.first(where: { KeyboardBarItem.builtIn($0).id == id && $0.key != nil }) {
+            return .builtIn(key)
+        }
+        return model.keyboardBarConfig.actions.first { KeyboardBarItem.action($0.id).id == id }.map { .action($0.id) }
+    }
+
+    private func isKeyboardBarItemVisible(_ item: KeyboardBarItem) -> Bool {
+        guard let action = resolvedAction(item) else { return true }
+        return action.id == KeyboardBarConfig.defaultControlB.id || action.isVisible(for: session.snapshot?.title ?? host.name)
+    }
+
+    private func performQuickAction(_ direction: TerminalQuickDirection, column: Int, row: Int, selectionSnapshot: TerminalSnapshot? = nil) {
+        guard session.state == .connected, sessions.recentRecords.first?.id == record.id else { return }
+        let id = model.keyboardBarConfig.quickActions[direction] ?? ""
+        switch id {
+        case "select":
+            // A pinned action must not select unrelated output after the viewport changes.
+            guard let selectionSnapshot, selectionSnapshot.cells == session.snapshot?.cells,
+                  selectionSnapshot.viewport == session.snapshot?.viewport else { return }
+            contextualSelection = session.contextualSelection(column: column, row: row)
+        case "paste": requestPaste()
+        case "search": openHistorySearch()
+        case "choose-session": showingQuickNavigation = true
+        case "next-session":
+            guard let candidate = sessions.nextRecord(after: record.id) else { return }
+            textDraft = ""
+            switchSession(candidate.id)
+        default:
+            guard let item = quickActionItem(id), isKeyboardBarItemVisible(item) else { return }
+            activateKeyboardBarItem(item)
+        }
+    }
+
     private func finishQuickNavigation(_ action: @escaping () -> Void) {
         quickNavigationAction = action
         showingQuickNavigation = false
@@ -355,11 +425,17 @@ struct TerminalScreen: View {
                 quickSwitchAction("Files", symbol: "folder") { finishQuickNavigation { openFiles() } }
                 quickSwitchAction("Hosts", symbol: "server.rack") { finishQuickNavigation { goToHosts() } }
             }
+            HStack {
+                Button(record.textMode ? "Direct input" : "Text mode") { finishQuickNavigation { setTextMode(!record.textMode) } }
+                Spacer()
+                Button("Search") { finishQuickNavigation { openHistorySearch() } }
+                Button("Paste") { finishQuickNavigation { requestPaste() } }
+            }
             Text("OPEN SESSIONS").font(.caption.weight(.semibold)).tracking(1.2)
                 .foregroundStyle(Color.ghosttySecondary)
             ScrollView {
                 VStack(spacing: 10) {
-                    ForEach(sessions.records.filter { $0.id != record.id }) { candidate in
+                    ForEach(sessions.recentRecords.filter { $0.id != record.id }) { candidate in
                         Button {
                             finishQuickNavigation {
                                 textDraft = ""
@@ -413,13 +489,23 @@ struct TerminalScreen: View {
         .buttonStyle(.plain)
     }
 
-    private var dismissKeyboardButton: some View {
-        Button { keyboardFocused = false } label: {
-            Image(systemName: "keyboard.chevron.compact.down")
+    private var keyboardVisibilityButton: some View {
+        Button {
+            if softwareKeyboardVisible {
+                keyboardFocused = false
+                historySearchFocused = false
+            } else if showingHistorySearch {
+                historySearchFocused = true
+            } else {
+                keyboardFocused = true
+                keyboardPresentationRequest += 1
+            }
+        } label: {
+            Image(systemName: softwareKeyboardVisible ? "keyboard.chevron.compact.down" : "keyboard")
                 .font(.system(size: 19))
                 .frame(width: 44, height: 44)
         }
-        .accessibilityLabel("Dismiss keyboard")
+        .accessibilityLabel(softwareKeyboardVisible ? "Hide keyboard" : "Show keyboard")
     }
 
     private var textInputBar: some View {
@@ -431,7 +517,7 @@ struct TerminalScreen: View {
             }
                 .background(Color.ghosttySurface, in: RoundedRectangle(cornerRadius: 8))
                 .accessibilityLabel("Close text input")
-            TerminalTextInput(text: $textDraft, isFocused: $keyboardFocused, insertNewline: newlineInsertion)
+            TerminalTextInput(text: $textDraft, isFocused: $keyboardFocused, insertNewline: newlineInsertion, presentationRequest: keyboardPresentationRequest)
                 .background(Color.ghosttySurface, in: RoundedRectangle(cornerRadius: 8))
             Button { requestTextSubmission(enter: true) } label: {
                 Image(systemName: "paperplane.fill").frame(width: 44, height: 44)
@@ -448,7 +534,6 @@ struct TerminalScreen: View {
                     Button("Send only") { requestTextSubmission(enter: false) }
                     Button("Insert newline") { newlineInsertion += 1 }
                 }
-            if keyboardFocused { dismissKeyboardButton }
         }
         .padding(6)
         .background(Color.ghosttyRaised)

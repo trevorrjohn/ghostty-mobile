@@ -62,6 +62,24 @@ final class TerminalSessionRecord: ObservableObject, Identifiable {
 final class TerminalSessionRegistry: ObservableObject {
     @Published private(set) var records: [TerminalSessionRecord] = []
 
+    @Published private(set) var recentSessionIDs: [UUID] = []
+
+    var recentRecords: [TerminalSessionRecord] {
+        let byID = Dictionary(uniqueKeysWithValues: records.map { ($0.id, $0) })
+        return recentSessionIDs.compactMap { byID[$0] }
+    }
+
+    func nextRecord(after id: UUID) -> TerminalSessionRecord? {
+        guard records.count > 1, let index = records.firstIndex(where: { $0.id == id }) else { return nil }
+        return records[(index + 1) % records.count]
+    }
+
+    func markUsed(_ id: UUID) {
+        guard records.contains(where: { $0.id == id }) else { return }
+        recentSessionIDs.removeAll { $0 == id }
+        recentSessionIDs.insert(id, at: 0)
+    }
+
     private let sessionFactory: (@MainActor () -> TerminalSessionModel)?
     private let keyProvider: @MainActor (UUID) -> StoredKey?
     private let clipboardWriter: @MainActor (TerminalClipboardWrite) -> Void
@@ -112,6 +130,7 @@ final class TerminalSessionRegistry: ObservableObject {
         let record = TerminalSessionRecord(id: id, host: host, session: session)
         record.session.setNetworkAvailability(networkAvailability)
         records.append(record)
+        markUsed(record.id)
         return record.id
     }
 
@@ -132,6 +151,7 @@ final class TerminalSessionRegistry: ObservableObject {
         }
         guard let index = records.firstIndex(where: { $0.id == id }) else { return }
         let record = records.remove(at: index)
+        recentSessionIDs.removeAll { $0 == id }
         closingRecords[id] = record
         let task = Task { await record.session.disconnect() }
         closingTasks[id] = task

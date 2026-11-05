@@ -99,6 +99,10 @@ Input is normalized into text, named key, modifiers, action, and optional pointe
 - One-shot keyboard-bar modifiers are consumed by the next named key or eligible single-character committed input event; unsupported IME commits pass through without silently consuming them.
 - Locked keyboard-bar modifiers survive eligible input until explicitly cleared; modifier and last-used state remains ephemeral and isolated to one terminal session.
 - Persisted keyboard-bar items reference bounded built-in key IDs or custom actions composed from at most eight ordered key events from bounded key and modifier catalogs, never executable text or scripts.
+- Configurable directional quick actions use a stationary hold before movement. Cancelled gestures send nothing; releasing centrally leaves explicit controls open. Existing selections retain selection gestures. Defaults are Search up, Paste right, Escape down, and Next session left.
+- Next session cycles retained sessions in creation order, wrapping around and preserving transport ownership. The session chooser orders by recent use and distinguishes same-host sessions with short IDs and status.
+- Custom-action title filters are case-insensitive and optional. The default Ctrl+B remains visible. Deleted quick-action references revert to their directional defaults.
+- iOS provides an explicit Show/Hide software-keyboard control in both input modes and scrollback, independent of extra-key bar enablement. Hiding the keyboard preserves the draft and input mode; software-keyboard visibility is distinct from input focus.
 - Encoded input writes preserve invocation order and cannot cross connection attempts.
 - The client never locally echoes committed input.
 - Password-input detection suppresses accessibility or preview exposure where supported.
