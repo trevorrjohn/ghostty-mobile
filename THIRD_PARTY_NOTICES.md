@@ -10,7 +10,7 @@ This inventory was checked against `debugRuntimeClasspath` on September 7, 2026.
 
 | Component | Version | License | Source |
 | --- | --- | --- | --- |
-| Ghostty / `libghostty-vt` | pinned submodule revision | MIT | <https://github.com/ghostty-org/ghostty> |
+| Ghostty / `libghostty-vt` | vt-1.0.0 (`0fa3d577a5614150ff8e2c152de5fb9d5c6d2dec`) | MIT | <https://github.com/ghostty-org/ghostty> |
 | Kotlin Standard Library | 2.2.10 | Apache-2.0 | <https://github.com/JetBrains/kotlin> |
 | JetBrains Annotations | 13.0 | Apache-2.0 | <https://github.com/JetBrains/java-annotations> |
 | SSHJ | 0.40.0 | Apache-2.0 | <https://github.com/hierynomus/sshj> |

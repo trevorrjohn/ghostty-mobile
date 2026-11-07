@@ -410,7 +410,7 @@ class GhosttyTerminal(
         private const val SNAPSHOT_MAGIC = 0x47565431
         private const val SAVED_STATE_MAGIC = 0x47544332
         private const val SAVED_STATE_VERSION = 1
-        private const val GHOSTTY_REVISION = "9ae02a326f62bd88f7f5508cf1807c67e7775cb5"
+        private const val GHOSTTY_REVISION = "0fa3d577a5614150ff8e2c152de5fb9d5c6d2dec"
         private const val MAX_SAVED_STATE_SIZE = 32 * 1024 * 1024
         private const val DIRTY_FULL = 2
         const val KEY_ACTION_RELEASE = 0
