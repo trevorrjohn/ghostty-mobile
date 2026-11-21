@@ -158,10 +158,14 @@ struct TerminalScreen: View {
                                             }
                                         }
                                 )
-                                .simultaneousGesture(
-                                    DragGesture(minimumDistance: 0)
-                                        .onChanged { _ in pressedKeyboardBarItem = item }
-                                        .onEnded { _ in pressedKeyboardBarItem = nil }
+                                .onLongPressGesture(
+                                    minimumDuration: 60,
+                                    maximumDistance: 10,
+                                    pressing: { pressing in
+                                        if pressing { pressedKeyboardBarItem = item }
+                                        else if pressedKeyboardBarItem == item { pressedKeyboardBarItem = nil }
+                                    },
+                                    perform: {}
                                 )
                                 .accessibilityAddTraits(.isButton)
                                 .accessibilityAction { activateKeyboardBarItem(item) }

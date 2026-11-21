@@ -213,6 +213,7 @@ protocol TerminalEngine: AnyObject {
     func isPasteSafe(_ text: String) -> Bool
     func encodePaste(_ text: String) throws -> Data
     func scrollViewport(byRows rows: Int)
+    func encodeScrollInput(byRows rows: Int) -> Data?
     func scrollToBottom()
     func search(_ query: String, direction: TerminalSearchDirection) -> Bool
     func selectWord(column: Int, row: Int) -> Bool

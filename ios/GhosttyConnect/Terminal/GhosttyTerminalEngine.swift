@@ -552,6 +552,76 @@ final class GhosttyTerminalEngine: TerminalEngine {
         ghostty_terminal_scroll_viewport(terminal, behavior)
     }
 
+    /// Encodes a viewport scroll as input for applications that own scrolling
+    /// (mouse tracking, or alternate screen with alternate scroll). Returns nil
+    /// when the terminal's own scrollback should scroll instead.
+    func encodeScrollInput(byRows rows: Int) -> Data? {
+        guard rows != 0 else { return nil }
+        let count = min(abs(rows), 10)
+        let down = rows > 0
+
+        lock.lock()
+        var tracking = false
+        var screen = GHOSTTY_TERMINAL_SCREEN_PRIMARY
+        var altScroll = GhosttyTerminalModeConfig(mode: ghostty_mode_new(1007, false), value: false)
+        var columns: UInt16 = 0
+        var termRows: UInt16 = 0
+        _ = ghostty_terminal_get(terminal, GHOSTTY_TERMINAL_DATA_MOUSE_TRACKING, &tracking)
+        _ = ghostty_terminal_get(terminal, GHOSTTY_TERMINAL_DATA_ACTIVE_SCREEN, &screen)
+        _ = ghostty_terminal_get(terminal, GHOSTTY_TERMINAL_DATA_MODE, &altScroll)
+        _ = ghostty_terminal_get(terminal, GHOSTTY_TERMINAL_DATA_COLS, &columns)
+        _ = ghostty_terminal_get(terminal, GHOSTTY_TERMINAL_DATA_ROWS, &termRows)
+
+        if tracking, columns > 0, termRows > 0 {
+            defer { lock.unlock() }
+            var encoder: GhosttyMouseEncoder?
+            var event: GhosttyMouseEvent?
+            guard ghostty_mouse_encoder_new(nil, &encoder) == GHOSTTY_SUCCESS, let encoder else { return nil }
+            defer { ghostty_mouse_encoder_free(encoder) }
+            guard ghostty_mouse_event_new(nil, &event) == GHOSTTY_SUCCESS, let event else { return nil }
+            defer { ghostty_mouse_event_free(event) }
+
+            ghostty_mouse_encoder_setopt_from_terminal(encoder, terminal)
+            var size = GhosttyMouseEncoderSize(
+                size: MemoryLayout<GhosttyMouseEncoderSize>.size,
+                screen_width: UInt32(columns) * 10,
+                screen_height: UInt32(termRows) * 20,
+                cell_width: 10,
+                cell_height: 20,
+                padding_top: 0,
+                padding_bottom: 0,
+                padding_right: 0,
+                padding_left: 0
+            )
+            ghostty_mouse_encoder_setopt(encoder, GHOSTTY_MOUSE_ENCODER_OPT_SIZE, &size)
+            ghostty_mouse_event_set_action(event, GHOSTTY_MOUSE_ACTION_PRESS)
+            ghostty_mouse_event_set_button(event, down ? GHOSTTY_MOUSE_BUTTON_FIVE : GHOSTTY_MOUSE_BUTTON_FOUR)
+            ghostty_mouse_event_set_mods(event, 0)
+            ghostty_mouse_event_set_position(
+                event,
+                GhosttyMousePosition(x: Float(columns) * 5, y: Float(termRows) * 10)
+            )
+
+            var buffer = [CChar](repeating: 0, count: 64)
+            var written = 0
+            let result = buffer.withUnsafeMutableBufferPointer {
+                ghostty_mouse_encoder_encode(encoder, event, $0.baseAddress, $0.count, &written)
+            }
+            guard result == GHOSTTY_SUCCESS, written > 0 else { return nil }
+            let single = Data(buffer.prefix(written).map { UInt8(bitPattern: $0) })
+            return (0..<count).reduce(into: Data()) { data, _ in data.append(single) }
+        }
+        lock.unlock()
+
+        guard screen == GHOSTTY_TERMINAL_SCREEN_ALTERNATE, altScroll.value else { return nil }
+        var data = Data()
+        for _ in 0..<count {
+            guard let arrow = try? encode(event: .key(down ? .down : .up)) else { return nil }
+            data.append(arrow)
+        }
+        return data
+    }
+
     func scrollToBottom() {
         lock.lock()
         defer { lock.unlock() }

@@ -787,6 +787,7 @@ private final class InputTestEngine: TerminalEngine {
     func isPasteSafe(_ text: String) -> Bool { !text.contains("\n") }
     func encodePaste(_ text: String) throws -> Data { Data("paste:\(text)".utf8) }
     func scrollViewport(byRows rows: Int) {}
+    func encodeScrollInput(byRows rows: Int) -> Data? { nil }
     func scrollToBottom() {}
     func search(_ query: String, direction: TerminalSearchDirection) -> Bool {
         searchQuery = query

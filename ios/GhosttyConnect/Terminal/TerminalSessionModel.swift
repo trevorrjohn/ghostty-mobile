@@ -285,6 +285,12 @@ final class TerminalSessionModel: ObservableObject {
 
     func scrollViewport(byRows rows: Int) {
         guard let engine else { return }
+        if let input = engine.encodeScrollInput(byRows: rows) {
+            if let transport, let attemptID = connectionAttemptID, state == .connected {
+                enqueueWrite(input, transport: transport, attemptID: attemptID, destination: activeDestination ?? "the remote host")
+            }
+            return
+        }
         engine.scrollViewport(byRows: rows)
         snapshot = try? engine.snapshot()
     }
