@@ -61,8 +61,14 @@ export fn sc_reconnect_window_ms(policy: *const ScReconnectPolicy) i64 {
     return policy.retryWindowMs();
 }
 
+comptime {
+    // JNI exports are for Android and the host-side JVM tests, not iOS.
+    if (@import("builtin").os.tag != .ios) _ = @import("jni.zig");
+}
+
 test {
     _ = reconnect;
+    _ = @import("jni.zig");
 }
 
 test "abi version is stable" {

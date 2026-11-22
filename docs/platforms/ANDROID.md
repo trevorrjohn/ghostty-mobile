@@ -99,29 +99,32 @@ Do not persist these values in Gradle files, shell history, CI configuration pla
 
 The script runs unit tests, lint, a clean release bundle build, JAR signature and signer-certificate verification, and SHA-256 hashing. It writes `app/build/outputs/bundle/release/app-release.aab`. Release builds fail closed when neither complete signing environment variables nor the expected 1Password items are available.
 
-Initialize the Ghostty submodule, then run:
+All toolchains, including the Android SDK and NDK, are pinned in the repository's `mise.toml`. Set them up once, initialize the Ghostty submodule, and run Gradle through mise so it uses the mise-managed `ANDROID_HOME`:
 
 ```sh
+mise install
+mise run android:sdk          # installs platform, build-tools, NDK, CMake and the emulator
 git submodule update --init
 cd android
-./gradlew assembleDebug
+mise x -- ./gradlew assembleDebug
 ```
 
-The repository includes native artifacts for ordinary builds. To rebuild them, install pinned tools through mise and run:
+`android:sdk` reuses the licenses already accepted in an existing Android Studio SDK; otherwise run `sdkmanager --licenses` first.
+
+Gradle builds the shared Zig core (`core/`, ADR 0012) automatically: `libseance_core.a` for the Android ABIs before the native build, and a host library for the JVM unit tests. The libghostty-vt archives are checked in for ordinary builds. To rebuild them:
 
 ```sh
 cd android
-mise install
-./scripts/build-libghostty-vt
+mise x -- ./scripts/build-libghostty-vt
 ```
 
 ## Verification
 
 ```sh
 cd android
-./gradlew testDebugUnitTest
-./gradlew lintDebug assembleDebug
-./gradlew connectedDebugAndroidTest
+mise x -- ./gradlew testDebugUnitTest
+mise x -- ./gradlew lintDebug assembleDebug
+mise x -- ./gradlew connectedDebugAndroidTest
 ```
 
 Run the opt-in OpenSSH integration suite with a single connected emulator or device and Docker available:

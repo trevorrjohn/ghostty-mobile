@@ -69,3 +69,34 @@ dependencies {
     add("androidTestImplementation", "androidx.test:runner:1.6.2")
     add("androidTestImplementation", "androidx.test.ext:junit:1.2.1")
 }
+
+// Shared Zig core (see ADR 0012). Built locally with the mise-pinned Zig.
+val repoRoot = rootProject.projectDir.parentFile
+
+val buildSeanceCoreAndroid by tasks.registering(Exec::class) {
+    description = "Builds libseance_core.a for the Android ABIs"
+    workingDir = repoRoot
+    commandLine("mise", "x", "--", "core/scripts/build-android")
+    inputs.dir(File(repoRoot, "core/src"))
+    inputs.file(File(repoRoot, "core/build.zig"))
+    outputs.files(
+        File(repoRoot, "android/app/src/main/cpp/lib/arm64-v8a/libseance_core.a"),
+        File(repoRoot, "android/app/src/main/cpp/lib/x86_64/libseance_core.a"),
+    )
+}
+
+val buildSeanceCoreHost by tasks.registering(Exec::class) {
+    description = "Builds the host libseance_core for JVM unit tests"
+    workingDir = repoRoot
+    commandLine("mise", "x", "--", "zig", "build", "--build-file", "core/build.zig", "--prefix", "core/zig-out/host", "host-jni")
+    inputs.dir(File(repoRoot, "core/src"))
+    inputs.file(File(repoRoot, "core/build.zig"))
+    outputs.dir(File(repoRoot, "core/zig-out/host"))
+}
+
+tasks.named("preBuild") { dependsOn(buildSeanceCoreAndroid) }
+
+tasks.withType<Test>().configureEach {
+    dependsOn(buildSeanceCoreHost)
+    systemProperty("java.library.path", File(repoRoot, "core/zig-out/host/lib").absolutePath)
+}

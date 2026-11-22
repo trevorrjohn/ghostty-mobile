@@ -1,10 +1,22 @@
 #!/usr/bin/env bash
+# Builds libghostty-vt for the Android ABIs from the ghostty submodule.
+# Toolchains come from mise (zig in mise.toml; ANDROID_NDK_HOME is set there too).
 set -euo pipefail
 
 project_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+repo_dir="$(cd "$project_dir/.." && pwd)"
 ghostty_dir="$project_dir/third_party/ghostty"
-ndk_dir="${ANDROID_NDK_HOME:-/opt/android-sdk/ndk/27.1.12297006}"
-strip_tool="$ndk_dir/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip"
+ndk_dir="${ANDROID_NDK_HOME:-${ANDROID_HOME:-$HOME/Library/Android/sdk}/ndk/27.1.12297006}"
+
+case "$(uname -s)-$(uname -m)" in
+  Darwin-*) host_tag="darwin-x86_64" ;;
+  Linux-x86_64) host_tag="linux-x86_64" ;;
+  Linux-aarch64) host_tag="linux-aarch64" ;;
+  *) echo "Unsupported host: $(uname -s)-$(uname -m)" >&2; exit 1 ;;
+esac
+strip_tool="$ndk_dir/toolchains/llvm/prebuilt/$host_tag/bin/llvm-strip"
+
+zig="$(cd "$repo_dir" && mise which zig)"
 
 if [[ ! -f "$ghostty_dir/build.zig" ]]; then
   echo "Ghostty submodule is missing. Run: git submodule update --init" >&2
@@ -12,7 +24,7 @@ if [[ ! -f "$ghostty_dir/build.zig" ]]; then
 fi
 
 if [[ ! -x "$strip_tool" ]]; then
-  echo "Android NDK llvm-strip was not found at $strip_tool" >&2
+  echo "Android NDK llvm-strip was not found at $strip_tool (set ANDROID_NDK_HOME)" >&2
   exit 1
 fi
 
@@ -23,7 +35,7 @@ build_abi() {
 
   (
     cd "$ghostty_dir"
-    mise x -- zig build -Demit-lib-vt -Dtarget="$zig_target" -Doptimize=ReleaseFast
+    "$zig" build -Demit-lib-vt -Dtarget="$zig_target" -Doptimize=ReleaseFast
   )
   mkdir -p "$output_dir"
   cp "$ghostty_dir/zig-out/lib/libghostty-vt.a" "$output_dir/libghostty-vt.a"
@@ -34,4 +46,3 @@ build_abi x86_64-linux-android x86_64
 build_abi aarch64-linux-android arm64-v8a
 
 echo "Built libghostty-vt for x86_64 and arm64-v8a."
-

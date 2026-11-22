@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# Builds libseance_core.a for the Android ABIs into android/app/src/main/cpp/lib/<abi>/
+# with the mise-pinned Zig. Run through mise (`mise x -- ...`) or via Gradle.
+set -euo pipefail
+
+core_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+lib_dir="$core_dir/../android/app/src/main/cpp/lib"
+zig="$(cd "$core_dir" && mise which zig)"
+
+build_abi() {
+  local zig_target="$1" android_abi="$2"
+  mkdir -p "$lib_dir/$android_abi"
+  (cd "$core_dir" && "$zig" build -Dtarget="$zig_target" -Doptimize=ReleaseFast --prefix "$core_dir/zig-out/$zig_target")
+  cp "$core_dir/zig-out/$zig_target/lib/libseance_core.a" "$lib_dir/$android_abi/libseance_core.a"
+}
+
+build_abi x86_64-linux-android x86_64
+build_abi aarch64-linux-android arm64-v8a
+echo "Built libseance_core for x86_64 and arm64-v8a."

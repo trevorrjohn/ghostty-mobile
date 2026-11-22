@@ -9,3 +9,4 @@ debug.keystore
 debug.keystore.*
 .debug.keystore.*
 *.iml
+app/src/main/cpp/lib/*/libseance_core.a

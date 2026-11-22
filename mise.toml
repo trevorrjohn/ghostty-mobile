@@ -2,10 +2,7 @@
 zig = "0.17.1"
 java = "temurin-17"
 xcodegen = "2.47.0"
-
-[env]
-ANDROID_HOME = "{{ env.HOME }}/Library/Android/sdk"
-ANDROID_NDK_HOME = "{{ env.HOME }}/Library/Android/sdk/ndk/27.1.12297006"
+android-sdk = "20.0"
 
 [tasks."core:test"]
 description = "Run the shared Zig core unit tests"
@@ -21,3 +18,17 @@ description = "Generate the Xcode project (builds the core and libghostty-vt fir
 depends = ["core:ios"]
 dir = "ios"
 run = "./Scripts/build-ghostty-vt.sh && xcodegen generate"
+
+[tasks."android:sdk"]
+description = "Install the Android SDK packages the build needs into the mise-managed SDK"
+run = """
+set -euo pipefail
+# License acceptance is a per-user decision: reuse the licenses already accepted
+# in an existing Android Studio SDK, otherwise run `sdkmanager --licenses` yourself.
+if [ ! -d "$ANDROID_HOME/licenses" ] && [ -d "$HOME/Library/Android/sdk/licenses" ]; then
+  cp -R "$HOME/Library/Android/sdk/licenses" "$ANDROID_HOME/licenses"
+fi
+sdkmanager --sdk_root="$ANDROID_HOME" \
+  "platform-tools" "platforms;android-36" "build-tools;36.0.0" \
+  "ndk;27.1.12297006" "cmake;3.22.1" "emulator"
+"""

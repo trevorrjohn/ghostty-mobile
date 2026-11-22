@@ -5,6 +5,7 @@ import dev.ghostty.connect.model.DEFAULT_RETRY_ATTEMPTS
 import dev.ghostty.connect.model.MAX_RETRY_ATTEMPTS
 import dev.ghostty.connect.model.MIN_RETRY_ATTEMPTS
 import dev.ghostty.connect.model.RetryBackoff
+import dev.ghostty.connect.terminal.bridge.SeanceCore
 import java.io.EOFException
 import java.net.ConnectException
 import java.net.NoRouteToHostException
@@ -81,76 +82,47 @@ internal fun notificationReconnectAvailable(
 internal fun identityCredentialReusable(requiresPassphrase: Boolean, requiresBiometric: Boolean): Boolean =
     !requiresPassphrase && !requiresBiometric
 
+/**
+ * Reconnect policy backed by the shared core (`core/src/reconnect.zig`), so
+ * backoff and the retry window are identical on iOS and Android.
+ */
 internal class ReconnectPolicy(
-    private val enabled: Boolean = true,
+    enabled: Boolean = true,
     val maxAttempts: Int = DEFAULT_RETRY_ATTEMPTS,
-    private val backoff: RetryBackoff = RetryBackoff.BALANCED,
+    backoff: RetryBackoff = RetryBackoff.BALANCED,
 ) {
+    private val handle: Long
+
     init {
         require(maxAttempts in MIN_RETRY_ATTEMPTS..MAX_RETRY_ATTEMPTS) {
             "Retry attempts must be between $MIN_RETRY_ATTEMPTS and $MAX_RETRY_ATTEMPTS."
         }
+        handle = SeanceCore.nativeReconnectCreate(enabled, maxAttempts, backoff.ordinal)
+        check(handle != 0L) { "Could not create a reconnect policy." }
     }
 
-    private var startedAt = -1L
-    private var attempts = 0
-    private var pausedAt = -1L
-    private var pausedDuration = 0L
-    internal val retryWindowMs = maxOf(
-        MINIMUM_WINDOW_MS,
-        delays(backoff).take(maxAttempts).sum() + ATTEMPT_ALLOWANCE_MS * maxAttempts,
-    )
-    val attemptCount: Int get() = attempts
+    internal val retryWindowMs: Long = SeanceCore.nativeReconnectWindowMs(handle)
+    val attemptCount: Int get() = SeanceCore.nativeReconnectAttemptCount(handle)
 
-    fun nextDelay(now: Long): Long? {
-        if (!enabled || attempts >= maxAttempts) return null
-        val currentPause = if (pausedAt >= 0) now - pausedAt else 0L
-        if (startedAt >= 0 && now - startedAt - pausedDuration - currentPause > retryWindowMs) return null
-        return delays(backoff)[attempts]
-    }
+    fun nextDelay(now: Long): Long? =
+        SeanceCore.nativeReconnectNextDelay(handle, now).takeIf { it >= 0 }
 
-    fun beginAttempt(now: Long): Boolean {
-        if (nextDelay(now) == null) return false
-        if (startedAt < 0) startedAt = now
-        attempts++
-        return true
-    }
+    fun beginAttempt(now: Long): Boolean = SeanceCore.nativeReconnectBeginAttempt(handle, now)
 
-    fun reset() {
-        startedAt = -1L
-        attempts = 0
-        pausedAt = -1L
-        pausedDuration = 0L
-    }
+    fun reset() = SeanceCore.nativeReconnectReset(handle)
 
-    fun pause(now: Long) {
-        if (startedAt >= 0 && pausedAt < 0) pausedAt = now
-    }
+    fun pause(now: Long) = SeanceCore.nativeReconnectPause(handle, now)
 
-    fun resume(now: Long) {
-        if (pausedAt < 0) return
-        pausedDuration += now - pausedAt
-        pausedAt = -1L
+    fun resume(now: Long) = SeanceCore.nativeReconnectResume(handle, now)
+
+    @Suppress("unused", "ProtectedInFinal")
+    protected fun finalize() {
+        SeanceCore.nativeReconnectFree(handle)
     }
 
     companion object {
         internal val BALANCED_DELAYS_MS = longArrayOf(
             0L, 2_000L, 5_000L, 10_000L, 20_000L, 30_000L, 30_000L, 30_000L, 30_000L, 30_000L,
         )
-        private const val MINIMUM_WINDOW_MS = 120_000L
-        private const val ATTEMPT_ALLOWANCE_MS = 30_000L
-
-        private val FAST_DELAYS_MS = longArrayOf(
-            0L, 1_000L, 2_000L, 3_000L, 5_000L, 8_000L, 13_000L, 20_000L, 30_000L, 30_000L,
-        )
-        private val CONSERVATIVE_DELAYS_MS = longArrayOf(
-            0L, 5_000L, 15_000L, 30_000L, 60_000L, 60_000L, 60_000L, 60_000L, 60_000L, 60_000L,
-        )
-
-        private fun delays(backoff: RetryBackoff): LongArray = when (backoff) {
-            RetryBackoff.FAST -> FAST_DELAYS_MS
-            RetryBackoff.BALANCED -> BALANCED_DELAYS_MS
-            RetryBackoff.CONSERVATIVE -> CONSERVATIVE_DELAYS_MS
-        }
     }
 }
