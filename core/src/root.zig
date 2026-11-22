@@ -3,6 +3,7 @@
 
 const std = @import("std");
 const reconnect = @import("reconnect.zig");
+const engine = @import("engine.zig");
 
 pub const abi_version: u32 = 1;
 
@@ -68,6 +69,7 @@ comptime {
 
 test {
     _ = reconnect;
+    _ = engine;
     _ = @import("jni.zig");
 }
 
