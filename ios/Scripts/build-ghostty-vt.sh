@@ -1,8 +1,8 @@
 #!/bin/sh
 set -eu
 
-revision="9ae02a326f62bd88f7f5508cf1807c67e7775cb5"
-checksum="8f751649e69b6d494a9087a56279683eded91347b97b170e1252800338378469"
+revision="6d244209978e599277904ff3ced7b8a2ebcc528d"
+checksum="ea154c31fd04e43b1dab5f04596a757f403d566f0d014d2c5ba5ef315a4d52ec"
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 destination="$root/Vendor/ghostty-vt.xcframework"
 

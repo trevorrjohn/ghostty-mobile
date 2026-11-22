@@ -128,6 +128,41 @@ final class GhosttyTerminalEngineTests: XCTestCase {
         XCTAssertEqual(encoded, Data("\u{1b}[99;5u".utf8))
     }
 
+    func testScrollInputIsLocalWithoutMouseTrackingOrAlternateScreen() throws {
+        guard TerminalEngineFactory.isAvailable else {
+            throw XCTSkip("GhosttyVt XCFramework is not installed")
+        }
+
+        let engine = try TerminalEngineFactory.make(columns: 20, rows: 4)
+        XCTAssertNil(engine.encodeScrollInput(byRows: 3))
+    }
+
+    func testScrollInputEncodesWheelEventsWhenMouseTrackingIsOn() throws {
+        guard TerminalEngineFactory.isAvailable else {
+            throw XCTSkip("GhosttyVt XCFramework is not installed")
+        }
+
+        let engine = try TerminalEngineFactory.make(columns: 20, rows: 4)
+        engine.feed(Data("\u{1b}[?1000h\u{1b}[?1006h".utf8))
+
+        let down = try XCTUnwrap(engine.encodeScrollInput(byRows: 2))
+        let downText = String(decoding: down, as: UTF8.self)
+        XCTAssertEqual(downText.components(separatedBy: "\u{1b}[<65;").count - 1, 2)
+        let up = try XCTUnwrap(engine.encodeScrollInput(byRows: -1))
+        XCTAssertTrue(String(decoding: up, as: UTF8.self).hasPrefix("\u{1b}[<64;"))
+    }
+
+    func testScrollInputSendsArrowsOnAlternateScreen() throws {
+        guard TerminalEngineFactory.isAvailable else {
+            throw XCTSkip("GhosttyVt XCFramework is not installed")
+        }
+
+        let engine = try TerminalEngineFactory.make(columns: 20, rows: 4)
+        engine.feed(Data("\u{1b}[?1049h".utf8))
+        let up = try XCTUnwrap(engine.encodeScrollInput(byRows: -1))
+        XCTAssertEqual(up, try engine.encode(event: .key(.up)))
+    }
+
     func testSnapshotsStylesAndCursor() throws {
         guard TerminalEngineFactory.isAvailable else {
             throw XCTSkip("GhosttyVt XCFramework is not installed")

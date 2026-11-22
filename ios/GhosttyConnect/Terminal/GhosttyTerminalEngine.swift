@@ -17,9 +17,6 @@ private final class GhosttyEffectQueue {
     private var ptyWrite = Data()
 
     func capture(_ request: UnsafePointer<GhosttyClipboardWrite>) -> GhosttyClipboardWriteResult {
-        guard request.pointee.size >= MemoryLayout<GhosttyClipboardWrite>.size else {
-            return GHOSTTY_CLIPBOARD_WRITE_RESULT_INVALID_DATA
-        }
         let request = request.pointee
         guard request.location == GHOSTTY_CLIPBOARD_LOCATION_STANDARD else {
             return GHOSTTY_CLIPBOARD_WRITE_RESULT_UNSUPPORTED
@@ -62,8 +59,7 @@ private final class GhosttyEffectQueue {
     }
 
     func captureNotification(_ request: UnsafePointer<GhosttyTerminalDesktopNotification>) {
-        guard request.pointee.size >= MemoryLayout<GhosttyTerminalDesktopNotification>.size,
-              let title = Self.string(request.pointee.title, maximumBytes: Self.maximumNotificationTitleBytes),
+        guard let title = Self.string(request.pointee.title, maximumBytes: Self.maximumNotificationTitleBytes),
               let body = Self.string(request.pointee.body, maximumBytes: Self.maximumNotificationBodyBytes) else { return }
         lock.lock()
         defer { lock.unlock() }
@@ -72,7 +68,6 @@ private final class GhosttyEffectQueue {
     }
 
     func captureProgress(_ request: UnsafePointer<GhosttyTerminalProgressReport>) {
-        guard request.pointee.size >= MemoryLayout<GhosttyTerminalProgressReport>.size else { return }
         let state: TerminalProgressState
         switch request.pointee.state {
         case GHOSTTY_TERMINAL_PROGRESS_STATE_REMOVE: state = .remove
@@ -136,9 +131,21 @@ private final class GhosttyEffectQueue {
     }
 }
 
+private func GHOSTTY_INIT_SIZED_CLIPBOARD_REPLY() -> GhosttyClipboardWriteReply {
+    var reply = GhosttyClipboardWriteReply()
+    reply.size = MemoryLayout<GhosttyClipboardWriteReply>.size
+    return reply
+}
+
 private let ghosttyClipboardWriteCallback: GhosttyTerminalClipboardWriteFn = { _, userdata, request in
-    guard let userdata, let request else { return GHOSTTY_CLIPBOARD_WRITE_RESULT_INVALID_DATA }
-    return Unmanaged<GhosttyEffectQueue>.fromOpaque(userdata).takeUnretainedValue().capture(request)
+    guard let request else { return }
+    var reply = GHOSTTY_INIT_SIZED_CLIPBOARD_REPLY()
+    if let userdata {
+        reply.result = Unmanaged<GhosttyEffectQueue>.fromOpaque(userdata).takeUnretainedValue().capture(request)
+    } else {
+        reply.result = GHOSTTY_CLIPBOARD_WRITE_RESULT_INVALID_DATA
+    }
+    request.pointee.reply(request, &reply)
 }
 
 private let ghosttyBellCallback: GhosttyTerminalBellFn = { _, userdata in
@@ -246,13 +253,8 @@ final class GhosttyTerminalEngine: TerminalEngine {
             throw TerminalEngineError.initializationFailed
         }
 
-        var options = GhosttyFormatterTerminalOptions()
-        options.size = MemoryLayout<GhosttyFormatterTerminalOptions>.size
-        options.emit = GHOSTTY_FORMATTER_FORMAT_PLAIN
-        options.trim = true
-
         var formatter: GhosttyFormatter?
-        let formatterResult = ghostty_formatter_terminal_new(nil, &formatter, terminal, options)
+        let formatterResult = ghostty_formatter_terminal_new(nil, &formatter, terminal)
         guard formatterResult == GHOSTTY_SUCCESS, let formatter else {
             ghostty_terminal_free(terminal)
             throw TerminalEngineError.formatterInitializationFailed
@@ -384,7 +386,7 @@ final class GhosttyTerminalEngine: TerminalEngine {
 
         lock.lock()
         defer { lock.unlock() }
-        ghostty_key_encoder_setopt_from_terminal(keyEncoder, terminal)
+        _ = ghostty_key_encoder_set_from_terminal(keyEncoder, terminal)
         ghostty_key_event_set_action(keyEvent, GHOSTTY_KEY_ACTION_PRESS)
         ghostty_key_event_set_key(keyEvent, Self.nativeKey(key))
         ghostty_key_event_set_mods(keyEvent, modifiers.rawValue)
@@ -392,7 +394,11 @@ final class GhosttyTerminalEngine: TerminalEngine {
         ghostty_key_event_set_composing(keyEvent, false)
         ghostty_key_event_set_unshifted_codepoint(keyEvent, Self.unshiftedCodepoint(key))
         return try text.withCString { pointer -> Data in
-            ghostty_key_event_set_utf8(keyEvent, pointer, text.utf8.count)
+            let utf8 = GhosttyString(
+                ptr: UnsafeRawPointer(pointer).assumingMemoryBound(to: UInt8.self),
+                len: text.utf8.count
+            )
+            _ = ghostty_key_event_set_utf8(keyEvent, utf8)
 
             var buffer = [CChar](repeating: 0, count: 128)
             var written = 0
@@ -547,7 +553,7 @@ final class GhosttyTerminalEngine: TerminalEngine {
         lock.lock()
         defer { lock.unlock() }
         var behavior = GhosttyTerminalScrollViewport()
-        behavior.tag = GHOSTTY_SCROLL_VIEWPORT_DELTA
+        behavior.tag = GHOSTTY_TERMINAL_SCROLL_VIEWPORT_DELTA
         behavior.value.delta = rows
         ghostty_terminal_scroll_viewport(terminal, behavior)
     }
@@ -581,7 +587,7 @@ final class GhosttyTerminalEngine: TerminalEngine {
             guard ghostty_mouse_event_new(nil, &event) == GHOSTTY_SUCCESS, let event else { return nil }
             defer { ghostty_mouse_event_free(event) }
 
-            ghostty_mouse_encoder_setopt_from_terminal(encoder, terminal)
+            _ = ghostty_mouse_encoder_set_from_terminal(encoder, terminal)
             var size = GhosttyMouseEncoderSize(
                 size: MemoryLayout<GhosttyMouseEncoderSize>.size,
                 screen_width: UInt32(columns) * 10,
@@ -593,7 +599,7 @@ final class GhosttyTerminalEngine: TerminalEngine {
                 padding_right: 0,
                 padding_left: 0
             )
-            ghostty_mouse_encoder_setopt(encoder, GHOSTTY_MOUSE_ENCODER_OPT_SIZE, &size)
+            _ = ghostty_mouse_encoder_set(encoder, GHOSTTY_MOUSE_ENCODER_OPT_SIZE, &size)
             ghostty_mouse_event_set_action(event, GHOSTTY_MOUSE_ACTION_PRESS)
             ghostty_mouse_event_set_button(event, down ? GHOSTTY_MOUSE_BUTTON_FIVE : GHOSTTY_MOUSE_BUTTON_FOUR)
             ghostty_mouse_event_set_mods(event, 0)
@@ -626,7 +632,7 @@ final class GhosttyTerminalEngine: TerminalEngine {
         lock.lock()
         defer { lock.unlock() }
         var behavior = GhosttyTerminalScrollViewport()
-        behavior.tag = GHOSTTY_SCROLL_VIEWPORT_BOTTOM
+        behavior.tag = GHOSTTY_TERMINAL_SCROLL_VIEWPORT_BOTTOM
         ghostty_terminal_scroll_viewport(terminal, behavior)
     }
 
@@ -732,7 +738,6 @@ final class GhosttyTerminalEngine: TerminalEngine {
         guard let start = screenReference(column: selected.start.column, row: selected.start.row),
               let end = screenReference(column: selected.end.column, row: selected.end.row) else { return false }
         var selection = GhosttySelection()
-        selection.size = MemoryLayout<GhosttySelection>.size
         selection.start = start
         selection.end = end
         guard ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_SELECTION, &selection) == GHOSTTY_SUCCESS else {
@@ -741,7 +746,7 @@ final class GhosttyTerminalEngine: TerminalEngine {
         searchState = SearchState(query: query, match: selected)
 
         var behavior = GhosttyTerminalScrollViewport()
-        behavior.tag = GHOSTTY_SCROLL_VIEWPORT_ROW
+        behavior.tag = GHOSTTY_TERMINAL_SCROLL_VIEWPORT_ROW
         behavior.value.row = max(0, selected.start.row - Int(scrollbar.len / 3))
         ghostty_terminal_scroll_viewport(terminal, behavior)
         return true
@@ -755,7 +760,6 @@ final class GhosttyTerminalEngine: TerminalEngine {
             y: UInt32(clamping: row)
         )
         var reference = GhosttyGridRef()
-        reference.size = MemoryLayout<GhosttyGridRef>.size
         return ghostty_terminal_grid_ref(terminal, point, &reference) == GHOSTTY_SUCCESS ? reference : nil
     }
 
@@ -779,14 +783,12 @@ final class GhosttyTerminalEngine: TerminalEngine {
             y: UInt32(clamping: max(0, row))
         )
         var ref = GhosttyGridRef()
-        ref.size = MemoryLayout<GhosttyGridRef>.size
         guard ghostty_terminal_grid_ref(terminal, point, &ref) == GHOSTTY_SUCCESS else { return false }
 
         var options = GhosttyTerminalSelectWordOptions()
         options.size = MemoryLayout<GhosttyTerminalSelectWordOptions>.size
         options.ref = ref
         var selection = GhosttySelection()
-        selection.size = MemoryLayout<GhosttySelection>.size
         guard ghostty_terminal_select_word(terminal, &options, &selection) == GHOSTTY_SUCCESS,
               ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_SELECTION, &selection) == GHOSTTY_SUCCESS else {
             return false
@@ -800,7 +802,6 @@ final class GhosttyTerminalEngine: TerminalEngine {
         defer { lock.unlock() }
 
         var selection = GhosttySelection()
-        selection.size = MemoryLayout<GhosttySelection>.size
         guard ghostty_terminal_get(terminal, GHOSTTY_TERMINAL_DATA_SELECTION, &selection) == GHOSTTY_SUCCESS,
               let reference = gridReference(column: column, row: row) else { return false }
         if start { selection.start = reference }
@@ -816,7 +817,6 @@ final class GhosttyTerminalEngine: TerminalEngine {
         guard let start = gridReference(column: startColumn, row: row),
               let end = gridReference(column: endColumn, row: row) else { return false }
         var selection = GhosttySelection()
-        selection.size = MemoryLayout<GhosttySelection>.size
         selection.start = start
         selection.end = end
         return ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_SELECTION, &selection) == GHOSTTY_SUCCESS
@@ -827,10 +827,9 @@ final class GhosttyTerminalEngine: TerminalEngine {
         lock.lock()
         defer { lock.unlock() }
 
-        guard let ref = gridReference(column: column, row: row) else { return false }
+        guard var ref = gridReference(column: column, row: row) else { return false }
         var selection = GhosttySelection()
-        selection.size = MemoryLayout<GhosttySelection>.size
-        guard ghostty_terminal_select_output(terminal, ref, &selection) == GHOSTTY_SUCCESS else { return false }
+        guard ghostty_terminal_select_output(terminal, &ref, &selection) == GHOSTTY_SUCCESS else { return false }
         return ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_SELECTION, &selection) == GHOSTTY_SUCCESS
     }
 
@@ -860,7 +859,6 @@ final class GhosttyTerminalEngine: TerminalEngine {
             y: UInt32(clamping: row)
         )
         var ref = GhosttyGridRef()
-        ref.size = MemoryLayout<GhosttyGridRef>.size
         return ghostty_terminal_grid_ref(terminal, point, &ref) == GHOSTTY_SUCCESS ? ref : nil
     }
 
@@ -873,21 +871,25 @@ final class GhosttyTerminalEngine: TerminalEngine {
     func selectedText() -> String {
         lock.lock()
         defer { lock.unlock() }
-        var options = GhosttyTerminalSelectionFormatOptions()
-        options.size = MemoryLayout<GhosttyTerminalSelectionFormatOptions>.size
-        options.emit = GHOSTTY_FORMATTER_FORMAT_PLAIN
-        options.unwrap = true
-        options.trim = true
-        options.selection = nil
+        var selection = GhosttySelection()
+        guard ghostty_terminal_get(terminal, GHOSTTY_TERMINAL_DATA_SELECTION, &selection) == GHOSTTY_SUCCESS else {
+            return ""
+        }
+        var selectionFormatter: GhosttyFormatter?
+        guard ghostty_formatter_terminal_new(nil, &selectionFormatter, terminal) == GHOSTTY_SUCCESS,
+              let selectionFormatter else { return "" }
+        defer { ghostty_formatter_free(selectionFormatter) }
+        var unwrap = true
+        var trim = true
+        _ = ghostty_formatter_set(selectionFormatter, GHOSTTY_FORMATTER_OPT_UNWRAP, &unwrap)
+        _ = ghostty_formatter_set(selectionFormatter, GHOSTTY_FORMATTER_OPT_TRIM, &trim)
+        guard ghostty_formatter_set(selectionFormatter, GHOSTTY_FORMATTER_OPT_SELECTION, &selection) == GHOSTTY_SUCCESS else {
+            return ""
+        }
         var buffer: UnsafeMutablePointer<UInt8>?
         var length = 0
-        guard ghostty_terminal_selection_format_alloc(
-            terminal,
-            nil,
-            options,
-            &buffer,
-            &length
-        ) == GHOSTTY_SUCCESS, let buffer else { return "" }
+        guard ghostty_formatter_format_alloc(selectionFormatter, nil, &buffer, &length) == GHOSTTY_SUCCESS,
+              let buffer else { return "" }
         defer { ghostty_free(nil, buffer, length) }
         return String(decoding: UnsafeBufferPointer(start: buffer, count: length), as: UTF8.self)
     }
@@ -920,7 +922,6 @@ final class GhosttyTerminalEngine: TerminalEngine {
         var scrollbar = GhosttyTerminalScrollbar()
         var viewportActive = true
         var selection = GhosttySelection()
-        selection.size = MemoryLayout<GhosttySelection>.size
         guard ghostty_render_state_get(renderState, GHOSTTY_RENDER_STATE_DATA_COLS, &columns) == GHOSTTY_SUCCESS,
               ghostty_render_state_get(renderState, GHOSTTY_RENDER_STATE_DATA_ROWS, &rows) == GHOSTTY_SUCCESS,
               ghostty_render_state_get(renderState, GHOSTTY_RENDER_STATE_DATA_COLOR_FOREGROUND, &foreground) == GHOSTTY_SUCCESS,
@@ -1055,7 +1056,6 @@ final class GhosttyTerminalEngine: TerminalEngine {
         var graphemeLength: UInt32 = 0
         var style = GhosttyStyle()
         var selected = false
-        style.size = MemoryLayout<GhosttyStyle>.size
         guard ghostty_render_state_row_cells_get(rowCells, GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_GRAPHEMES_LEN, &graphemeLength) == GHOSTTY_SUCCESS,
               ghostty_render_state_row_cells_get(rowCells, GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_STYLE, &style) == GHOSTTY_SUCCESS,
               ghostty_render_state_row_cells_get(rowCells, GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_SELECTED, &selected) == GHOSTTY_SUCCESS else {
@@ -1066,10 +1066,11 @@ final class GhosttyTerminalEngine: TerminalEngine {
         if graphemeLength > 0 {
             var codepoints = [UInt32](repeating: 0, count: Int(graphemeLength))
             let result = codepoints.withUnsafeMutableBufferPointer { buffer in
-                ghostty_render_state_row_cells_get(
+                var native = GhosttyCodepointBuffer(ptr: buffer.baseAddress, cap: buffer.count, len: 0)
+                return ghostty_render_state_row_cells_get(
                     rowCells,
                     GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_GRAPHEMES_BUF,
-                    buffer.baseAddress
+                    &native
                 )
             }
             guard result == GHOSTTY_SUCCESS else { throw TerminalEngineError.snapshotFailed }
@@ -1091,29 +1092,32 @@ final class GhosttyTerminalEngine: TerminalEngine {
             GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_BG_COLOR,
             &nativeBackground
         )
-        guard foregroundResult == GHOSTTY_SUCCESS || foregroundResult == GHOSTTY_INVALID_VALUE,
-              backgroundResult == GHOSTTY_SUCCESS || backgroundResult == GHOSTTY_INVALID_VALUE else {
+        guard foregroundResult == GHOSTTY_SUCCESS || foregroundResult == GHOSTTY_INVALID_VALUE || foregroundResult == GHOSTTY_NO_VALUE,
+              backgroundResult == GHOSTTY_SUCCESS || backgroundResult == GHOSTTY_INVALID_VALUE || backgroundResult == GHOSTTY_NO_VALUE else {
             throw TerminalEngineError.snapshotFailed
         }
 
         var cellForeground = foregroundResult == GHOSTTY_SUCCESS ? Self.color(nativeForeground) : defaultForeground
         var cellBackground = backgroundResult == GHOSTTY_SUCCESS ? Self.color(nativeBackground) : defaultBackground
-        if style.inverse {
+        let flags = style.flags
+        func has(_ bit: UInt16) -> Bool { flags & bit != 0 }
+        let invisible = has(1 << 5)
+        if has(1 << 4) {
             swap(&cellForeground, &cellBackground)
         }
 
         return TerminalCell(
-            text: style.invisible ? "" : text,
+            text: invisible ? "" : text,
             foreground: cellForeground,
             background: cellBackground,
-            bold: style.bold,
-            italic: style.italic,
-            faint: style.faint,
-            underline: Self.underline(style.underline),
-            strikethrough: style.strikethrough,
-            overline: style.overline,
-            blinking: style.blink,
-            invisible: style.invisible,
+            bold: has(1 << 0),
+            italic: has(1 << 1),
+            faint: has(1 << 2),
+            underline: Self.underline(Int((flags >> 8) & 0x7)),
+            strikethrough: has(1 << 6),
+            overline: has(1 << 7),
+            blinking: has(1 << 3),
+            invisible: invisible,
             selected: selected
         )
     }
@@ -1122,22 +1126,22 @@ final class GhosttyTerminalEngine: TerminalEngine {
         TerminalColor(red: color.r, green: color.g, blue: color.b)
     }
 
-    private static func underline(_ value: Int32) -> TerminalUnderline {
+    private static func underline(_ value: Int) -> TerminalUnderline {
         switch value {
-        case GHOSTTY_SGR_UNDERLINE_SINGLE.rawValue: .single
-        case GHOSTTY_SGR_UNDERLINE_DOUBLE.rawValue: .double
-        case GHOSTTY_SGR_UNDERLINE_CURLY.rawValue: .curly
-        case GHOSTTY_SGR_UNDERLINE_DOTTED.rawValue: .dotted
-        case GHOSTTY_SGR_UNDERLINE_DASHED.rawValue: .dashed
+        case Int(GHOSTTY_SGR_UNDERLINE_SINGLE.rawValue): .single
+        case Int(GHOSTTY_SGR_UNDERLINE_DOUBLE.rawValue): .double
+        case Int(GHOSTTY_SGR_UNDERLINE_CURLY.rawValue): .curly
+        case Int(GHOSTTY_SGR_UNDERLINE_DOTTED.rawValue): .dotted
+        case Int(GHOSTTY_SGR_UNDERLINE_DASHED.rawValue): .dashed
         default: .none
         }
     }
 
-    private static func cursorStyle(_ value: GhosttyRenderStateCursorVisualStyle) -> TerminalCursorStyle {
+    private static func cursorStyle(_ value: GhosttyCursorStyle) -> TerminalCursorStyle {
         switch value {
-        case GHOSTTY_RENDER_STATE_CURSOR_VISUAL_STYLE_BAR: .bar
-        case GHOSTTY_RENDER_STATE_CURSOR_VISUAL_STYLE_UNDERLINE: .underline
-        case GHOSTTY_RENDER_STATE_CURSOR_VISUAL_STYLE_BLOCK_HOLLOW: .hollowBlock
+        case GHOSTTY_CURSOR_STYLE_BAR: .bar
+        case GHOSTTY_CURSOR_STYLE_UNDERLINE: .underline
+        case GHOSTTY_CURSOR_STYLE_BLOCK_HOLLOW: .hollowBlock
         default: .block
         }
     }
