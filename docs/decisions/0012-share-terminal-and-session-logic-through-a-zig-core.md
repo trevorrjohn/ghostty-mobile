@@ -28,3 +28,14 @@ Terminal engine behavior and pure session logic live once, in a Zig core library
 - iOS adopts Android's reconnect policy semantics.
 - Zig is a hard dependency for native changes, and cross-compiling for iOS must keep working.
 - Debugging crosses Swift/JNI/Zig, so the core returns structured error codes.
+
+### Update: terminal engine ported (2026-11-21)
+
+The terminal engine now lives in the core (`core/src/engine.zig`, `render.zig`, `selection.zig`, `keys.zig`, `casefold.zig`, exported through `engine_abi.zig` and documented in `core/include/seance_core.h`) with Zig unit tests. `ghostty_jni.cpp` and `GhosttyTerminalEngine.swift` are thin bindings; the platform view and session code did not change apart from Android's scroll routing.
+
+- Android's `GVT1` dirty-row snapshot, Kitty frame and saved-state encoding are unchanged on the wire. The effects wire format changed to carry the core's bounded clipboard and notification queues, and the snapshot gained a blink cell flag.
+- iOS reads the same snapshot with a `full` flag, so it keeps no row cache.
+- Android gained iOS's scroll-input encoding, so terminal multiplexers such as herdr scroll on Android: wheel events under mouse tracking, arrow keys on the alternate screen with alternate-scroll mode, otherwise local scrollback.
+- Behavior was unified towards the stricter existing implementation: clipboard writes accept only the standard clipboard, are bounded and can clear; oversized notifications and PTY responses are dropped, not truncated; search folds case beyond ASCII (Latin, Greek, Cyrillic, Armenian) rather than ASCII only.
+- The core allocates with `std.heap.smp_allocator` and uses a small yielding spin lock per engine instead of OS primitives. The host JNI library links libghostty-vt statically; the Android and iOS archives still reference it, so the apps keep linking libghostty-vt themselves, and the iOS app links both XCFrameworks.
+- The PNG decoder for Kitty graphics stays in the Android JNI shim (stb) and is registered through `ghostty_sys_set`; iOS registers none.

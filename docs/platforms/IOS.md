@@ -19,7 +19,7 @@ This document maps the shared [architecture](../ARCHITECTURE.md) to iOS and cont
 | SSH transport | `SSHTransport` and actor-based `CitadelSSHTransport` |
 | SFTP transport | Independent actor-based `CitadelSFTPTransport` and screen-owned `SFTPBrowserModel` |
 | Output preprocessing | tmux and iTerm parsers, not yet wired into live output |
-| Terminal adapter | `GhosttyTerminalEngine` using the Ghostty XCFramework |
+| Terminal adapter | `GhosttyTerminalEngine`, a Swift binding over the shared Zig core XCFramework |
 | Terminal surface | `TerminalGridView` with SwiftUI Canvas and UIKit keyboard bridge |
 | Secure storage | Device-only Keychain records through `SecureStore` |
 | Lifecycle owner | Application registry; backgrounding disconnects transports and retains records for manual reconnect |
@@ -44,7 +44,7 @@ The registry respects iOS suspension limits rather than imitating Android foregr
 
 ## Ghostty Integration
 
-The build script installs a checksum-verified XCFramework for the shared pinned Ghostty revision. `GhosttyTerminalEngine` confines C API ownership and converts render state into Swift values.
+The build script installs a checksum-verified libghostty-vt XCFramework for the shared pinned Ghostty revision. The terminal engine lives in the shared Zig core (`core/`, ADR 0012), built into `ios/Vendor/seance-core.xcframework` (`mise run core:ios`); the app links both XCFrameworks because the core's archive references libghostty-vt. `GhosttyTerminalEngine` is a thin binding over the core's C ABI: it marshals Swift types and parses the core's full snapshot and effects wire formats into `TerminalSnapshot` and `TerminalEffects`.
 
 The current adapter supports feed, resize, UTF-8 text encoding, mode-aware named-key and paste encoding, bounded custom actions containing up to eight ordered key events, bounded scrollback, Unicode-aware history search with cyclic previous/next navigation, word/range/semantic-output selection, bounded OSC 8 hyperlink lookup, plain-text formatting, styled snapshots, title and working-directory metadata, and bounded drains for clipboard, bell, desktop notification, typed progress, and PTY-response effects. Clipboard and notification writes pass through each host's persisted ask/allow/block policy with one attempt-scoped pending approval and stale-response rejection. Imported SSH identities use stable UUID host references with migration from unambiguous legacy names; Settings supports inspection, collision-safe rename, affected-host deletion warnings, active-session deletion guards, and OpenSSH public-key sharing when metadata is derivable. Graphics and archive capabilities remain parity work.
 
