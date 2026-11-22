@@ -7,8 +7,8 @@ Architecture decision records capture durable choices that affect both applicati
 | ADR | Status | Decision |
 | --- | --- | --- |
 | [0001](0001-centralize-product-and-engineering-documentation.md) | Accepted | Centralize product and engineering documentation |
-| [0002](0002-use-pinned-libghostty-vt-behind-platform-adapters.md) | Accepted | Use pinned `libghostty-vt` behind platform adapters |
-| [0003](0003-share-contracts-not-platform-implementation.md) | Accepted | Share contracts, not platform implementation |
+| [0002](0002-use-pinned-libghostty-vt-behind-platform-adapters.md) | Amended by 0012 | Use pinned `libghostty-vt` behind platform adapters |
+| [0003](0003-share-contracts-not-platform-implementation.md) | Partly superseded by 0012 | Share contracts, not platform implementation |
 | [0004](0004-own-sessions-explicitly-and-reconnect-honestly.md) | Accepted | Own sessions explicitly and reconnect honestly |
 | [0005](0005-use-platform-secure-storage-and-explicit-host-trust.md) | Accepted | Use platform-secure storage and explicit host trust |
 | [0006](0006-treat-remote-effects-as-bounded-untrusted-input.md) | Accepted | Treat remote effects as bounded untrusted input |
@@ -17,6 +17,7 @@ Architecture decision records capture durable choices that affect both applicati
 | [0009](0009-use-per-identity-biometric-unlock.md) | Accepted | Use per-identity biometric unlock |
 | [0010](0010-keep-diagnostics-bounded-and-redacted.md) | Accepted | Keep diagnostics bounded and redacted |
 | [0011](0011-export-terminal-archives-as-encrypted-text.md) | Accepted | Export terminal archives as encrypted portable text |
+| [0012](0012-share-terminal-and-session-logic-through-a-zig-core.md) | Accepted | Share terminal and session logic through a Zig core |
 
 ## Process
 

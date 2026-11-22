@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+# Builds ios/Vendor/seance-core.xcframework from core/ with the mise-pinned Zig.
+set -euo pipefail
+
+core_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+repo_dir="$(cd "$core_dir/.." && pwd)"
+out="$repo_dir/ios/Vendor/seance-core.xcframework"
+work="$(mktemp -d "${TMPDIR:-/tmp}/seance-core.XXXXXX")"
+trap 'rm -rf "$work"' EXIT
+
+cd "$core_dir"
+build() { mise x -- zig build -Dtarget="$1" -Doptimize=ReleaseFast --prefix "$work/$1"; }
+build aarch64-ios
+build aarch64-ios-simulator
+build x86_64-ios-simulator
+
+# Headers live in their own subdirectory so the modulemap does not collide
+# with other XCFrameworks' module.modulemap when Xcode merges include paths.
+headers="$work/headers"
+mkdir -p "$headers/seance_core"
+cp include/seance_core.h "$headers/seance_core/"
+cat > "$headers/seance_core/module.modulemap" <<'MAP'
+module SeanceCore {
+    header "seance_core.h"
+    export *
+}
+MAP
+
+mkdir -p "$work/sim"
+lipo -create "$work/aarch64-ios-simulator/lib/libseance_core.a" \
+  "$work/x86_64-ios-simulator/lib/libseance_core.a" -output "$work/sim/libseance_core.a"
+
+rm -rf "$out"
+xcodebuild -create-xcframework \
+  -library "$work/aarch64-ios/lib/libseance_core.a" -headers "$headers" \
+  -library "$work/sim/libseance_core.a" -headers "$headers" \
+  -output "$out"
+echo "Built $out"

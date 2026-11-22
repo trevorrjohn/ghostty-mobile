@@ -198,7 +198,10 @@ final class TerminalSessionModel: ObservableObject {
         retryTask?.cancel()
         retryTask = nil
         if availability.allowsRetry { scheduleAutomaticRetry() }
-        else { state = .waitingForNetwork }
+        else {
+            reconnectPolicy.pause()
+            state = .waitingForNetwork
+        }
     }
 
     func answerHostTrust(requestID: UUID, accepted: Bool) {
@@ -600,10 +603,13 @@ final class TerminalSessionModel: ObservableObject {
             state = .waitingForNetwork
             return
         }
-        guard let delay = reconnectPolicy.nextDelayNanoseconds(
+        reconnectPolicy.configure(
+            enabled: host.retryEnabled,
             maxAttempts: host.retryMaxAttempts,
             backoff: host.retryBackoff
-        ) else {
+        )
+        reconnectPolicy.resume()
+        guard let delay = reconnectPolicy.nextDelayNanoseconds() else {
             reconnectPending = false
             state = .failed(SessionFailure(
                 kind: .network,
@@ -637,7 +643,7 @@ final class TerminalSessionModel: ObservableObject {
                 ))
                 return
             }
-            guard reconnectPolicy.beginAttempt(maxAttempts: host.retryMaxAttempts) != nil else { return }
+            guard reconnectPolicy.beginAttempt() != nil else { return }
             await connectAttempt(to: host, secret: nil, key: key, isReconnect: true, automaticRetry: true)
         }
     }

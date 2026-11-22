@@ -1,5 +1,6 @@
 import Foundation
 import Network
+import SeanceCore
 
 enum NetworkAvailability: Equatable, Sendable {
     case usable
@@ -30,34 +31,64 @@ final class DefaultNetworkPathMonitor: NetworkPathMonitoring, @unchecked Sendabl
     }
 }
 
+/// Reconnect policy backed by the shared core (see `core/` and ADR 0012).
+/// Backoff and the retry window are identical on iOS and Android.
 struct ReconnectPolicy {
-    private(set) var attemptCount = 0
+    private var state = ScReconnectPolicy()
 
-    func nextDelayNanoseconds(maxAttempts: Int, backoff: RetryBackoff) -> UInt64? {
-        guard attemptCount < min(10, max(1, maxAttempts)) else { return nil }
-        return backoff.delaysNanoseconds[attemptCount]
+    init(enabled: Bool = true, maxAttempts: Int = 5, backoff: RetryBackoff = .balanced) {
+        configure(enabled: enabled, maxAttempts: maxAttempts, backoff: backoff)
     }
 
-    mutating func beginAttempt(maxAttempts: Int) -> Int? {
-        guard attemptCount < min(10, max(1, maxAttempts)) else { return nil }
-        attemptCount += 1
-        return attemptCount
+    /// Milliseconds from a monotonic clock.
+    static func nowMilliseconds() -> Int64 {
+        Int64(DispatchTime.now().uptimeNanoseconds / 1_000_000)
+    }
+
+    var attemptCount: Int { withUnsafePointer(to: state) { Int(sc_reconnect_attempt_count($0)) } }
+    var retryWindowMilliseconds: Int64 { withUnsafePointer(to: state) { sc_reconnect_window_ms($0) } }
+
+    /// Applies host settings while keeping attempts and the retry window.
+    /// Out-of-range attempts are clamped to 1...10.
+    mutating func configure(enabled: Bool, maxAttempts: Int, backoff: RetryBackoff) {
+        let attempts = UInt32(min(10, max(1, maxAttempts)))
+        let kind = backoff.coreValue
+        if state.max_attempts == 0 {
+            _ = sc_reconnect_init(&state, enabled, attempts, kind)
+        } else {
+            _ = sc_reconnect_configure(&state, enabled, attempts, kind)
+        }
+    }
+
+    func nextDelayNanoseconds(now: Int64 = ReconnectPolicy.nowMilliseconds()) -> UInt64? {
+        var delay: Int64 = 0
+        guard withUnsafePointer(to: state, { sc_reconnect_next_delay($0, now, &delay) }) else { return nil }
+        return UInt64(max(0, delay)) * 1_000_000
+    }
+
+    mutating func beginAttempt(now: Int64 = ReconnectPolicy.nowMilliseconds()) -> Int? {
+        sc_reconnect_begin_attempt(&state, now) ? attemptCount : nil
     }
 
     mutating func reset() {
-        attemptCount = 0
+        sc_reconnect_reset(&state)
+    }
+
+    mutating func pause(now: Int64 = ReconnectPolicy.nowMilliseconds()) {
+        sc_reconnect_pause(&state, now)
+    }
+
+    mutating func resume(now: Int64 = ReconnectPolicy.nowMilliseconds()) {
+        sc_reconnect_resume(&state, now)
     }
 }
 
 private extension RetryBackoff {
-    var delaysNanoseconds: [UInt64] {
+    var coreValue: UInt8 {
         switch self {
-        case .fast:
-            [0, 1, 2, 3, 5, 8, 13, 20, 30, 30].map { $0 * 1_000_000_000 }
-        case .balanced:
-            [0, 2, 5, 10, 20, 30, 30, 30, 30, 30].map { $0 * 1_000_000_000 }
-        case .conservative:
-            [0, 5, 15, 30, 60, 60, 60, 60, 60, 60].map { $0 * 1_000_000_000 }
+        case .fast: UInt8(SC_BACKOFF_FAST)
+        case .balanced: UInt8(SC_BACKOFF_BALANCED)
+        case .conservative: UInt8(SC_BACKOFF_CONSERVATIVE)
         }
     }
 }

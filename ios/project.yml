@@ -8,6 +8,7 @@ settings:
     SWIFT_VERSION: "5.0"
     DEVELOPMENT_TEAM: 6GRZ874TZY
     FRAMEWORK_SEARCH_PATHS: "$(inherited) $(PROJECT_DIR)/Vendor"
+    SWIFT_INCLUDE_PATHS: "$(inherited) $(BUILT_PRODUCTS_DIR)/include/seance_core"
 packages:
   Citadel:
     url: https://github.com/orlandos-nl/Citadel.git
@@ -47,6 +48,8 @@ targets:
       - GhosttyConnect
     dependencies:
       - framework: Vendor/ghostty-vt.xcframework
+        embed: false
+      - framework: Vendor/seance-core.xcframework
         embed: false
       - package: Citadel
       - target: GhosttyConnectControl

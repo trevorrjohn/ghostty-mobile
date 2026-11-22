@@ -1,6 +1,6 @@
 # ADR 0003: Share Contracts, Not Platform Implementation
 
-- Status: Accepted
+- Status: Partly superseded by ADR 0012 (terminal engine and pure session logic are now shared through a Zig core)
 - Date: 2026-08-21
 
 ## Context
