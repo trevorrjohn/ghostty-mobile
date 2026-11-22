@@ -10,6 +10,8 @@ struct TerminalScreen: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.displayScale) private var displayScale
     @Environment(\.openURL) private var openURL
+    @Environment(\.scenePhase) private var scenePhase
+    @State private var reconnectOnForeground = false
     @State private var secret = ""
     @State private var showingCredential = false
     @State private var keyboardFocused = false
@@ -266,7 +268,15 @@ struct TerminalScreen: View {
             keyboardBarState.reset()
             textDraft = ""
         }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .background {
+                reconnectOnForeground = session.state == .connected
+            } else if phase == .active {
+                reconnectIfNeededOnForeground()
+            }
+        }
         .onChange(of: session.state) { _, state in
+            if state == .disconnected { reconnectIfNeededOnForeground() }
             if state == .connected { keyboardFocused = true }
             else {
                 keyboardFocused = false
@@ -845,6 +855,16 @@ struct TerminalScreen: View {
         case .disconnected: record.hasRequestedConnection
         case .connecting, .waitingForNetwork, .retrying, .verifyingHost, .authenticating, .connected: false
         }
+    }
+
+    private func reconnectIfNeededOnForeground() {
+        guard reconnectOnForeground,
+              scenePhase == .active,
+              session.hasConnectedShell,
+              session.state == .disconnected,
+              canReconnect else { return }
+        reconnectOnForeground = false
+        requestConnection(isReconnect: true)
     }
 
     private func requestConnection(isReconnect: Bool) {
