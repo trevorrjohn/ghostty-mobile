@@ -63,6 +63,7 @@ export fn sc_reconnect_window_ms(policy: *const ScReconnectPolicy) i64 {
 }
 
 comptime {
+    _ = @import("engine_abi.zig");
     // JNI exports are for Android and the host-side JVM tests, not iOS.
     if (@import("builtin").os.tag != .ios) _ = @import("jni.zig");
 }
@@ -70,6 +71,8 @@ comptime {
 test {
     _ = reconnect;
     _ = engine;
+    _ = @import("engine_tests.zig");
+    _ = @import("engine_abi.zig");
     _ = @import("jni.zig");
 }
 
