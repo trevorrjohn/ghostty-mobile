@@ -62,15 +62,19 @@ feed(bytes)
 resize(columns, rows, pixel dimensions)
 encode(input event or paste)
 snapshot(viewport)
+encode scroll(rows)
 drain effects
 close()
 ```
+
+The shared implementation is the Zig core's C ABI (`core/include/seance_core.h`); the platform adapters bind to it.
 
 - It exclusively owns Ghostty handles.
 - Calls after closure fail safely.
 - It validates ranges, dimensions, enum values, and upstream failures.
 - It returns platform-owned immutable values rather than native pointers.
 - Input encoding reflects current terminal modes.
+- Scroll gestures are offered to the terminal first: mouse tracking yields wheel events, the alternate screen with alternate-scroll mode (DEC 1007) yields arrow keys, and otherwise the platform scrolls its local scrollback. This is how full-screen programs such as terminal multiplexers scroll on both platforms.
 - It never writes terminal content to logs.
 
 Scrollback, selection, search, graphics, and archive operations extend this contract as platforms implement them; capability status is tracked in the roadmap.

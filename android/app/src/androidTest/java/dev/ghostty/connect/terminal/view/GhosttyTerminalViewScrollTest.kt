@@ -127,4 +127,68 @@ class GhosttyTerminalViewScrollTest {
             }
         }
     }
+
+    @Test
+    fun dragSendsArrowsOnAlternateScreenAndScrollsLocallyOtherwise() {
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        val context = instrumentation.targetContext
+        val preferences = context.getSharedPreferences("app_settings", Context.MODE_PRIVATE)
+        val original = preferences.all
+        instrumentation.runOnMainSync {
+            try {
+                preferences.edit()
+                    .putBoolean("reverse_scroll_direction", false)
+                    .putFloat("scroll_sensitivity", 1f)
+                    .commit()
+                GhosttyTerminal().use { terminal ->
+                    val view = GhosttyTerminalView(context, terminal)
+                    view.layout(0, 0, 600, 1000)
+                    val sent = java.io.ByteArrayOutputStream()
+                    view.onScrollInput = { sent.write(it) }
+
+                    fun drag(fromY: Float, toY: Float) {
+                        val time = SystemClock.uptimeMillis()
+                        for ((action, y, offset) in listOf(
+                            Triple(MotionEvent.ACTION_DOWN, fromY, 0L),
+                            Triple(MotionEvent.ACTION_MOVE, toY, 16L),
+                            Triple(MotionEvent.ACTION_CANCEL, toY, 32L),
+                        )) {
+                            val event = MotionEvent.obtain(time, time + offset, action, 300f, y, 0)
+                            try { view.onTouchEvent(event) } finally { event.recycle() }
+                        }
+                    }
+
+                    // A full-screen program that scrolls with arrows (alternate-scroll mode).
+                    terminal.write("\u001b[?1049h")
+                    drag(500f, 100f)
+                    val down = String(sent.toByteArray())
+                    assertTrue("Dragging up should send Down arrows", down.isNotEmpty() && down.split("\u001b[B").all { it.isEmpty() })
+                    sent.reset()
+                    drag(100f, 500f)
+                    val up = String(sent.toByteArray())
+                    assertTrue("Dragging down should send Up arrows", up.isNotEmpty() && up.split("\u001b[A").all { it.isEmpty() })
+
+                    // The primary screen keeps scrolling its own scrollback.
+                    terminal.write("\u001b[?1049l")
+                    terminal.write((1..300).joinToString("\r\n") { "Line $it" })
+                    terminal.scrollRows(-100)
+                    val before = terminal.snapshot().scrollOffset
+                    sent.reset()
+                    drag(500f, 100f)
+                    assertTrue(sent.size() == 0)
+                    assertTrue(terminal.snapshot().scrollOffset > before)
+                }
+            } finally {
+                val editor = preferences.edit()
+                for (key in listOf("reverse_scroll_direction", "scroll_sensitivity")) {
+                    when (val value = original[key]) {
+                        is Boolean -> editor.putBoolean(key, value)
+                        is Float -> editor.putFloat(key, value)
+                        else -> editor.remove(key)
+                    }
+                }
+                editor.commit()
+            }
+        }
+    }
 }

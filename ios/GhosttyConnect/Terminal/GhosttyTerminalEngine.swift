@@ -1,369 +1,100 @@
-#if canImport(GhosttyVt)
+#if canImport(SeanceCore)
 import Foundation
-import GhosttyVt
+import SeanceCore
 
-private final class GhosttyEffectQueue {
-    private static let maximumPendingWrites = 8
-    private static let maximumPendingNotifications = 8
-    private static let maximumTextBytes = 1_048_576
-    private static let maximumNotificationTitleBytes = 256
-    private static let maximumNotificationBodyBytes = 4_096
-    private static let maximumPtyWriteBytes = 65_536
-    private let lock = NSLock()
-    private var writes: [TerminalClipboardWrite] = []
-    private var bells = 0
-    private var notifications: [TerminalRemoteNotification] = []
-    private var progress: TerminalProgressReport?
-    private var ptyWrite = Data()
-
-    func capture(_ request: UnsafePointer<GhosttyClipboardWrite>) -> GhosttyClipboardWriteResult {
-        let request = request.pointee
-        guard request.location == GHOSTTY_CLIPBOARD_LOCATION_STANDARD else {
-            return GHOSTTY_CLIPBOARD_WRITE_RESULT_UNSUPPORTED
-        }
-        if request.contents_len == 0 {
-            return append(.clear)
-        }
-        guard let contents = request.contents else {
-            return GHOSTTY_CLIPBOARD_WRITE_RESULT_INVALID_DATA
-        }
-        for index in 0..<request.contents_len {
-            let content = contents[index]
-            guard let mimeData = Self.data(content.mime),
-                  let mime = String(data: mimeData, encoding: .utf8) else {
-                return GHOSTTY_CLIPBOARD_WRITE_RESULT_INVALID_DATA
-            }
-            guard mime == "text/plain" || mime == "text/plain;charset=utf-8" else { continue }
-            guard content.data.len <= Self.maximumTextBytes,
-                  let data = Self.data(content.data),
-                  let text = String(data: data, encoding: .utf8) else {
-                return GHOSTTY_CLIPBOARD_WRITE_RESULT_INVALID_DATA
-            }
-            return append(.text(text))
-        }
-        return GHOSTTY_CLIPBOARD_WRITE_RESULT_UNSUPPORTED
-    }
-
-    func drain() -> [TerminalClipboardWrite] {
-        lock.lock()
-        defer { lock.unlock() }
-        let result = writes
-        writes.removeAll(keepingCapacity: true)
-        return result
-    }
-
-    func captureBell() {
-        lock.lock()
-        defer { lock.unlock() }
-        bells = min(10, bells + 1)
-    }
-
-    func captureNotification(_ request: UnsafePointer<GhosttyTerminalDesktopNotification>) {
-        guard let title = Self.string(request.pointee.title, maximumBytes: Self.maximumNotificationTitleBytes),
-              let body = Self.string(request.pointee.body, maximumBytes: Self.maximumNotificationBodyBytes) else { return }
-        lock.lock()
-        defer { lock.unlock() }
-        guard notifications.count < Self.maximumPendingNotifications else { return }
-        notifications.append(TerminalRemoteNotification(title: title, body: body))
-    }
-
-    func captureProgress(_ request: UnsafePointer<GhosttyTerminalProgressReport>) {
-        let state: TerminalProgressState
-        switch request.pointee.state {
-        case GHOSTTY_TERMINAL_PROGRESS_STATE_REMOVE: state = .remove
-        case GHOSTTY_TERMINAL_PROGRESS_STATE_SET: state = .set
-        case GHOSTTY_TERMINAL_PROGRESS_STATE_ERROR: state = .error
-        case GHOSTTY_TERMINAL_PROGRESS_STATE_INDETERMINATE: state = .indeterminate
-        case GHOSTTY_TERMINAL_PROGRESS_STATE_PAUSE: state = .paused
-        default: return
-        }
-        let value = Int(request.pointee.progress)
-        lock.lock()
-        progress = TerminalProgressReport(state: state, percent: (0...100).contains(value) ? value : nil)
-        lock.unlock()
-    }
-
-    func capturePtyWrite(_ bytes: UnsafePointer<UInt8>?, count: Int) {
-        guard count > 0, let bytes else { return }
-        lock.lock()
-        defer { lock.unlock() }
-        guard count <= Self.maximumPtyWriteBytes - ptyWrite.count else { return }
-        ptyWrite.append(bytes, count: count)
-    }
-
-    func drainEffects() -> TerminalEffects {
-        lock.lock()
-        defer { lock.unlock() }
-        let result = TerminalEffects(
-            clipboardWrites: writes,
-            bells: bells,
-            notifications: notifications,
-            progress: progress,
-            ptyWrite: ptyWrite
-        )
-        writes.removeAll(keepingCapacity: true)
-        bells = 0
-        notifications.removeAll(keepingCapacity: true)
-        progress = nil
-        ptyWrite.removeAll(keepingCapacity: true)
-        return result
-    }
-
-    private func append(_ write: TerminalClipboardWrite) -> GhosttyClipboardWriteResult {
-        lock.lock()
-        defer { lock.unlock() }
-        guard writes.count < Self.maximumPendingWrites else {
-            return GHOSTTY_CLIPBOARD_WRITE_RESULT_BUSY
-        }
-        writes.append(write)
-        return GHOSTTY_CLIPBOARD_WRITE_RESULT_SUCCESS
-    }
-
-    private static func data(_ value: GhosttyString) -> Data? {
-        guard value.len == 0 || value.ptr != nil else { return nil }
-        guard let pointer = value.ptr else { return Data() }
-        return Data(bytes: pointer, count: value.len)
-    }
-
-    private static func string(_ value: GhosttyString, maximumBytes: Int) -> String? {
-        guard value.len <= maximumBytes, let data = data(value) else { return nil }
-        return String(data: data, encoding: .utf8)
-    }
-}
-
-private func GHOSTTY_INIT_SIZED_CLIPBOARD_REPLY() -> GhosttyClipboardWriteReply {
-    var reply = GhosttyClipboardWriteReply()
-    reply.size = MemoryLayout<GhosttyClipboardWriteReply>.size
-    return reply
-}
-
-private let ghosttyClipboardWriteCallback: GhosttyTerminalClipboardWriteFn = { _, userdata, request in
-    guard let request else { return }
-    var reply = GHOSTTY_INIT_SIZED_CLIPBOARD_REPLY()
-    if let userdata {
-        reply.result = Unmanaged<GhosttyEffectQueue>.fromOpaque(userdata).takeUnretainedValue().capture(request)
-    } else {
-        reply.result = GHOSTTY_CLIPBOARD_WRITE_RESULT_INVALID_DATA
-    }
-    request.pointee.reply(request, &reply)
-}
-
-private let ghosttyBellCallback: GhosttyTerminalBellFn = { _, userdata in
-    guard let userdata else { return }
-    Unmanaged<GhosttyEffectQueue>.fromOpaque(userdata).takeUnretainedValue().captureBell()
-}
-
-private let ghosttyNotificationCallback: GhosttyTerminalDesktopNotificationFn = { _, userdata, request in
-    guard let userdata, let request else { return }
-    Unmanaged<GhosttyEffectQueue>.fromOpaque(userdata).takeUnretainedValue().captureNotification(request)
-}
-
-private let ghosttyProgressCallback: GhosttyTerminalProgressReportFn = { _, userdata, request in
-    guard let userdata, let request else { return }
-    Unmanaged<GhosttyEffectQueue>.fromOpaque(userdata).takeUnretainedValue().captureProgress(request)
-}
-
-private let ghosttyWritePtyCallback: GhosttyTerminalWritePtyFn = { _, userdata, bytes, count in
-    guard let userdata else { return }
-    Unmanaged<GhosttyEffectQueue>.fromOpaque(userdata).takeUnretainedValue().capturePtyWrite(bytes, count: count)
-}
-
+/// Thin Swift binding over the terminal engine in the shared Zig core
+/// (`core/`, ADR 0012). All terminal behavior lives there; this type converts
+/// between Swift types and the core's C ABI (`seance_core.h`) and parses its
+/// snapshot and effects wire formats into `TerminalSnapshot` and
+/// `TerminalEffects`.
 final class GhosttyTerminalEngine: TerminalEngine {
     private static let maximumMetadataBytes = 4_096
-    private let terminal: GhosttyTerminal
-    private let formatter: GhosttyFormatter
-    private let renderState: GhosttyRenderState
-    private let rowIterator: GhosttyRenderStateRowIterator
-    private let rowCells: GhosttyRenderStateRowCells
-    private let keyEncoder: GhosttyKeyEncoder
-    private let keyEvent: GhosttyKeyEvent
-    private let effects: GhosttyEffectQueue
+    private static let maximumHyperlinkBytes = 1_024
+    private static let maximumPendingBells = 10
+    private static let maximumPendingNotifications = 8
+    private static let maximumPendingWrites = 8
+
+    private let engine: OpaquePointer
+    /// Guards `pendingEffects` and keeps a snapshot consistent with its selection queries.
     private let lock = NSLock()
-    private var searchState: SearchState?
-
-    private struct SearchPosition: Equatable {
-        let row: Int
-        let column: Int
-    }
-
-    private struct SearchMatch: Equatable {
-        let start: SearchPosition
-        let end: SearchPosition
-    }
-
-    private struct SearchState {
-        let query: String
-        let match: SearchMatch
-    }
-
-    private struct SearchableLine {
-        var text = ""
-        var utf16Cells: [SearchPosition] = []
-
-        mutating func append(_ value: String, at position: SearchPosition) {
-            text.append(value)
-            utf16Cells.append(contentsOf: repeatElement(position, count: value.utf16.count))
-        }
-    }
+    private var pendingEffects = TerminalEffects()
 
     init(columns: Int, rows: Int) throws {
-        let effects = GhosttyEffectQueue()
-        var terminal: GhosttyTerminal?
-        let result = ghostty_terminal_new(
-            nil,
-            &terminal,
-            Self.dimension(columns),
-            Self.dimension(rows)
+        var config = ScEngineConfig(
+            size: MemoryLayout<ScEngineConfig>.size,
+            cols: Self.dimension(columns),
+            rows: Self.dimension(rows),
+            has_colors: false,
+            foreground: 0,
+            background: 0,
+            cursor: 0,
+            palette: nil,
+            scrollback_lines: 0
         )
-        guard result == GHOSTTY_SUCCESS, let terminal else {
+        var created: OpaquePointer?
+        guard sc_engine_new(&config, &created) == 0, let created else {
             throw TerminalEngineError.initializationFailed
         }
-
-        let clipboardCallback = unsafeBitCast(ghosttyClipboardWriteCallback, to: UnsafeRawPointer.self)
-        let bellCallback = unsafeBitCast(ghosttyBellCallback, to: UnsafeRawPointer.self)
-        let notificationCallback = unsafeBitCast(ghosttyNotificationCallback, to: UnsafeRawPointer.self)
-        let progressCallback = unsafeBitCast(ghosttyProgressCallback, to: UnsafeRawPointer.self)
-        let writePtyCallback = unsafeBitCast(ghosttyWritePtyCallback, to: UnsafeRawPointer.self)
-        guard ghostty_terminal_set(
-            terminal,
-            GHOSTTY_TERMINAL_OPT_USERDATA,
-            Unmanaged.passUnretained(effects).toOpaque()
-        ) == GHOSTTY_SUCCESS,
-        ghostty_terminal_set(
-            terminal,
-            GHOSTTY_TERMINAL_OPT_CLIPBOARD_WRITE,
-            clipboardCallback
-        ) == GHOSTTY_SUCCESS,
-        ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_BELL, bellCallback) == GHOSTTY_SUCCESS,
-        ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_DESKTOP_NOTIFICATION, notificationCallback) == GHOSTTY_SUCCESS,
-        ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_PROGRESS_REPORT, progressCallback) == GHOSTTY_SUCCESS,
-        ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_WRITE_PTY, writePtyCallback) == GHOSTTY_SUCCESS
-        else {
-            ghostty_terminal_free(terminal)
-            throw TerminalEngineError.initializationFailed
-        }
-
-        var scrollbackLines = 10_000
-        guard ghostty_terminal_set(
-            terminal,
-            GHOSTTY_TERMINAL_OPT_SCROLLBACK_MAX_LINES,
-            &scrollbackLines
-        ) == GHOSTTY_SUCCESS else {
-            ghostty_terminal_free(terminal)
-            throw TerminalEngineError.initializationFailed
-        }
-
-        var formatter: GhosttyFormatter?
-        let formatterResult = ghostty_formatter_terminal_new(nil, &formatter, terminal)
-        guard formatterResult == GHOSTTY_SUCCESS, let formatter else {
-            ghostty_terminal_free(terminal)
-            throw TerminalEngineError.formatterInitializationFailed
-        }
-
-        var renderState: GhosttyRenderState?
-        guard ghostty_render_state_new(nil, &renderState) == GHOSTTY_SUCCESS,
-              let renderState else {
-            ghostty_formatter_free(formatter)
-            ghostty_terminal_free(terminal)
-            throw TerminalEngineError.renderStateInitializationFailed
-        }
-
-        var rowIterator: GhosttyRenderStateRowIterator?
-        guard ghostty_render_state_row_iterator_new(nil, &rowIterator) == GHOSTTY_SUCCESS,
-              let rowIterator else {
-            ghostty_render_state_free(renderState)
-            ghostty_formatter_free(formatter)
-            ghostty_terminal_free(terminal)
-            throw TerminalEngineError.renderStateInitializationFailed
-        }
-
-        var rowCells: GhosttyRenderStateRowCells?
-        guard ghostty_render_state_row_cells_new(nil, &rowCells) == GHOSTTY_SUCCESS,
-              let rowCells else {
-            ghostty_render_state_row_iterator_free(rowIterator)
-            ghostty_render_state_free(renderState)
-            ghostty_formatter_free(formatter)
-            ghostty_terminal_free(terminal)
-            throw TerminalEngineError.renderStateInitializationFailed
-        }
-
-        var keyEncoder: GhosttyKeyEncoder?
-        guard ghostty_key_encoder_new(nil, &keyEncoder) == GHOSTTY_SUCCESS,
-              let keyEncoder else {
-            ghostty_render_state_row_cells_free(rowCells)
-            ghostty_render_state_row_iterator_free(rowIterator)
-            ghostty_render_state_free(renderState)
-            ghostty_formatter_free(formatter)
-            ghostty_terminal_free(terminal)
-            throw TerminalEngineError.keyEncoderInitializationFailed
-        }
-
-        var keyEvent: GhosttyKeyEvent?
-        guard ghostty_key_event_new(nil, &keyEvent) == GHOSTTY_SUCCESS,
-              let keyEvent else {
-            ghostty_key_encoder_free(keyEncoder)
-            ghostty_render_state_row_cells_free(rowCells)
-            ghostty_render_state_row_iterator_free(rowIterator)
-            ghostty_render_state_free(renderState)
-            ghostty_formatter_free(formatter)
-            ghostty_terminal_free(terminal)
-            throw TerminalEngineError.keyEncoderInitializationFailed
-        }
-
-        self.terminal = terminal
-        self.formatter = formatter
-        self.renderState = renderState
-        self.rowIterator = rowIterator
-        self.rowCells = rowCells
-        self.keyEncoder = keyEncoder
-        self.keyEvent = keyEvent
-        self.effects = effects
+        engine = created
     }
 
     deinit {
-        ghostty_key_event_free(keyEvent)
-        ghostty_key_encoder_free(keyEncoder)
-        ghostty_render_state_row_cells_free(rowCells)
-        ghostty_render_state_row_iterator_free(rowIterator)
-        ghostty_render_state_free(renderState)
-        ghostty_formatter_free(formatter)
-        ghostty_terminal_free(terminal)
+        sc_engine_free(engine)
     }
 
+    // MARK: Output and effects
+
     func feed(_ data: Data) {
-        lock.lock()
-        defer { lock.unlock() }
-        searchState = nil
         data.withUnsafeBytes { bytes in
-            guard let baseAddress = bytes.baseAddress else { return }
-            ghostty_terminal_vt_write(
-                terminal,
-                baseAddress.assumingMemoryBound(to: UInt8.self),
+            _ = sc_engine_write(
+                engine,
+                bytes.baseAddress?.assumingMemoryBound(to: UInt8.self),
                 bytes.count
             )
         }
     }
 
+    func resize(columns: Int, rows: Int) {
+        _ = sc_engine_resize(engine, UInt32(Self.dimension(columns)), UInt32(Self.dimension(rows)), 0, 0)
+    }
+
     func drainClipboardWrites() -> [TerminalClipboardWrite] {
-        effects.drain()
+        lock.lock()
+        defer { lock.unlock() }
+        collectEffects()
+        let writes = pendingEffects.clipboardWrites
+        pendingEffects.clipboardWrites.removeAll()
+        return writes
     }
 
     func drainEffects() -> TerminalEffects {
-        effects.drainEffects()
-    }
-
-    func resize(columns: Int, rows: Int) {
         lock.lock()
         defer { lock.unlock() }
-        searchState = nil
-        ghostty_terminal_resize(
-            terminal,
-            Self.dimension(columns),
-            Self.dimension(rows),
-            0,
-            0
-        )
+        collectEffects()
+        let effects = pendingEffects
+        pendingEffects = TerminalEffects()
+        return effects
     }
+
+    /// Moves the core's queued effects into `pendingEffects`, keeping the
+    /// bounds the core applies on its own queues.
+    private func collectEffects() {
+        guard let data = bytes({ sc_engine_drain_effects(engine, $0) }),
+              let drained = try? Self.parseEffects(data) else { return }
+        pendingEffects.clipboardWrites.append(contentsOf: drained.clipboardWrites)
+        if pendingEffects.clipboardWrites.count > Self.maximumPendingWrites {
+            pendingEffects.clipboardWrites.removeLast(pendingEffects.clipboardWrites.count - Self.maximumPendingWrites)
+        }
+        pendingEffects.bells = min(Self.maximumPendingBells, pendingEffects.bells + drained.bells)
+        pendingEffects.notifications.append(contentsOf: drained.notifications)
+        if pendingEffects.notifications.count > Self.maximumPendingNotifications {
+            pendingEffects.notifications.removeLast(pendingEffects.notifications.count - Self.maximumPendingNotifications)
+        }
+        if let progress = drained.progress { pendingEffects.progress = progress }
+        pendingEffects.ptyWrite.append(drained.ptyWrite)
+    }
+
+    // MARK: Input
 
     func encode(event: TerminalInputEvent) throws -> Data {
         let key: TerminalKey
@@ -384,770 +115,363 @@ final class GhosttyTerminalEngine: TerminalEngine {
             modifiers = eventModifiers
         }
 
-        lock.lock()
-        defer { lock.unlock() }
-        _ = ghostty_key_encoder_set_from_terminal(keyEncoder, terminal)
-        ghostty_key_event_set_action(keyEvent, GHOSTTY_KEY_ACTION_PRESS)
-        ghostty_key_event_set_key(keyEvent, Self.nativeKey(key))
-        ghostty_key_event_set_mods(keyEvent, modifiers.rawValue)
-        ghostty_key_event_set_consumed_mods(keyEvent, 0)
-        ghostty_key_event_set_composing(keyEvent, false)
-        ghostty_key_event_set_unshifted_codepoint(keyEvent, Self.unshiftedCodepoint(key))
-        return try text.withCString { pointer -> Data in
-            let utf8 = GhosttyString(
-                ptr: UnsafeRawPointer(pointer).assumingMemoryBound(to: UInt8.self),
-                len: text.utf8.count
-            )
-            _ = ghostty_key_event_set_utf8(keyEvent, utf8)
-
-            var buffer = [CChar](repeating: 0, count: 128)
-            var written = 0
-            var result = buffer.withUnsafeMutableBufferPointer { bytes in
-                ghostty_key_encoder_encode(keyEncoder, keyEvent, bytes.baseAddress, bytes.count, &written)
-            }
-            if result == GHOSTTY_OUT_OF_SPACE {
-                guard written <= 4_096 else { throw TerminalEngineError.keyEncodingFailed }
-                buffer = [CChar](repeating: 0, count: written)
-                result = buffer.withUnsafeMutableBufferPointer { bytes in
-                    ghostty_key_encoder_encode(keyEncoder, keyEvent, bytes.baseAddress, bytes.count, &written)
+        let name = Array(Self.keyName(key).utf8)
+        let utf8 = Array(text.utf8)
+        guard let data = bytes({ out in
+            name.withUnsafeBufferPointer { name in
+                utf8.withUnsafeBufferPointer { text in
+                    sc_engine_encode_key(
+                        engine,
+                        name.baseAddress, name.count,
+                        text.baseAddress, text.count,
+                        UInt32(modifiers.rawValue),
+                        1, // press
+                        out
+                    )
                 }
             }
-            guard result == GHOSTTY_SUCCESS else { throw TerminalEngineError.keyEncodingFailed }
-            return buffer.withUnsafeBytes { Data($0.prefix(written)) }
-        }
+        }) else { throw TerminalEngineError.keyEncodingFailed }
+        return data
     }
 
-    private static func nativeKey(_ key: TerminalKey) -> GhosttyKey {
+    /// The core's key name for a key: W3C-style names, or the character itself.
+    private static func keyName(_ key: TerminalKey) -> String {
         switch key {
-        case .escape: GHOSTTY_KEY_ESCAPE
-        case .tab: GHOSTTY_KEY_TAB
-        case .enter: GHOSTTY_KEY_ENTER
-        case .backspace: GHOSTTY_KEY_BACKSPACE
-        case .delete: GHOSTTY_KEY_DELETE
-        case .insert: GHOSTTY_KEY_INSERT
-        case .home: GHOSTTY_KEY_HOME
-        case .end: GHOSTTY_KEY_END
-        case .pageUp: GHOSTTY_KEY_PAGE_UP
-        case .pageDown: GHOSTTY_KEY_PAGE_DOWN
-        case .up: GHOSTTY_KEY_ARROW_UP
-        case .down: GHOSTTY_KEY_ARROW_DOWN
-        case .left: GHOSTTY_KEY_ARROW_LEFT
-        case .right: GHOSTTY_KEY_ARROW_RIGHT
-        case .function(let number): nativeFunctionKey(number)
-        case .character(let value): nativeCharacterKey(value.uppercased())
+        case .escape: "ESCAPE"
+        case .tab: "TAB"
+        case .enter: "ENTER"
+        case .backspace: "BACKSPACE"
+        case .delete: "DELETE"
+        case .insert: "INSERT"
+        case .home: "HOME"
+        case .end: "END"
+        case .pageUp: "PAGE_UP"
+        case .pageDown: "PAGE_DOWN"
+        case .up: "ARROW_UP"
+        case .down: "ARROW_DOWN"
+        case .left: "ARROW_LEFT"
+        case .right: "ARROW_RIGHT"
+        case .function(let number): "F\(number)"
+        case .character(let value): value.uppercased()
         }
-    }
-
-    private static func nativeFunctionKey(_ number: Int) -> GhosttyKey {
-        switch number {
-        case 1: GHOSTTY_KEY_F1
-        case 2: GHOSTTY_KEY_F2
-        case 3: GHOSTTY_KEY_F3
-        case 4: GHOSTTY_KEY_F4
-        case 5: GHOSTTY_KEY_F5
-        case 6: GHOSTTY_KEY_F6
-        case 7: GHOSTTY_KEY_F7
-        case 8: GHOSTTY_KEY_F8
-        case 9: GHOSTTY_KEY_F9
-        case 10: GHOSTTY_KEY_F10
-        case 11: GHOSTTY_KEY_F11
-        case 12: GHOSTTY_KEY_F12
-        default: GHOSTTY_KEY_UNIDENTIFIED
-        }
-    }
-
-    private static func nativeCharacterKey(_ value: String) -> GhosttyKey {
-        switch value {
-        case "A": GHOSTTY_KEY_A
-        case "B": GHOSTTY_KEY_B
-        case "C": GHOSTTY_KEY_C
-        case "D": GHOSTTY_KEY_D
-        case "E": GHOSTTY_KEY_E
-        case "F": GHOSTTY_KEY_F
-        case "G": GHOSTTY_KEY_G
-        case "H": GHOSTTY_KEY_H
-        case "I": GHOSTTY_KEY_I
-        case "J": GHOSTTY_KEY_J
-        case "K": GHOSTTY_KEY_K
-        case "L": GHOSTTY_KEY_L
-        case "M": GHOSTTY_KEY_M
-        case "N": GHOSTTY_KEY_N
-        case "O": GHOSTTY_KEY_O
-        case "P": GHOSTTY_KEY_P
-        case "Q": GHOSTTY_KEY_Q
-        case "R": GHOSTTY_KEY_R
-        case "S": GHOSTTY_KEY_S
-        case "T": GHOSTTY_KEY_T
-        case "U": GHOSTTY_KEY_U
-        case "V": GHOSTTY_KEY_V
-        case "W": GHOSTTY_KEY_W
-        case "X": GHOSTTY_KEY_X
-        case "Y": GHOSTTY_KEY_Y
-        case "Z": GHOSTTY_KEY_Z
-        case "0": GHOSTTY_KEY_DIGIT_0
-        case "1": GHOSTTY_KEY_DIGIT_1
-        case "2": GHOSTTY_KEY_DIGIT_2
-        case "3": GHOSTTY_KEY_DIGIT_3
-        case "4": GHOSTTY_KEY_DIGIT_4
-        case "5": GHOSTTY_KEY_DIGIT_5
-        case "6": GHOSTTY_KEY_DIGIT_6
-        case "7": GHOSTTY_KEY_DIGIT_7
-        case "8": GHOSTTY_KEY_DIGIT_8
-        case "9": GHOSTTY_KEY_DIGIT_9
-        case " ": GHOSTTY_KEY_SPACE
-        case "`": GHOSTTY_KEY_BACKQUOTE
-        case "\\": GHOSTTY_KEY_BACKSLASH
-        case "[": GHOSTTY_KEY_BRACKET_LEFT
-        case "]": GHOSTTY_KEY_BRACKET_RIGHT
-        case ",": GHOSTTY_KEY_COMMA
-        case "=": GHOSTTY_KEY_EQUAL
-        case "-": GHOSTTY_KEY_MINUS
-        case ".": GHOSTTY_KEY_PERIOD
-        case "'": GHOSTTY_KEY_QUOTE
-        case ";": GHOSTTY_KEY_SEMICOLON
-        case "/": GHOSTTY_KEY_SLASH
-        default: GHOSTTY_KEY_UNIDENTIFIED
-        }
-    }
-
-    private static func unshiftedCodepoint(_ key: TerminalKey) -> UInt32 {
-        guard case .character(let value) = key else { return 0 }
-        return value.lowercased().unicodeScalars.first?.value ?? 0
     }
 
     func isPasteSafe(_ text: String) -> Bool {
         guard !text.contains("\r") else { return false }
-        return text.withCString { ghostty_paste_is_safe($0, text.utf8.count) }
+        let utf8 = Array(text.utf8)
+        return utf8.withUnsafeBufferPointer { sc_paste_is_safe($0.baseAddress, $0.count) }
     }
 
     func encodePaste(_ text: String) throws -> Data {
-        lock.lock()
-        defer { lock.unlock() }
-
-        var mode = GhosttyTerminalModeConfig(mode: ghostty_mode_new(2004, false), value: false)
-        guard ghostty_terminal_get(terminal, GHOSTTY_TERMINAL_DATA_MODE, &mode) == GHOSTTY_SUCCESS else {
-            throw TerminalEngineError.pasteEncodingFailed
-        }
-
-        var input = text.utf8.map { CChar(bitPattern: $0) }
-        var output = [CChar](repeating: 0, count: input.count + 12)
-        var written = 0
-        let result = input.withUnsafeMutableBufferPointer { inputBuffer in
-            output.withUnsafeMutableBufferPointer { outputBuffer in
-                ghostty_paste_encode(
-                    inputBuffer.baseAddress,
-                    inputBuffer.count,
-                    mode.value,
-                    outputBuffer.baseAddress,
-                    outputBuffer.count,
-                    &written
-                )
-            }
-        }
-        guard result == GHOSTTY_SUCCESS else { throw TerminalEngineError.pasteEncodingFailed }
-        return output.withUnsafeBytes { Data($0.prefix(written)) }
+        let utf8 = Array(text.utf8)
+        guard let data = bytes({ out in
+            utf8.withUnsafeBufferPointer { sc_engine_encode_paste(engine, $0.baseAddress, $0.count, out) }
+        }) else { throw TerminalEngineError.pasteEncodingFailed }
+        return data
     }
+
+    // MARK: Scrolling
 
     func scrollViewport(byRows rows: Int) {
         guard rows != 0 else { return }
-        lock.lock()
-        defer { lock.unlock() }
-        var behavior = GhosttyTerminalScrollViewport()
-        behavior.tag = GHOSTTY_TERMINAL_SCROLL_VIEWPORT_DELTA
-        behavior.value.delta = rows
-        ghostty_terminal_scroll_viewport(terminal, behavior)
+        sc_engine_scroll(engine, Int32(clamping: rows))
     }
 
     /// Encodes a viewport scroll as input for applications that own scrolling
     /// (mouse tracking, or alternate screen with alternate scroll). Returns nil
     /// when the terminal's own scrollback should scroll instead.
     func encodeScrollInput(byRows rows: Int) -> Data? {
-        guard rows != 0 else { return nil }
-        let count = min(abs(rows), 10)
-        let down = rows > 0
-
-        lock.lock()
-        var tracking = false
-        var screen = GHOSTTY_TERMINAL_SCREEN_PRIMARY
-        var altScroll = GhosttyTerminalModeConfig(mode: ghostty_mode_new(1007, false), value: false)
-        var columns: UInt16 = 0
-        var termRows: UInt16 = 0
-        _ = ghostty_terminal_get(terminal, GHOSTTY_TERMINAL_DATA_MOUSE_TRACKING, &tracking)
-        _ = ghostty_terminal_get(terminal, GHOSTTY_TERMINAL_DATA_ACTIVE_SCREEN, &screen)
-        _ = ghostty_terminal_get(terminal, GHOSTTY_TERMINAL_DATA_MODE, &altScroll)
-        _ = ghostty_terminal_get(terminal, GHOSTTY_TERMINAL_DATA_COLS, &columns)
-        _ = ghostty_terminal_get(terminal, GHOSTTY_TERMINAL_DATA_ROWS, &termRows)
-
-        if tracking, columns > 0, termRows > 0 {
-            defer { lock.unlock() }
-            var encoder: GhosttyMouseEncoder?
-            var event: GhosttyMouseEvent?
-            guard ghostty_mouse_encoder_new(nil, &encoder) == GHOSTTY_SUCCESS, let encoder else { return nil }
-            defer { ghostty_mouse_encoder_free(encoder) }
-            guard ghostty_mouse_event_new(nil, &event) == GHOSTTY_SUCCESS, let event else { return nil }
-            defer { ghostty_mouse_event_free(event) }
-
-            _ = ghostty_mouse_encoder_set_from_terminal(encoder, terminal)
-            var size = GhosttyMouseEncoderSize(
-                size: MemoryLayout<GhosttyMouseEncoderSize>.size,
-                screen_width: UInt32(columns) * 10,
-                screen_height: UInt32(termRows) * 20,
-                cell_width: 10,
-                cell_height: 20,
-                padding_top: 0,
-                padding_bottom: 0,
-                padding_right: 0,
-                padding_left: 0
-            )
-            _ = ghostty_mouse_encoder_set(encoder, GHOSTTY_MOUSE_ENCODER_OPT_SIZE, &size)
-            ghostty_mouse_event_set_action(event, GHOSTTY_MOUSE_ACTION_PRESS)
-            ghostty_mouse_event_set_button(event, down ? GHOSTTY_MOUSE_BUTTON_FIVE : GHOSTTY_MOUSE_BUTTON_FOUR)
-            ghostty_mouse_event_set_mods(event, 0)
-            ghostty_mouse_event_set_position(
-                event,
-                GhosttyMousePosition(x: Float(columns) * 5, y: Float(termRows) * 10)
-            )
-
-            var buffer = [CChar](repeating: 0, count: 64)
-            var written = 0
-            let result = buffer.withUnsafeMutableBufferPointer {
-                ghostty_mouse_encoder_encode(encoder, event, $0.baseAddress, $0.count, &written)
-            }
-            guard result == GHOSTTY_SUCCESS, written > 0 else { return nil }
-            let single = Data(buffer.prefix(written).map { UInt8(bitPattern: $0) })
-            return (0..<count).reduce(into: Data()) { data, _ in data.append(single) }
-        }
-        lock.unlock()
-
-        guard screen == GHOSTTY_TERMINAL_SCREEN_ALTERNATE, altScroll.value else { return nil }
-        var data = Data()
-        for _ in 0..<count {
-            guard let arrow = try? encode(event: .key(down ? .down : .up)) else { return nil }
-            data.append(arrow)
-        }
+        guard rows != 0,
+              let data = bytes({ sc_engine_encode_scroll(engine, Int32(clamping: rows), $0) }),
+              !data.isEmpty else { return nil }
         return data
     }
 
     func scrollToBottom() {
-        lock.lock()
-        defer { lock.unlock() }
-        var behavior = GhosttyTerminalScrollViewport()
-        behavior.tag = GHOSTTY_TERMINAL_SCROLL_VIEWPORT_BOTTOM
-        ghostty_terminal_scroll_viewport(terminal, behavior)
+        sc_engine_scroll_to_bottom(engine)
     }
+
+    // MARK: Search and selection
 
     func search(_ query: String, direction: TerminalSearchDirection) -> Bool {
-        guard !query.isEmpty, query.utf8.count <= 1_024 else { return false }
-        lock.lock()
-        defer { lock.unlock() }
-
-        var totalRows: UInt = 0
-        var columns: UInt16 = 0
-        var scrollbar = GhosttyTerminalScrollbar()
-        guard ghostty_terminal_get(terminal, GHOSTTY_TERMINAL_DATA_TOTAL_ROWS, &totalRows) == GHOSTTY_SUCCESS,
-              ghostty_terminal_get(terminal, GHOSTTY_TERMINAL_DATA_COLS, &columns) == GHOSTTY_SUCCESS,
-              ghostty_terminal_get(terminal, GHOSTTY_TERMINAL_DATA_SCROLLBAR, &scrollbar) == GHOSTTY_SUCCESS,
-              totalRows > 0, columns > 0 else { return false }
-
-        let continuing = searchState.map {
-            $0.query.compare(query, options: .caseInsensitive) == .orderedSame
-        } ?? false
-        let current = continuing ? searchState?.match : nil
-        var first: SearchMatch?
-        var last: SearchMatch?
-        var previous: SearchMatch?
-        var next: SearchMatch?
-        var foundCurrent = false
-        var viewportPrevious: SearchMatch?
-        var viewportNext: SearchMatch?
-        var logicalLine = SearchableLine()
-
-        func consume(_ match: SearchMatch) {
-            if first == nil { first = match }
-            last = match
-            if match.start.row <= Int(scrollbar.offset) { viewportPrevious = match }
-            if viewportNext == nil, match.start.row >= Int(scrollbar.offset) { viewportNext = match }
-            guard let current else { return }
-            if match == current { foundCurrent = true }
-            else if foundCurrent {
-                if next == nil { next = match }
-            } else {
-                previous = match
-            }
+        guard !query.isEmpty else { return false }
+        let utf8 = Array(query.utf8)
+        let result = utf8.withUnsafeBufferPointer {
+            sc_engine_search(engine, $0.baseAddress, $0.count, direction == .previous ? -1 : 1)
         }
-
-        func consumeMatches(in line: SearchableLine) {
-            let source = line.text as NSString
-            guard source.length > 0 else { return }
-            var location = 0
-            while location < source.length {
-                let range = source.range(
-                    of: query,
-                    options: .caseInsensitive,
-                    range: NSRange(location: location, length: source.length - location)
-                )
-                guard range.location != NSNotFound, range.length > 0,
-                      range.location < line.utf16Cells.count,
-                      range.location + range.length <= line.utf16Cells.count else { return }
-                consume(SearchMatch(
-                    start: line.utf16Cells[range.location],
-                    end: line.utf16Cells[range.location + range.length - 1]
-                ))
-                location = range.location + 1
-            }
-        }
-
-        for row in 0..<Int(totalRows) {
-            for column in 0..<Int(columns) {
-                guard var reference = screenReference(column: column, row: row) else { continue }
-                var cell: GhosttyCell = 0
-                var wide = GHOSTTY_CELL_WIDE_NARROW
-                guard ghostty_grid_ref_cell(&reference, &cell) == GHOSTTY_SUCCESS else { continue }
-                _ = ghostty_cell_get(cell, GHOSTTY_CELL_DATA_WIDE, &wide)
-                if wide == GHOSTTY_CELL_WIDE_SPACER_TAIL { continue }
-
-                var count = 0
-                var value = ""
-                if ghostty_grid_ref_graphemes(&reference, nil, 0, &count) == GHOSTTY_OUT_OF_SPACE,
-                   count > 0 {
-                    var codepoints = [UInt32](repeating: 0, count: count)
-                    let result = codepoints.withUnsafeMutableBufferPointer { buffer in
-                        ghostty_grid_ref_graphemes(&reference, buffer.baseAddress, buffer.count, &count)
-                    }
-                    if result == GHOSTTY_SUCCESS {
-                        for codepoint in codepoints.prefix(count) {
-                            if let scalar = UnicodeScalar(codepoint) { value.unicodeScalars.append(scalar) }
-                        }
-                    }
-                }
-                logicalLine.append(value.isEmpty ? " " : value, at: SearchPosition(row: row, column: column))
-            }
-            if !rowWraps(row: row) || row + 1 == Int(totalRows) {
-                consumeMatches(in: logicalLine)
-                logicalLine = SearchableLine()
-            }
-        }
-
-        guard let selected: SearchMatch = {
-            if continuing, foundCurrent {
-                return direction == .previous ? (previous ?? last) : (next ?? first)
-            }
-            return direction == .previous ? (viewportPrevious ?? last) : (viewportNext ?? first)
-        }() else { return false }
-
-        guard let start = screenReference(column: selected.start.column, row: selected.start.row),
-              let end = screenReference(column: selected.end.column, row: selected.end.row) else { return false }
-        var selection = GhosttySelection()
-        selection.start = start
-        selection.end = end
-        guard ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_SELECTION, &selection) == GHOSTTY_SUCCESS else {
-            return false
-        }
-        searchState = SearchState(query: query, match: selected)
-
-        var behavior = GhosttyTerminalScrollViewport()
-        behavior.tag = GHOSTTY_TERMINAL_SCROLL_VIEWPORT_ROW
-        behavior.value.row = max(0, selected.start.row - Int(scrollbar.len / 3))
-        ghostty_terminal_scroll_viewport(terminal, behavior)
-        return true
-    }
-
-    private func screenReference(column: Int, row: Int) -> GhosttyGridRef? {
-        var point = GhosttyPoint()
-        point.tag = GHOSTTY_POINT_TAG_SCREEN
-        point.value.coordinate = GhosttyPointCoordinate(
-            x: UInt16(clamping: column),
-            y: UInt32(clamping: row)
-        )
-        var reference = GhosttyGridRef()
-        return ghostty_terminal_grid_ref(terminal, point, &reference) == GHOSTTY_SUCCESS ? reference : nil
-    }
-
-    private func rowWraps(row: Int) -> Bool {
-        guard var reference = screenReference(column: 0, row: row) else { return false }
-        var nativeRow: GhosttyRow = 0
-        var wraps = false
-        return ghostty_grid_ref_row(&reference, &nativeRow) == GHOSTTY_SUCCESS
-            && ghostty_row_get(nativeRow, GHOSTTY_ROW_DATA_WRAP, &wraps) == GHOSTTY_SUCCESS
-            && wraps
+        return result == 1
     }
 
     func selectWord(column: Int, row: Int) -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-
-        var point = GhosttyPoint()
-        point.tag = GHOSTTY_POINT_TAG_VIEWPORT
-        point.value.coordinate = GhosttyPointCoordinate(
-            x: UInt16(clamping: max(0, column)),
-            y: UInt32(clamping: max(0, row))
-        )
-        var ref = GhosttyGridRef()
-        guard ghostty_terminal_grid_ref(terminal, point, &ref) == GHOSTTY_SUCCESS else { return false }
-
-        var options = GhosttyTerminalSelectWordOptions()
-        options.size = MemoryLayout<GhosttyTerminalSelectWordOptions>.size
-        options.ref = ref
-        var selection = GhosttySelection()
-        guard ghostty_terminal_select_word(terminal, &options, &selection) == GHOSTTY_SUCCESS,
-              ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_SELECTION, &selection) == GHOSTTY_SUCCESS else {
-            return false
-        }
-        return true
+        sc_engine_select_word(engine, Int32(clamping: column), Int32(clamping: row)) == 1
     }
 
     func setSelectionEndpoint(start: Bool, column: Int, row: Int) -> Bool {
-        guard column >= 0, row >= 0 else { return false }
-        lock.lock()
-        defer { lock.unlock() }
-
-        var selection = GhosttySelection()
-        guard ghostty_terminal_get(terminal, GHOSTTY_TERMINAL_DATA_SELECTION, &selection) == GHOSTTY_SUCCESS,
-              let reference = gridReference(column: column, row: row) else { return false }
-        if start { selection.start = reference }
-        else { selection.end = reference }
-        return ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_SELECTION, &selection) == GHOSTTY_SUCCESS
+        sc_engine_set_selection_endpoint(engine, start, Int32(clamping: column), Int32(clamping: row)) == 1
     }
 
     func selectRange(startColumn: Int, endColumn: Int, row: Int) -> Bool {
-        guard startColumn >= 0, endColumn >= startColumn, row >= 0 else { return false }
-        lock.lock()
-        defer { lock.unlock() }
-
-        guard let start = gridReference(column: startColumn, row: row),
-              let end = gridReference(column: endColumn, row: row) else { return false }
-        var selection = GhosttySelection()
-        selection.start = start
-        selection.end = end
-        return ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_SELECTION, &selection) == GHOSTTY_SUCCESS
+        sc_engine_select_range(
+            engine,
+            Int32(clamping: startColumn),
+            Int32(clamping: endColumn),
+            Int32(clamping: row)
+        ) == 1
     }
 
     func selectOutput(column: Int, row: Int) -> Bool {
-        guard column >= 0, row >= 0 else { return false }
-        lock.lock()
-        defer { lock.unlock() }
-
-        guard var ref = gridReference(column: column, row: row) else { return false }
-        var selection = GhosttySelection()
-        guard ghostty_terminal_select_output(terminal, &ref, &selection) == GHOSTTY_SUCCESS else { return false }
-        return ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_SELECTION, &selection) == GHOSTTY_SUCCESS
+        sc_engine_select_output(engine, Int32(clamping: column), Int32(clamping: row)) == 1
     }
 
     func hyperlink(column: Int, row: Int) -> String? {
-        guard column >= 0, row >= 0 else { return nil }
-        lock.lock()
-        defer { lock.unlock() }
-
-        guard var ref = gridReference(column: column, row: row) else { return nil }
-        var required = 0
-        let query = ghostty_grid_ref_hyperlink_uri(&ref, nil, 0, &required)
-        guard query == GHOSTTY_OUT_OF_SPACE, required > 0, required <= 1024 else { return nil }
-        var bytes = [UInt8](repeating: 0, count: required)
-        var written = 0
-        let result = bytes.withUnsafeMutableBufferPointer { buffer in
-            ghostty_grid_ref_hyperlink_uri(&ref, buffer.baseAddress, buffer.count, &written)
-        }
-        guard result == GHOSTTY_SUCCESS, written <= bytes.count else { return nil }
-        return String(bytes: bytes.prefix(written), encoding: .utf8)
-    }
-
-    private func gridReference(column: Int, row: Int) -> GhosttyGridRef? {
-        var point = GhosttyPoint()
-        point.tag = GHOSTTY_POINT_TAG_VIEWPORT
-        point.value.coordinate = GhosttyPointCoordinate(
-            x: UInt16(clamping: column),
-            y: UInt32(clamping: row)
-        )
-        var ref = GhosttyGridRef()
-        return ghostty_terminal_grid_ref(terminal, point, &ref) == GHOSTTY_SUCCESS ? ref : nil
+        guard let data = bytes({ sc_engine_hyperlink(engine, Int32(clamping: column), Int32(clamping: row), $0) }),
+              !data.isEmpty, data.count <= Self.maximumHyperlinkBytes else { return nil }
+        return String(data: data, encoding: .utf8)
     }
 
     func clearSelection() {
-        lock.lock()
-        defer { lock.unlock() }
-        ghostty_terminal_set(terminal, GHOSTTY_TERMINAL_OPT_SELECTION, nil)
+        _ = sc_engine_clear_selection(engine)
     }
 
     func selectedText() -> String {
-        lock.lock()
-        defer { lock.unlock() }
-        var selection = GhosttySelection()
-        guard ghostty_terminal_get(terminal, GHOSTTY_TERMINAL_DATA_SELECTION, &selection) == GHOSTTY_SUCCESS else {
-            return ""
-        }
-        var selectionFormatter: GhosttyFormatter?
-        guard ghostty_formatter_terminal_new(nil, &selectionFormatter, terminal) == GHOSTTY_SUCCESS,
-              let selectionFormatter else { return "" }
-        defer { ghostty_formatter_free(selectionFormatter) }
-        var unwrap = true
-        var trim = true
-        _ = ghostty_formatter_set(selectionFormatter, GHOSTTY_FORMATTER_OPT_UNWRAP, &unwrap)
-        _ = ghostty_formatter_set(selectionFormatter, GHOSTTY_FORMATTER_OPT_TRIM, &trim)
-        guard ghostty_formatter_set(selectionFormatter, GHOSTTY_FORMATTER_OPT_SELECTION, &selection) == GHOSTTY_SUCCESS else {
-            return ""
-        }
-        var buffer: UnsafeMutablePointer<UInt8>?
-        var length = 0
-        guard ghostty_formatter_format_alloc(selectionFormatter, nil, &buffer, &length) == GHOSTTY_SUCCESS,
-              let buffer else { return "" }
-        defer { ghostty_free(nil, buffer, length) }
-        return String(decoding: UnsafeBufferPointer(start: buffer, count: length), as: UTF8.self)
+        guard let data = bytes({ sc_engine_selected_text(engine, $0) }) else { return "" }
+        return String(decoding: data, as: UTF8.self)
     }
 
     func visibleText() -> String {
-        lock.lock()
-        defer { lock.unlock() }
-        var buffer: UnsafeMutablePointer<UInt8>?
-        var length = 0
-        guard ghostty_formatter_format_alloc(formatter, nil, &buffer, &length) == GHOSTTY_SUCCESS,
-              let buffer else {
-            return ""
-        }
-        defer { ghostty_free(nil, buffer, length) }
-        return String(decoding: UnsafeBufferPointer(start: buffer, count: length), as: UTF8.self)
+        guard let data = bytes({ sc_engine_plain_text(engine, $0) }) else { return "" }
+        return String(decoding: data, as: UTF8.self)
     }
+
+    // MARK: Snapshot
 
     func snapshot() throws -> TerminalSnapshot {
         lock.lock()
         defer { lock.unlock() }
-
-        guard ghostty_render_state_update(renderState, terminal) == GHOSTTY_SUCCESS else {
+        guard let data = bytes({ sc_engine_snapshot(engine, true, $0) }) else {
             throw TerminalEngineError.snapshotFailed
         }
-
-        var columns: UInt16 = 0
-        var rows: UInt16 = 0
-        var foreground = GhosttyColorRgb()
-        var background = GhosttyColorRgb()
-        var scrollbar = GhosttyTerminalScrollbar()
-        var viewportActive = true
-        var selection = GhosttySelection()
-        guard ghostty_render_state_get(renderState, GHOSTTY_RENDER_STATE_DATA_COLS, &columns) == GHOSTTY_SUCCESS,
-              ghostty_render_state_get(renderState, GHOSTTY_RENDER_STATE_DATA_ROWS, &rows) == GHOSTTY_SUCCESS,
-              ghostty_render_state_get(renderState, GHOSTTY_RENDER_STATE_DATA_COLOR_FOREGROUND, &foreground) == GHOSTTY_SUCCESS,
-              ghostty_render_state_get(renderState, GHOSTTY_RENDER_STATE_DATA_COLOR_BACKGROUND, &background) == GHOSTTY_SUCCESS,
-              ghostty_terminal_get(terminal, GHOSTTY_TERMINAL_DATA_SCROLLBAR, &scrollbar) == GHOSTTY_SUCCESS,
-              ghostty_terminal_get(terminal, GHOSTTY_TERMINAL_DATA_VIEWPORT_ACTIVE, &viewportActive) == GHOSTTY_SUCCESS else {
-            throw TerminalEngineError.snapshotFailed
-        }
-        let selectionResult = ghostty_terminal_get(terminal, GHOSTTY_TERMINAL_DATA_SELECTION, &selection)
-        guard selectionResult == GHOSTTY_SUCCESS || selectionResult == GHOSTTY_NO_VALUE else {
-            throw TerminalEngineError.snapshotFailed
-        }
-        let selectionEndpoints: TerminalSelectionEndpoints? = selectionResult == GHOSTTY_SUCCESS
-            ? TerminalSelectionEndpoints(
-                start: viewportSelectionPoint(selection.start),
-                end: viewportSelectionPoint(selection.end)
+        var endpoints: TerminalSelectionEndpoints?
+        if sc_engine_has_selection(engine) {
+            var points: [Int32] = [-1, -1, -1, -1]
+            sc_engine_selection_endpoints(engine, &points)
+            func point(_ column: Int32, _ row: Int32) -> TerminalSelectionPoint? {
+                column < 0 || row < 0 ? nil : TerminalSelectionPoint(column: Int(column), row: Int(row))
+            }
+            endpoints = TerminalSelectionEndpoints(
+                start: point(points[0], points[1]),
+                end: point(points[2], points[3])
             )
-            : nil
-
-        var nativeTitle = GhosttyString()
-        let titleResult = ghostty_terminal_get(terminal, GHOSTTY_TERMINAL_DATA_TITLE, &nativeTitle)
-        guard titleResult == GHOSTTY_SUCCESS || titleResult == GHOSTTY_NO_VALUE else {
-            throw TerminalEngineError.snapshotFailed
         }
-        var nativeWorkingDirectory = GhosttyString()
-        let workingDirectoryResult = ghostty_terminal_get(terminal, GHOSTTY_TERMINAL_DATA_PWD, &nativeWorkingDirectory)
-        guard workingDirectoryResult == GHOSTTY_SUCCESS || workingDirectoryResult == GHOSTTY_NO_VALUE else {
-            throw TerminalEngineError.snapshotFailed
-        }
-        let title = titleResult == GHOSTTY_SUCCESS ? Self.metadataString(nativeTitle) : nil
-        let workingDirectory = workingDirectoryResult == GHOSTTY_SUCCESS
-            ? Self.metadataString(nativeWorkingDirectory)
-            : nil
+        return try Self.parseSnapshot(data, selectionEndpoints: endpoints)
+    }
 
-        var cursorColor = foreground
-        var hasCursorColor = false
-        if ghostty_render_state_get(renderState, GHOSTTY_RENDER_STATE_DATA_COLOR_CURSOR_HAS_VALUE, &hasCursorColor) == GHOSTTY_SUCCESS,
-           hasCursorColor {
-            guard ghostty_render_state_get(renderState, GHOSTTY_RENDER_STATE_DATA_COLOR_CURSOR, &cursorColor) == GHOSTTY_SUCCESS else {
-                throw TerminalEngineError.snapshotFailed
-            }
-        }
+    // MARK: Helpers
 
-        var nativeCursor = GhosttyRenderStateCursor()
-        nativeCursor.size = MemoryLayout<GhosttyRenderStateCursor>.size
-        guard ghostty_render_state_get(renderState, GHOSTTY_RENDER_STATE_DATA_CURSOR, &nativeCursor) == GHOSTTY_SUCCESS else {
-            throw TerminalEngineError.snapshotFailed
-        }
+    private static func dimension(_ value: Int) -> UInt16 {
+        UInt16(clamping: max(1, value))
+    }
 
-        var iterator = rowIterator
-        guard ghostty_render_state_get(renderState, GHOSTTY_RENDER_STATE_DATA_ROW_ITERATOR, &iterator) == GHOSTTY_SUCCESS else {
-            throw TerminalEngineError.snapshotFailed
-        }
+    /// Runs a core call that fills an `ScBytes` and returns its contents, or nil on failure.
+    private func bytes(_ call: (UnsafeMutablePointer<ScBytes>) -> Int32) -> Data? {
+        var out = ScBytes(ptr: nil, len: 0)
+        guard call(&out) >= 0 else { return nil }
+        defer { sc_bytes_free(out.ptr, out.len) }
+        guard let pointer = out.ptr, out.len > 0 else { return Data() }
+        return Data(bytes: pointer, count: out.len)
+    }
+}
 
-        let defaultForeground = Self.color(foreground)
-        let defaultBackground = Self.color(background)
+// MARK: - Wire formats
+
+/// Reads the little-endian int32 stream the core produces.
+private struct WireReader {
+    private let data: Data
+    private var offset = 0
+
+    init(_ data: Data) { self.data = data }
+
+    var isAtEnd: Bool { offset == data.count }
+
+    mutating func int32() throws -> Int32 {
+        guard data.count - offset >= 4 else { throw TerminalEngineError.snapshotFailed }
+        let base = data.startIndex + offset
+        let value = UInt32(data[base])
+            | UInt32(data[base + 1]) << 8
+            | UInt32(data[base + 2]) << 16
+            | UInt32(data[base + 3]) << 24
+        offset += 4
+        return Int32(bitPattern: value)
+    }
+
+    mutating func bytes() throws -> Data {
+        let length = Int(try int32())
+        guard length >= 0, data.count - offset >= length else { throw TerminalEngineError.snapshotFailed }
+        let start = data.startIndex + offset
+        offset += length
+        return data.subdata(in: start..<start + length)
+    }
+
+    mutating func string() throws -> String {
+        String(decoding: try bytes(), as: UTF8.self)
+    }
+}
+
+private extension GhosttyTerminalEngine {
+    static let snapshotMagic: Int32 = 0x4756_5431
+
+    static func parseSnapshot(_ data: Data, selectionEndpoints: TerminalSelectionEndpoints?) throws -> TerminalSnapshot {
+        var reader = WireReader(data)
+        guard try reader.int32() == snapshotMagic else { throw TerminalEngineError.snapshotFailed }
+        let columns = Int(try reader.int32())
+        let rows = Int(try reader.int32())
+        guard columns > 0, rows > 0, columns <= 4_096, rows <= 4_096 else { throw TerminalEngineError.snapshotFailed }
+        let background = color(try reader.int32())
+        let foreground = color(try reader.int32())
+        let cursorColor = color(try reader.int32())
+        let cursorColumn = Int(try reader.int32())
+        let cursorRow = Int(try reader.int32())
+        let cursorStyleCode = Int(try reader.int32())
+        let scrollTotal = max(0, Int(try reader.int32()))
+        let scrollOffset = max(0, Int(try reader.int32()))
+        let scrollVisible = max(0, Int(try reader.int32()))
+        let cursorFlags = try reader.int32()
+        let title = metadata(try reader.bytes())
+        let workingDirectory = metadata(try reader.bytes())
+        _ = try reader.int32() // dirty state; a full snapshot always lists every row
+        let rowCount = Int(try reader.int32())
+        guard rowCount == rows else { throw TerminalEngineError.snapshotFailed }
+
         var cells: [TerminalCell] = []
-        cells.reserveCapacity(Int(columns) * Int(rows))
-
-        while ghostty_render_state_row_iterator_next(rowIterator) {
-            var nativeCells = rowCells
-            guard ghostty_render_state_row_get(rowIterator, GHOSTTY_RENDER_STATE_ROW_DATA_CELLS, &nativeCells) == GHOSTTY_SUCCESS else {
-                throw TerminalEngineError.snapshotFailed
-            }
-
-            while ghostty_render_state_row_cells_next(rowCells) {
-                cells.append(try snapshotCell(
-                    defaultForeground: defaultForeground,
-                    defaultBackground: defaultBackground
+        cells.reserveCapacity(columns * rows)
+        for expectedRow in 0..<rows {
+            guard Int(try reader.int32()) == expectedRow else { throw TerminalEngineError.snapshotFailed }
+            for _ in 0..<columns {
+                let cellForeground = color(try reader.int32())
+                let cellBackground = color(try reader.int32())
+                let flags = Int(try reader.int32())
+                _ = try reader.int32() // underline color
+                let text = try reader.string()
+                let invisible = flags & 32 != 0
+                cells.append(TerminalCell(
+                    text: invisible ? "" : text,
+                    foreground: cellForeground,
+                    background: cellBackground,
+                    bold: flags & 1 != 0,
+                    italic: flags & 2 != 0,
+                    faint: flags & 4 != 0,
+                    underline: underline(flags >> 8 & 0x7),
+                    strikethrough: flags & 16 != 0,
+                    overline: flags & 128 != 0,
+                    blinking: flags & 8 != 0,
+                    invisible: invisible,
+                    selected: flags & 64 != 0
                 ))
             }
         }
+        guard reader.isAtEnd else { throw TerminalEngineError.snapshotFailed }
 
-        guard cells.count == Int(columns) * Int(rows) else {
-            throw TerminalEngineError.snapshotFailed
-        }
-
-        let cursor: TerminalCursor? = nativeCursor.viewport_has_value
+        let cursor: TerminalCursor? = cursorColumn >= 0 && cursorRow >= 0
             ? TerminalCursor(
-                column: Int(nativeCursor.viewport_x),
-                row: Int(nativeCursor.viewport_y),
-                visible: nativeCursor.visible,
-                blinking: nativeCursor.blinking,
-                style: Self.cursorStyle(nativeCursor.visual_style)
+                column: cursorColumn,
+                row: cursorRow,
+                visible: cursorStyleCode > 0,
+                blinking: cursorFlags & 1 != 0,
+                style: cursorStyle(cursorStyleCode - 1)
             )
             : nil
-
         return TerminalSnapshot(
-            columns: Int(columns),
-            rows: Int(rows),
-            foreground: defaultForeground,
-            background: defaultBackground,
-            cursorColor: Self.color(cursorColor),
+            columns: columns,
+            rows: rows,
+            foreground: foreground,
+            background: background,
+            cursorColor: cursorColor,
             cells: cells,
             cursor: cursor,
             viewport: TerminalViewport(
-                totalRows: scrollbar.total,
-                offset: scrollbar.offset,
-                visibleRows: scrollbar.len,
-                isAtBottom: viewportActive
+                totalRows: UInt64(scrollTotal),
+                offset: UInt64(scrollOffset),
+                visibleRows: UInt64(scrollVisible),
+                isAtBottom: scrollOffset + scrollVisible >= scrollTotal
             ),
-            hasSelection: selectionResult == GHOSTTY_SUCCESS,
+            hasSelection: selectionEndpoints != nil,
             title: title,
             workingDirectory: workingDirectory,
             selectionEndpoints: selectionEndpoints
         )
     }
 
-    private static func metadataString(_ value: GhosttyString) -> String? {
-        guard value.len > 0,
-              value.len <= maximumMetadataBytes,
-              let pointer = value.ptr else { return nil }
-        return String(data: Data(bytes: pointer, count: value.len), encoding: .utf8)
+    static func metadata(_ data: Data) -> String? {
+        guard !data.isEmpty, data.count <= maximumMetadataBytes else { return nil }
+        return String(data: data, encoding: .utf8)
     }
 
-    private func viewportSelectionPoint(_ reference: GhosttyGridRef) -> TerminalSelectionPoint? {
-        var reference = reference
-        var coordinate = GhosttyPointCoordinate()
-        guard ghostty_terminal_point_from_grid_ref(
-            terminal,
-            &reference,
-            GHOSTTY_POINT_TAG_VIEWPORT,
-            &coordinate
-        ) == GHOSTTY_SUCCESS else { return nil }
-        return TerminalSelectionPoint(column: Int(coordinate.x), row: Int(coordinate.y))
-    }
-
-    private func snapshotCell(
-        defaultForeground: TerminalColor,
-        defaultBackground: TerminalColor
-    ) throws -> TerminalCell {
-        var graphemeLength: UInt32 = 0
-        var style = GhosttyStyle()
-        var selected = false
-        guard ghostty_render_state_row_cells_get(rowCells, GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_GRAPHEMES_LEN, &graphemeLength) == GHOSTTY_SUCCESS,
-              ghostty_render_state_row_cells_get(rowCells, GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_STYLE, &style) == GHOSTTY_SUCCESS,
-              ghostty_render_state_row_cells_get(rowCells, GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_SELECTED, &selected) == GHOSTTY_SUCCESS else {
-            throw TerminalEngineError.snapshotFailed
-        }
-
-        var text = ""
-        if graphemeLength > 0 {
-            var codepoints = [UInt32](repeating: 0, count: Int(graphemeLength))
-            let result = codepoints.withUnsafeMutableBufferPointer { buffer in
-                var native = GhosttyCodepointBuffer(ptr: buffer.baseAddress, cap: buffer.count, len: 0)
-                return ghostty_render_state_row_cells_get(
-                    rowCells,
-                    GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_GRAPHEMES_BUF,
-                    &native
-                )
-            }
-            guard result == GHOSTTY_SUCCESS else { throw TerminalEngineError.snapshotFailed }
-            for codepoint in codepoints {
-                guard let scalar = UnicodeScalar(codepoint) else { continue }
-                text.unicodeScalars.append(scalar)
-            }
-        }
-
-        var nativeForeground = GhosttyColorRgb()
-        var nativeBackground = GhosttyColorRgb()
-        let foregroundResult = ghostty_render_state_row_cells_get(
-            rowCells,
-            GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_FG_COLOR,
-            &nativeForeground
-        )
-        let backgroundResult = ghostty_render_state_row_cells_get(
-            rowCells,
-            GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_BG_COLOR,
-            &nativeBackground
-        )
-        guard foregroundResult == GHOSTTY_SUCCESS || foregroundResult == GHOSTTY_INVALID_VALUE || foregroundResult == GHOSTTY_NO_VALUE,
-              backgroundResult == GHOSTTY_SUCCESS || backgroundResult == GHOSTTY_INVALID_VALUE || backgroundResult == GHOSTTY_NO_VALUE else {
-            throw TerminalEngineError.snapshotFailed
-        }
-
-        var cellForeground = foregroundResult == GHOSTTY_SUCCESS ? Self.color(nativeForeground) : defaultForeground
-        var cellBackground = backgroundResult == GHOSTTY_SUCCESS ? Self.color(nativeBackground) : defaultBackground
-        let flags = style.flags
-        func has(_ bit: UInt16) -> Bool { flags & bit != 0 }
-        let invisible = has(1 << 5)
-        if has(1 << 4) {
-            swap(&cellForeground, &cellBackground)
-        }
-
-        return TerminalCell(
-            text: invisible ? "" : text,
-            foreground: cellForeground,
-            background: cellBackground,
-            bold: has(1 << 0),
-            italic: has(1 << 1),
-            faint: has(1 << 2),
-            underline: Self.underline(Int((flags >> 8) & 0x7)),
-            strikethrough: has(1 << 6),
-            overline: has(1 << 7),
-            blinking: has(1 << 3),
-            invisible: invisible,
-            selected: selected
-        )
-    }
-
-    private static func color(_ color: GhosttyColorRgb) -> TerminalColor {
-        TerminalColor(red: color.r, green: color.g, blue: color.b)
-    }
-
-    private static func underline(_ value: Int) -> TerminalUnderline {
+    /// libghostty's SGR underline values.
+    static func underline(_ value: Int) -> TerminalUnderline {
         switch value {
-        case Int(GHOSTTY_SGR_UNDERLINE_SINGLE.rawValue): .single
-        case Int(GHOSTTY_SGR_UNDERLINE_DOUBLE.rawValue): .double
-        case Int(GHOSTTY_SGR_UNDERLINE_CURLY.rawValue): .curly
-        case Int(GHOSTTY_SGR_UNDERLINE_DOTTED.rawValue): .dotted
-        case Int(GHOSTTY_SGR_UNDERLINE_DASHED.rawValue): .dashed
+        case 1: .single
+        case 2: .double
+        case 3: .curly
+        case 4: .dotted
+        case 5: .dashed
         default: .none
         }
     }
 
-    private static func cursorStyle(_ value: GhosttyCursorStyle) -> TerminalCursorStyle {
+    /// libghostty's cursor style values.
+    static func cursorStyle(_ value: Int) -> TerminalCursorStyle {
         switch value {
-        case GHOSTTY_CURSOR_STYLE_BAR: .bar
-        case GHOSTTY_CURSOR_STYLE_UNDERLINE: .underline
-        case GHOSTTY_CURSOR_STYLE_BLOCK_HOLLOW: .hollowBlock
+        case 0: .bar
+        case 2: .underline
+        case 3: .hollowBlock
         default: .block
         }
     }
 
-    private static func dimension(_ value: Int) -> UInt16 {
-        UInt16(clamping: max(1, value))
+    static func color(_ argb: Int32) -> TerminalColor {
+        let value = UInt32(bitPattern: argb)
+        return TerminalColor(red: UInt8(value >> 16 & 0xff), green: UInt8(value >> 8 & 0xff), blue: UInt8(value & 0xff))
+    }
+
+    static func parseEffects(_ data: Data) throws -> TerminalEffects {
+        var reader = WireReader(data)
+        var effects = TerminalEffects()
+        effects.bells = Int(try reader.int32())
+        let progressState = try reader.int32()
+        let progressValue = try reader.int32()
+        _ = try reader.int32() // unknown sequence count
+        _ = try reader.int32() // VT processing error
+        effects.ptyWrite = try reader.bytes()
+        for _ in 0..<Int(try reader.int32()) {
+            let kind = try reader.int32()
+            let text = try reader.bytes()
+            if kind == 0 {
+                effects.clipboardWrites.append(.clear)
+            } else if let string = String(data: text, encoding: .utf8) {
+                effects.clipboardWrites.append(.text(string))
+            }
+        }
+        for _ in 0..<Int(try reader.int32()) {
+            let title = try reader.string()
+            let body = try reader.string()
+            effects.notifications.append(TerminalRemoteNotification(title: title, body: body))
+        }
+        let state: TerminalProgressState?
+        switch progressState {
+        case 0: state = .remove
+        case 1: state = .set
+        case 2: state = .error
+        case 3: state = .indeterminate
+        case 4: state = .paused
+        default: state = nil
+        }
+        if let state {
+            effects.progress = TerminalProgressReport(
+                state: state,
+                percent: (0...100).contains(Int(progressValue)) ? Int(progressValue) : nil
+            )
+        }
+        return effects
     }
 }
 #endif

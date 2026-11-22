@@ -60,6 +60,19 @@ class GhosttyTerminal(
         return nativeEncodeKey(handle, key, text, modifiers, action)
     }
 
+    /**
+     * Terminal input for a scroll gesture, or an empty array when the app should scroll its local
+     * scrollback instead. [rows] is positive when content moves down (towards newer output).
+     * With mouse tracking on this is wheel events; on the alternate screen with alternate-scroll
+     * mode (DEC 1007) and no mouse tracking it is Up/Down arrows, which is how full-screen
+     * programs such as herdr scroll.
+     */
+    fun encodeScrollInput(rows: Int): ByteArray {
+        if (rows == 0) return ByteArray(0)
+        check(handle != 0L) { "Ghostty terminal is closed" }
+        return nativeEncodeScroll(handle, rows)
+    }
+
     fun isPasteSafe(text: String): Boolean = nativePasteIsSafe(text)
 
     fun encodePaste(text: String): ByteArray {
@@ -117,16 +130,35 @@ class GhosttyTerminal(
 
     fun drainEffects(): TerminalEffects {
         val input = ByteBuffer.wrap(nativeDrainEffects(handle)).order(ByteOrder.LITTLE_ENDIAN)
+        val bells = input.int
+        val progressState = input.int
+        val progress = input.int
+        val unknownSequences = input.int
+        val processingError = input.int != 0
+        val ptyWrite = readBytes(input)
+        // The core queues writes; the app acts on the most recent one.
+        var clipboard = ""
+        repeat(input.int) {
+            val kind = input.int
+            val text = readString(input)
+            clipboard = if (kind == EFFECT_CLIPBOARD_TEXT) text else ""
+        }
+        var notificationTitle = ""
+        var notificationBody = ""
+        repeat(input.int) {
+            notificationTitle = readString(input)
+            notificationBody = readString(input)
+        }
         return TerminalEffects(
-            bells = input.int,
-            progressState = input.int,
-            progress = input.int,
-            clipboard = readString(input),
-            notificationTitle = readString(input),
-            notificationBody = readString(input),
-            unknownSequences = input.int,
-            processingError = input.int != 0,
-            ptyWrite = readBytes(input),
+            bells = bells,
+            progressState = progressState,
+            progress = progress,
+            clipboard = clipboard,
+            notificationTitle = notificationTitle,
+            notificationBody = notificationBody,
+            unknownSequences = unknownSequences,
+            processingError = processingError,
+            ptyWrite = ptyWrite,
         )
     }
 
@@ -372,6 +404,7 @@ class GhosttyTerminal(
     private external fun nativeSnapshot(handle: Long): ByteArray
     private external fun nativeScroll(handle: Long, deltaRows: Int)
     private external fun nativeScrollToBottom(handle: Long)
+    private external fun nativeEncodeScroll(handle: Long, rows: Int): ByteArray
     private external fun nativeEncodeKey(handle: Long, key: String, text: String, modifiers: Int, action: Int): ByteArray
     private external fun nativePasteIsSafe(text: String): Boolean
     private external fun nativeEncodePaste(handle: Long, text: String): ByteArray
@@ -413,6 +446,7 @@ class GhosttyTerminal(
         private const val GHOSTTY_REVISION = "9ae02a326f62bd88f7f5508cf1807c67e7775cb5"
         private const val MAX_SAVED_STATE_SIZE = 32 * 1024 * 1024
         private const val DIRTY_FULL = 2
+        private const val EFFECT_CLIPBOARD_TEXT = 1
         const val KEY_ACTION_RELEASE = 0
         const val KEY_ACTION_PRESS = 1
         const val KEY_ACTION_REPEAT = 2

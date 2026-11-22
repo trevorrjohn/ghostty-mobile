@@ -3,5 +3,9 @@
     .version = "0.1.0",
     .minimum_zig_version = "0.17.1",
     .fingerprint = 0xa71da79cb95a4c9c,
+    .dependencies = .{
+        // libghostty-vt, built from source (the same submodule the Android app pins).
+        .ghostty = .{ .path = "../android/third_party/ghostty" },
+    },
     .paths = .{ "build.zig", "build.zig.zon", "src", "include" },
 }

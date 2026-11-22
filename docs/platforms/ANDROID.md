@@ -19,7 +19,7 @@ This document maps the shared [architecture](../ARCHITECTURE.md) to Android and 
 | SSH transport | `SshConnection` using SSHJ |
 | SFTP transport | Independent `SftpBrowserService` and `SftpConnection` using SSHJ |
 | Output preprocessing | tmux and iTerm parsers in `terminal/` |
-| Terminal adapter | Kotlin `GhosttyTerminal` plus `ghostty_jni.cpp` |
+| Terminal adapter | Kotlin `GhosttyTerminal` plus `ghostty_jni.cpp`, a JNI shim over the shared Zig core |
 | Terminal surface | `GhosttyTerminalView` using Canvas and `RenderNode` |
 | Secure storage | Keystore-backed AES-GCM private files |
 | Lifecycle owner | Non-exported `connectedDevice` foreground service |
@@ -40,7 +40,7 @@ The file browser uses a separate started and bound service with an independent S
 
 ## Ghostty Integration
 
-Ghostty is pinned as the `android/third_party/ghostty` submodule. A small JNI layer contains upstream C API use and exposes Kotlin-owned snapshots, encoders, effects, viewport operations, graphics, and read-only state serialization.
+Ghostty is pinned as the `android/third_party/ghostty` submodule. The terminal engine lives in the shared Zig core (`core/`, ADR 0012), which is the only code that calls the libghostty-vt C API. `ghostty_jni.cpp` is a thin JNI shim that marshals Java types to the core's C ABI; the one libghostty concern it keeps is the stb PNG decoder for Kitty graphics, registered with `ghostty_sys_set`. `GhosttyTerminal.kt` parses the core's snapshot (`GVT1` dirty-row stream), Kitty frame and effects wire formats into Kotlin-owned values, and keeps the saved-state container that wraps the core's state encoding.
 
 Native artifacts are included for arm64 and x86_64. They must remain reproducible from the pinned revision and satisfy current Android 16 KB page requirements.
 
@@ -54,7 +54,7 @@ Tailscale SSH is an explicit credential-free host mode using SSH `none` authenti
 
 - Dirty-row snapshots and per-row render caches.
 - Android text shaping, fallback fonts, combining graphemes, and emoji.
-- Touch scrollback, explicit local selection over remote mouse mode, search, pinch scaling, mouse reporting, and accessibility actions.
+- Touch scrollback (programs that own scrolling receive wheel events under mouse tracking, or arrow keys on the alternate screen with alternate-scroll mode, as in herdr; other output scrolls local scrollback), explicit local selection over remote mouse mode, search, pinch scaling, mouse reporting, and accessibility actions.
 - Configurable hold/swipe actions for selection at the held cell, paste, search, next session, the session chooser, named keys, and custom sequences. The defaults are Search up, Paste right, Escape down, and Next session left. The quick-navigation list provides Files, Hosts, and other retained sessions ordered by recent use, with status and short IDs. Next session cycles creation order with wraparound. Early movement remains a normal remote drag; selection and touch exploration retain their own interaction paths. Session actions switch among service-owned sessions without disconnecting them. The keyboard bar and top-right corner have no menu button.
 - `InputConnection`, hardware keys, configurable volume-button and modifier controls, paste safety, and Ghostty mode-aware encoding.
 

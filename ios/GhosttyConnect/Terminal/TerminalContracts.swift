@@ -359,7 +359,7 @@ enum TerminalCursorStyle: Equatable {
 
 enum TerminalEngineFactory {
     static var isAvailable: Bool {
-#if canImport(GhosttyVt)
+#if canImport(SeanceCore)
         true
 #else
         false
@@ -367,7 +367,7 @@ enum TerminalEngineFactory {
     }
 
     static func make(columns: Int = 80, rows: Int = 24) throws -> any TerminalEngine {
-#if canImport(GhosttyVt)
+#if canImport(SeanceCore)
         try GhosttyTerminalEngine(columns: columns, rows: rows)
 #else
         throw TerminalEngineError.frameworkUnavailable
@@ -388,7 +388,7 @@ enum TerminalEngineError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .frameworkUnavailable:
-            "GhosttyVt is not linked. Build the pinned XCFramework first."
+            "The shared terminal core is not linked. Build the core XCFramework first."
         case .initializationFailed:
             "Ghostty could not create the terminal."
         case .formatterInitializationFailed:

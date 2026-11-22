@@ -68,9 +68,9 @@ Equivalent parsers should share limits and behavioral fixtures even when impleme
 
 ### Terminal Engine Adapter
 
-Both platforms use the same pinned `libghostty-vt` revision behind a narrow adapter. The adapter owns all Ghostty handles and converts upstream C structures into platform-owned values. Ghostty API changes must not leak into transport or presentation code.
+Both platforms use the same pinned `libghostty-vt` revision through one shared engine in the Zig core (`core/src/engine.zig` and helpers, ADR 0012). The core is the only code that calls the libghostty-vt C API; it exposes a documented C ABI (`core/include/seance_core.h`) and is covered by `zig build test`. Each platform's adapter is a thin binding that marshals types and converts the core's snapshot and effects wire formats into platform-owned values. Ghostty API changes must not leak into transport or presentation code.
 
-The adapter is responsible for terminal feed, resize, terminal-mode-aware input encoding, immutable snapshots, supported viewport and selection operations, effects, and deterministic cleanup.
+The engine is responsible for terminal feed, resize, terminal-mode-aware input encoding (keys, paste, mouse, focus, and scroll input), immutable snapshots, supported viewport, selection and search operations, effects, saved-state encoding, and deterministic cleanup. Scroll gestures go through the engine first: with mouse tracking on it returns wheel events, on the alternate screen with alternate-scroll mode (DEC 1007) it returns arrow keys, and otherwise it returns nothing so the platform scrolls its local scrollback.
 
 ### Native Terminal Surface
 
@@ -141,7 +141,7 @@ Host trust and authentication are session-scoped side channels, never terminal b
 | Session coordinator | `SshSessionService` session records | `TerminalSessionRegistry` with per-session `TerminalSessionModel` records |
 | SSH transport | `SshConnection` using SSHJ | `SSHTransport`, `CitadelSSHTransport` |
 | SFTP transport | `SftpBrowserService`, `SftpConnection` | `SFTPBrowserModel`, `CitadelSFTPTransport` |
-| Terminal adapter | Kotlin `GhosttyTerminal` plus JNI | `GhosttyTerminalEngine` plus XCFramework |
+| Terminal adapter | Kotlin `GhosttyTerminal` plus a JNI shim over the Zig core | `GhosttyTerminalEngine` over the Zig core XCFramework |
 | Renderer/input | `GhosttyTerminalView` | `TerminalGridView`, `TerminalKeyboardCapture` |
 | Secure storage | Keystore-backed encrypted files | Device-only Keychain |
 
