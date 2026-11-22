@@ -51,7 +51,7 @@ fn createModule(
         .optimize = optimize,
         .@"emit-lib-vt" = true,
     })) |dep| {
-        if (link_vt) module.linkLibrary(dep.artifact("ghostty-vt"));
+        if (link_vt) module.linkLibrary(dep.artifact("ghostty-vt-static"));
 
         // Android has no libc headers in Zig's tree, so translate the (LP64,
         // identical-layout) C declarations against musl instead.
