@@ -23,7 +23,7 @@ class KnownHostStoreTest {
 
     @Before
     fun setUp() {
-        context = InstrumentationRegistry.getInstrumentation().context
+        context = InstrumentationRegistry.getInstrumentation().targetContext
         encryptedStore = EncryptedFileStore(context)
         clearStorage()
     }
