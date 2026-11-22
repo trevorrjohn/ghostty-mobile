@@ -3,6 +3,7 @@
 const std = @import("std");
 const c = @import("ghostty_c");
 const engine_mod = @import("engine.zig");
+const casefold = @import("casefold.zig");
 
 const Engine = engine_mod.Engine;
 const Error = engine_mod.Error;
@@ -293,23 +294,18 @@ fn appendRow(self: *Engine, line: *Line, row: usize, columns: u16) Error!void {
         const result = c.ghostty_grid_ref_graphemes(&ref, &codepoints, codepoints.len, &length);
         if (result == c.GHOSTTY_SUCCESS) {
             for (codepoints[0..length]) |codepoint| {
-                var encoded: [4]u8 = undefined;
-                const size = std.unicode.utf8Encode(@intCast(codepoint), &encoded) catch continue;
-                try line.text.appendSlice(gpa, encoded[0..size]);
+                try casefold.appendLowerCodepoint(&line.text, gpa, @intCast(codepoint));
             }
         } else if (result == c.GHOSTTY_OUT_OF_SPACE and length > 0) {
             const heap = try gpa.alloc(u32, length);
             defer gpa.free(heap);
             if (c.ghostty_grid_ref_graphemes(&ref, heap.ptr, heap.len, &length) == c.GHOSTTY_SUCCESS) {
                 for (heap[0..length]) |codepoint| {
-                    var encoded: [4]u8 = undefined;
-                    const size = std.unicode.utf8Encode(@intCast(codepoint), &encoded) catch continue;
-                    try line.text.appendSlice(gpa, encoded[0..size]);
+                    try casefold.appendLowerCodepoint(&line.text, gpa, @intCast(codepoint));
                 }
             }
         }
         if (line.text.items.len == start) try line.text.append(gpa, ' ');
-        for (line.text.items[start..]) |*byte| byte.* = std.ascii.toLower(byte.*);
         try line.cells.appendNTimes(gpa, .{ .row = row, .column = column }, line.text.items.len - start);
     }
 }
@@ -322,15 +318,16 @@ fn rowWraps(terminal: c.GhosttyTerminal, row: usize) bool {
         c.ghostty_row_get(raw_row, c.GHOSTTY_ROW_DATA_WRAP, &wraps) == c.GHOSTTY_SUCCESS and wraps;
 }
 
-/// Case-insensitive search across scrollback and screen, joining soft-wrapped
+/// Case-insensitive (simple Unicode folding, see casefold.zig) search across scrollback and screen, joining soft-wrapped
 /// rows. Selects the match and scrolls it into view. Repeating the same query
 /// moves to the next (direction >= 0) or previous match, wrapping around.
 /// Returns whether a match was selected.
 pub fn search(self: *Engine, query_text: []const u8, direction: i32) Error!bool {
     if (query_text.len == 0 or query_text.len > max_search_query_bytes) return false;
-    var query_buffer: [max_search_query_bytes]u8 = undefined;
-    const query = query_buffer[0..query_text.len];
-    for (query, query_text) |*out, byte| out.* = std.ascii.toLower(byte);
+    var lowered: std.ArrayList(u8) = .empty;
+    defer lowered.deinit(gpa);
+    try casefold.appendLower(&lowered, gpa, query_text);
+    const query = lowered.items;
 
     self.lock();
     defer self.unlock();

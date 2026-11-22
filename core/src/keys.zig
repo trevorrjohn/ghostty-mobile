@@ -75,6 +75,21 @@ pub fn fromName(name: []const u8) c.GhosttyKey {
         if (key >= 'A' and key <= 'Z') return @intCast(c.GHOSTTY_KEY_A + (key - 'A'));
         if (key >= 'a' and key <= 'z') return @intCast(c.GHOSTTY_KEY_A + (key - 'a'));
         if (key >= '0' and key <= '9') return @intCast(c.GHOSTTY_KEY_DIGIT_0 + (key - '0'));
+        switch (key) {
+            ' ' => return c.GHOSTTY_KEY_SPACE,
+            '`' => return c.GHOSTTY_KEY_BACKQUOTE,
+            '\\' => return c.GHOSTTY_KEY_BACKSLASH,
+            '[' => return c.GHOSTTY_KEY_BRACKET_LEFT,
+            ']' => return c.GHOSTTY_KEY_BRACKET_RIGHT,
+            ',' => return c.GHOSTTY_KEY_COMMA,
+            '=' => return c.GHOSTTY_KEY_EQUAL,
+            '-' => return c.GHOSTTY_KEY_MINUS,
+            '.' => return c.GHOSTTY_KEY_PERIOD,
+            '\'' => return c.GHOSTTY_KEY_QUOTE,
+            ';' => return c.GHOSTTY_KEY_SEMICOLON,
+            '/' => return c.GHOSTTY_KEY_SLASH,
+            else => {},
+        }
     }
     if (table.get(name)) |key| return key;
     if (name.len >= 2 and name[0] == 'F') {
@@ -115,6 +130,9 @@ test "names map to keys" {
     try std.testing.expectEqual(@as(c.GhosttyKey, c.GHOSTTY_KEY_DIGIT_0 + 7), fromName("7"));
     try std.testing.expectEqual(@as(c.GhosttyKey, c.GHOSTTY_KEY_F1 + 11), fromName("F12"));
     try std.testing.expectEqual(@as(c.GhosttyKey, c.GHOSTTY_KEY_ARROW_UP), fromName("ARROW_UP"));
+    try std.testing.expectEqual(@as(c.GhosttyKey, c.GHOSTTY_KEY_SLASH), fromName("/"));
+    try std.testing.expectEqual(@as(c.GhosttyKey, c.GHOSTTY_KEY_MINUS), fromName("-"));
+    try std.testing.expectEqual(@as(c.GhosttyKey, c.GHOSTTY_KEY_SLASH), fromName("SLASH"));
     try std.testing.expectEqual(@as(c.GhosttyKey, c.GHOSTTY_KEY_UNIDENTIFIED), fromName("F26"));
     try std.testing.expectEqual(@as(c.GhosttyKey, c.GHOSTTY_KEY_UNIDENTIFIED), fromName("nope"));
     try std.testing.expectEqual(@as(u32, 'a'), unshiftedCodepoint("A"));

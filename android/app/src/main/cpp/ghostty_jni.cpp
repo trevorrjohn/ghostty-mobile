@@ -247,7 +247,7 @@ extern "C" JNIEXPORT jbyteArray JNICALL
 Java_dev_ghostty_connect_terminal_bridge_GhosttyTerminal_nativeSnapshot(
     JNIEnv* env, jobject, jlong handle) {
   return bytes_result(env, "snapshot", [&](ScBytes* out) {
-    return sc_engine_snapshot(from_handle(handle), out);
+    return sc_engine_snapshot(from_handle(handle), false, out);
   });
 }
 

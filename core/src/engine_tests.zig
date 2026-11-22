@@ -91,7 +91,7 @@ fn parseSnapshot(bytes: []const u8) !Parsed {
 }
 
 fn snapshotText(engine: *Engine) !Parsed {
-    const bytes = try render.snapshot(engine);
+    const bytes = try render.snapshot(engine, false);
     defer free(bytes);
     return parseSnapshot(bytes);
 }
@@ -280,6 +280,14 @@ test "search crosses soft wraps, ignores case and cycles" {
     try std.testing.expect(!try selection.search(engine, &long, 1));
 }
 
+test "search folds case beyond ASCII" {
+    const engine = try newEngine(20, 3);
+    defer engine.destroy();
+    engine.feed("\xc3\x84PFEL target");
+    try std.testing.expect(try selection.search(engine, "\xc3\xa4pfel", 1));
+    try expectBytes("\xc3\x84PFEL", try selection.selectedText(engine));
+}
+
 test "search finds scrollback history" {
     const engine = try newEngine(10, 3);
     defer engine.destroy();
@@ -443,7 +451,7 @@ test "c abi round trip" {
     defer abi.sc_engine_free(engine);
     try std.testing.expectEqual(@as(i32, 0), abi.sc_engine_write(engine.?, "abc", 3));
     var bytes: abi.ScBytes = .{};
-    try std.testing.expectEqual(@as(i32, 0), abi.sc_engine_snapshot(engine.?, &bytes));
+    try std.testing.expectEqual(@as(i32, 0), abi.sc_engine_snapshot(engine.?, false, &bytes));
     defer abi.sc_bytes_free(bytes.ptr, bytes.len);
     var parsed = try parseSnapshot(bytes.ptr.?[0..bytes.len]);
     defer parsed.deinit();

@@ -129,8 +129,8 @@ pub export fn sc_engine_scroll_to_bottom(engine: *Engine) void {
     engine.scrollToBottom();
 }
 
-pub export fn sc_engine_snapshot(engine: *Engine, out: *ScBytes) i32 {
-    return deliverResult(out, render.snapshot(engine));
+pub export fn sc_engine_snapshot(engine: *Engine, full: bool, out: *ScBytes) i32 {
+    return deliverResult(out, render.snapshot(engine, full));
 }
 
 pub export fn sc_engine_kitty_frame(engine: *Engine, known_generation: u64, out: *ScBytes) i32 {

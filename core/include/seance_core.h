@@ -115,7 +115,8 @@ void sc_engine_scroll_to_bottom(ScEngine* engine);
 
 /**
  * Render snapshot of the dirty rows since the previous snapshot (all rows the
- * first time and after a full invalidation). Wire format, magic 'GVT1'
+ * first time, after a full invalidation, and whenever `full` is true; hosts
+ * that keep no row cache pass true). Wire format, magic 'GVT1'
  * (0x47565431):
  *   magic, columns, rows, background, foreground, cursor color (ARGB),
  *   cursor x, cursor y (-1 outside the viewport), cursor style + 1 (0 hidden),
@@ -128,7 +129,7 @@ void sc_engine_scroll_to_bottom(ScEngine* engine);
  * invisible, 64 selected, 128 overline, bits 8-10 underline style. Inverse is
  * already applied to the colors.
  */
-int32_t sc_engine_snapshot(ScEngine* engine, ScBytes* out);
+int32_t sc_engine_snapshot(ScEngine* engine, bool full, ScBytes* out);
 
 /**
  * Kitty graphics visible in the viewport: generation (int64), image count,
@@ -195,7 +196,9 @@ int32_t sc_engine_encode_scroll(ScEngine* engine, int32_t rows, ScBytes* out);
  * INSERT, HOME, END, PAGE_UP, PAGE_DOWN, ARROW_UP/DOWN/LEFT/RIGHT, MINUS,
  * EQUAL, COMMA, PERIOD, SLASH, SEMICOLON, QUOTE, BACKQUOTE, BACKSLASH,
  * BRACKET_LEFT/RIGHT, NUMPAD_*, modifier keys such as SHIFT_LEFT, and so on
- * (see core/src/keys.zig). Unknown names encode as an unidentified key, which
+ * (see core/src/keys.zig), or a single punctuation character that is a key on
+ * its own (space, backquote, backslash, brackets, comma, equals, minus, period,
+ * quote, semicolon and slash). Unknown names encode as an unidentified key, which
  * only produces output when `text` is not empty. `text` is the UTF-8 the key
  * generates. `modifiers` is GhosttyMods; `action` is 0 release, 1 press, 2 repeat.
  */
@@ -228,7 +231,7 @@ int32_t sc_engine_selected_text(ScEngine* engine, ScBytes* out);
 /** All text including scrollback as UTF-8, unwrapped and trimmed. */
 int32_t sc_engine_plain_text(ScEngine* engine, ScBytes* out);
 /**
- * Case-insensitive (ASCII) search across scrollback and screen, joining
+ * Case-insensitive search (simple folding for Latin, Greek, Cyrillic and Armenian) across scrollback and screen, joining
  * soft-wrapped rows. Selects the match and scrolls it into view; repeating the
  * same query steps to the next (direction >= 0) or previous match, wrapping.
  * Queries are limited to 1024 bytes. Returns 1 when a match was selected.

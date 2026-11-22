@@ -32,7 +32,8 @@ fn clampI32(value: u64) i32 {
     return @intCast(@min(value, std.math.maxInt(i32)));
 }
 
-pub fn snapshot(self: *Engine) Error![]u8 {
+/// `full` reports every row as dirty, for hosts that keep no row cache.
+pub fn snapshot(self: *Engine, full: bool) Error![]u8 {
     self.lock();
     defer self.unlock();
     try check(c.ghostty_render_state_update(self.render_state, self.terminal));
@@ -51,7 +52,7 @@ pub fn snapshot(self: *Engine) Error![]u8 {
     try check(c.ghostty_render_state_get(self.render_state, c.GHOSTTY_RENDER_STATE_DATA_CURSOR, &cursor));
     try check(c.ghostty_render_state_get(self.render_state, c.GHOSTTY_RENDER_STATE_DATA_COLORS, &colors));
     try check(c.ghostty_render_state_get(self.render_state, c.GHOSTTY_RENDER_STATE_DATA_DIRTY, &dirty));
-    if (self.first_snapshot) {
+    if (self.first_snapshot or full) {
         dirty = c.GHOSTTY_RENDER_STATE_DIRTY_FULL;
         try check(c.ghostty_render_state_set(self.render_state, c.GHOSTTY_RENDER_STATE_OPT_DIRTY, &dirty));
         self.first_snapshot = false;

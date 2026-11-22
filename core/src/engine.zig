@@ -246,6 +246,7 @@ pub const Engine = struct {
         if (cols == 0 or rows == 0) return Error.InvalidArgument;
         self.lock();
         defer self.unlock();
+        self.search.reset();
         try check(c.ghostty_terminal_resize(self.terminal, cols, rows, cell_width, cell_height));
     }
 
@@ -605,6 +606,7 @@ pub fn argb(color: c.GhosttyColorRgb) i32 {
 
 test {
     _ = keys;
+    _ = @import("casefold.zig");
     _ = render;
     _ = selection;
 }
