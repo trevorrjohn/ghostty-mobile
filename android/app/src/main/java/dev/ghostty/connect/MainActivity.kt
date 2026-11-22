@@ -4109,6 +4109,7 @@ class MainActivity : Activity() {
                     anyPressed = pressed,
                 ))
             }
+            onScrollInput = { input -> sessionService?.send(sessionId, input) }
             onTerminalFocusChanged = { focused ->
                 if (selectedSessionId == sessionId && sessionService?.terminal(sessionId) === terminal) {
                     terminal.encodeFocus(focused).takeIf(ByteArray::isNotEmpty)?.let { sessionService?.send(sessionId, it) }

@@ -19,6 +19,7 @@ target_link_options(ghostty_android PRIVATE
     "-Wl,-z,common-page-size=16384")
 target_include_directories(ghostty_android PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/../../../../third_party/ghostty/include"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../../../../core/include"
     "${CMAKE_CURRENT_SOURCE_DIR}/../../../../third_party/ghostty/src/stb")
 target_link_libraries(ghostty_android PRIVATE
     "-Wl,--whole-archive" seance-core "-Wl,--no-whole-archive"

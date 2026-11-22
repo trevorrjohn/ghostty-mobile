@@ -163,6 +163,80 @@ class GhosttyTerminalIntegrationTest {
     }
 
     @Test
+    fun scrollInputIsLocalWithoutMouseTrackingOrAlternateScreen() {
+        GhosttyTerminal(columns = 20, rows = 4).use { terminal ->
+            assertTrue(terminal.encodeScrollInput(3).isEmpty())
+            assertTrue(terminal.encodeScrollInput(0).isEmpty())
+            // Alternate-scroll mode alone does nothing on the primary screen.
+            terminal.write("\u001b[?1007h")
+            assertTrue(terminal.encodeScrollInput(-1).isEmpty())
+        }
+    }
+
+    @Test
+    fun scrollInputEncodesWheelEventsWhenMouseTrackingIsOn() {
+        GhosttyTerminal(columns = 20, rows = 4).use { terminal ->
+            terminal.write("\u001b[?1000h\u001b[?1006h")
+
+            val down = String(terminal.encodeScrollInput(2))
+            assertEquals(2, down.split("\u001b[<65;").size - 1)
+            assertTrue(String(terminal.encodeScrollInput(-1)).startsWith("\u001b[<64;"))
+            // A single gesture never sends more than ten events.
+            assertEquals(10, String(terminal.encodeScrollInput(40)).split("\u001b[<65;").size - 1)
+        }
+    }
+
+    @Test
+    fun scrollInputSendsArrowsOnAlternateScreen() {
+        GhosttyTerminal(columns = 20, rows = 4).use { terminal ->
+            terminal.write("\u001b[?1049h")
+
+            assertArrayEquals(terminal.encodeKey("ARROW_UP"), terminal.encodeScrollInput(-1))
+            assertEquals("\u001b[B\u001b[B\u001b[B", String(terminal.encodeScrollInput(3)))
+
+            terminal.write("\u001b[?1h")
+            assertEquals("\u001bOA", String(terminal.encodeScrollInput(-1)))
+
+            terminal.write("\u001b[?1007l")
+            assertTrue(terminal.encodeScrollInput(1).isEmpty())
+        }
+    }
+
+    @Test
+    fun scrollInputPrefersMouseTrackingOverArrowsOnAlternateScreen() {
+        GhosttyTerminal(columns = 20, rows = 4).use { terminal ->
+            terminal.write("\u001b[?1049h\u001b[?1000h\u001b[?1006h")
+
+            assertTrue(String(terminal.encodeScrollInput(1)).startsWith("\u001b[<65;"))
+        }
+    }
+
+    @Test
+    fun drainsBellPtyResponseProgressAndNotification() {
+        GhosttyTerminal().use { terminal ->
+            terminal.write("\u0007\u001b[6n\u001b]9;4;1;42\u0007\u001b]777;notify;Build;Done\u0007")
+
+            val effects = terminal.drainEffects()
+            assertEquals(1, effects.bells)
+            assertEquals(1, effects.progressState)
+            assertEquals(42, effects.progress)
+            assertEquals("Build", effects.notificationTitle)
+            assertEquals("Done", effects.notificationBody)
+            assertEquals("\u001b[1;1R", String(effects.ptyWrite))
+            assertTrue(terminal.drainEffects().isEmpty)
+        }
+    }
+
+    @Test
+    fun drainsOsc52ClipboardWrite() {
+        GhosttyTerminal().use { terminal ->
+            terminal.write("\u001b]52;c;aGVsbG8=\u0007")
+
+            assertEquals("hello", terminal.drainEffects().clipboard)
+        }
+    }
+
+    @Test
     fun androidShaperProducesFallbackGlyphRuns() {
         val text = "fi e\u0301 \ud83d\ude80"
         val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {

@@ -73,6 +73,8 @@ class GhosttyTerminalView(
         action: Int, button: Int, x: Float, y: Float,
         width: Int, height: Int, cellWidth: Int, cellHeight: Int, anyPressed: Boolean, metaState: Int,
     ) -> Unit = { _, _, _, _, _, _, _, _, _, _ -> }
+    /** Receives terminal input (wheel events or arrow keys) that replaces local scrolling. */
+    var onScrollInput: (ByteArray) -> Unit = {}
     var onTerminalFocusChanged: (Boolean) -> Unit = {}
     var onSelectionUpdate: (start: Boolean, column: Int, row: Int) -> Unit = { _, _, _ -> }
     var onSelectionFinished: () -> Unit = {}
@@ -1106,7 +1108,10 @@ class GhosttyTerminalView(
         val rows = (scrollPixels / cellHeight).toInt()
         if (rows == 0) return
         scrollPixels -= rows * cellHeight
-        terminal.scrollRows(-rows)
+        // Programs that handle the wheel themselves (mouse tracking, or alternate-scroll on the
+        // alternate screen, as in herdr) get input; otherwise scroll the local scrollback.
+        val input = if (acceptsInput) terminal.encodeScrollInput(-rows) else ByteArray(0)
+        if (input.isNotEmpty()) onScrollInput(input) else terminal.scrollRows(-rows)
         refresh()
     }
 
