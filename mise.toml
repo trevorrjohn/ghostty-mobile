@@ -13,9 +13,13 @@ run = "zig build test --summary all"
 description = "Build ios/Vendor/seance-core.xcframework"
 run = "core/scripts/build-ios-xcframework"
 
+[tasks."ghostty:check"]
+description = "Fail if iOS and Android pin different libghostty-vt revisions"
+run = "scripts/check-ghostty-pin"
+
 [tasks."ios:project"]
 description = "Generate the Xcode project (builds the core and libghostty-vt first)"
-depends = ["core:ios"]
+depends = ["ghostty:check", "core:ios"]
 dir = "ios"
 run = "./Scripts/build-ghostty-vt.sh && xcodegen generate"
 

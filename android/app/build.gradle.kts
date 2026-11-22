@@ -94,7 +94,13 @@ val buildSeanceCoreHost by tasks.registering(Exec::class) {
     outputs.dir(File(repoRoot, "core/zig-out/host"))
 }
 
-tasks.named("preBuild") { dependsOn(buildSeanceCoreAndroid) }
+val checkGhosttyPin by tasks.registering(Exec::class) {
+    description = "Fails if iOS and Android pin different libghostty-vt revisions"
+    workingDir = repoRoot
+    commandLine("scripts/check-ghostty-pin")
+}
+
+tasks.named("preBuild") { dependsOn(checkGhosttyPin, buildSeanceCoreAndroid) }
 
 tasks.withType<Test>().configureEach {
     dependsOn(buildSeanceCoreHost)

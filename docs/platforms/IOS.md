@@ -109,7 +109,7 @@ Prepare and test the generated project:
 Toolchains (Zig, XcodeGen, Java) are pinned in the repository's `mise.toml`; run `mise install` once. The shared Zig core (`core/`, ADR 0012) is built locally into `ios/Vendor/seance-core.xcframework`:
 
 ```sh
-mise run ios:project   # builds the core xcframework and libghostty-vt, then generates the project
+mise run ios:project   # checks the libghostty pin, builds the core xcframework and libghostty-vt, then generates the project
 cd ios
 xcodebuild test \
   -project GhosttyConnect.xcodeproj \

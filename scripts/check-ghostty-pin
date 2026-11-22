@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# Fails when the libghostty-vt revisions the two platforms use differ.
+#
+# Android and the Zig core build from the git submodule android/third_party/ghostty;
+# iOS links a prebuilt xcframework pinned by revision and checksum in
+# ios/Scripts/build-ghostty-vt.sh. The core compiles against the submodule's
+# headers, so the two must stay on the same revision.
+set -euo pipefail
+
+repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+submodule="$(git -C "$repo_dir" ls-tree HEAD android/third_party/ghostty | awk '{print $3}')"
+ios="$(sed -n 's/^revision="\([0-9a-f]*\)"$/\1/p' "$repo_dir/ios/Scripts/build-ghostty-vt.sh")"
+
+if [[ -z "$submodule" || -z "$ios" ]]; then
+  echo "Could not read a libghostty revision (submodule='$submodule', ios='$ios')." >&2
+  exit 1
+fi
+
+if [[ "$submodule" != "$ios" ]]; then
+  cat >&2 <<MSG
+libghostty-vt revisions differ:
+  Android and core (submodule): $submodule
+  iOS (ios/Scripts/build-ghostty-vt.sh): $ios
+Bump both together, then update the xcframework checksum in the iOS script.
+MSG
+  exit 1
+fi
+
+echo "libghostty-vt pinned to $submodule on both platforms."
