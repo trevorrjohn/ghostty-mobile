@@ -37,6 +37,65 @@ internal class SftpConnection(
         return connectedSftp.canonicalize(".")
     }
 
+    /**
+     * Opens SFTP on an SSH client owned by a terminal session. The session keeps owning the
+     * transport, so [disconnect] closes only this channel.
+     */
+    fun attach(liveSsh: SSHClient): String {
+        check(!closed.get())
+        val attached = liveSsh.newSFTPClient()
+        attached.sftpEngine.timeoutMs = IO_TIMEOUT_MS
+        sftp = attached
+        return attached.canonicalize(".")
+    }
+
+    /**
+     * Uploads an image to [terminalDirectory] when it is a writable directory, otherwise to the
+     * uploads folder under the home directory. Falls back only before any bytes were read, so the
+     * input stream is never half-consumed by a failed first attempt.
+     */
+    fun uploadImage(
+        terminalDirectory: String?,
+        fileName: String,
+        input: InputStream,
+        total: Long?,
+        canceled: AtomicBoolean,
+        progress: (Long, Long?) -> Unit,
+    ): ImageUploadResult {
+        var started = false
+        val tracked: (Long, Long?) -> Unit = { done, size -> started = true; progress(done, size) }
+        if (terminalDirectory != null) {
+            try {
+                val directory = client().canonicalize(terminalDirectory)
+                requireType(directory, FileMode.Type.DIRECTORY)
+                upload(directory, fileName, input, total, replace = false, canceled, tracked)
+                return ImageUploadResult(childPath(directory, fileName), fellBackToUploadsFolder = false)
+            } catch (error: SFTPException) {
+                if (started || error.statusCode !in DIRECTORY_FALLBACK_STATUSES) throw error
+            } catch (error: IllegalArgumentException) {
+                if (started) throw error
+            }
+        }
+        val uploads = ensureUploadsDirectory()
+        upload(uploads, fileName, input, total, replace = false, canceled, tracked)
+        return ImageUploadResult(childPath(uploads, fileName), fellBackToUploadsFolder = terminalDirectory != null)
+    }
+
+    private fun ensureUploadsDirectory(): String {
+        val home = client().canonicalize(".")
+        var path = home
+        for (segment in IMAGE_UPLOADS_FOLDER.split('/')) {
+            path = childPath(path, segment)
+            if (lstatOrNull(path) == null) {
+                client().mkdir(path)
+                client().chmod(path, PRIVATE_DIRECTORY_MODE)
+            } else {
+                requireType(path, FileMode.Type.DIRECTORY)
+            }
+        }
+        return path
+    }
+
     fun list(path: String): List<SftpEntry> = client().ls(path)
         .asSequence()
         .filterNot { it.name == "." || it.name == ".." }
@@ -221,5 +280,12 @@ internal class SftpConnection(
         private const val TRANSFER_BUFFER_BYTES = 64 * 1024
         private const val READ_AHEAD_REQUESTS = 8
         private const val MAX_REMOTE_PATH_BYTES = 4096
+        private const val PRIVATE_DIRECTORY_MODE = 448 // 0700
+        private val DIRECTORY_FALLBACK_STATUSES = setOf(
+            Response.StatusCode.PERMISSION_DENIED,
+            Response.StatusCode.NO_SUCH_FILE,
+            Response.StatusCode.NO_SUCH_PATH,
+            Response.StatusCode.FAILURE,
+        )
     }
 }

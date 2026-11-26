@@ -18,6 +18,7 @@ Architecture decision records capture durable choices that affect both applicati
 | [0010](0010-keep-diagnostics-bounded-and-redacted.md) | Accepted | Keep diagnostics bounded and redacted |
 | [0011](0011-export-terminal-archives-as-encrypted-text.md) | Accepted | Export terminal archives as encrypted portable text |
 | [0012](0012-share-terminal-and-session-logic-through-a-zig-core.md) | Accepted | Share terminal and session logic through a Zig core |
+| [0013](0013-upload-images-over-the-live-ssh-session.md) | Proposed | Upload images over the live SSH session |
 
 ## Process
 

@@ -77,6 +77,15 @@ struct HostEditorView: View {
                     permissionPicker("Clipboard", selection: $host.remoteClipboard)
                     permissionPicker("Notifications", selection: $host.remoteNotifications)
                 }
+                Section("Image upload") {
+                    Picker("Destination", selection: $host.imageUploadMode) {
+                        Text("Default").tag(ImageUploadDestinationMode?.none)
+                        ForEach(ImageUploadDestinationMode.allCases) { Text($0.label).tag(Optional($0)) }
+                    }
+                    Text("Default uploads to the terminal's current directory from the terminal menu and asks when an image is shared from another app. If the current directory isn't writable, images go to ~/\(imageUploadsFolder).")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
                 Section("Files") {
                     Toggle("Allow remote deletion", isOn: Binding(
                         get: { host.allowSftpDelete == true },

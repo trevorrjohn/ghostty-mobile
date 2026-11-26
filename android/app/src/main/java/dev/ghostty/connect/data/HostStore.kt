@@ -6,6 +6,7 @@ import dev.ghostty.connect.model.DEFAULT_RETRY_ATTEMPTS
 import dev.ghostty.connect.model.Host
 import dev.ghostty.connect.model.RetryBackoff
 import dev.ghostty.connect.model.normalizeStartupCommand
+import dev.ghostty.connect.sftp.ImageUploadDestinationMode
 import org.json.JSONArray
 import org.json.JSONObject
 import java.util.UUID
@@ -72,6 +73,7 @@ class HostStore(context: Context, private val keyStore: SshKeyStore) {
                 put("retryMaxAttempts", host.retryMaxAttempts)
                 put("retryBackoff", host.retryBackoff.name)
                 put("startupCommand", host.startupCommand ?: JSONObject.NULL)
+                put("imageUploadDestination", host.imageUploadDestination?.name ?: JSONObject.NULL)
             })
         }
     }.toString().toByteArray()
@@ -126,6 +128,9 @@ class HostStore(context: Context, private val keyStore: SshKeyStore) {
                     startupCommand = normalizeStartupCommand(value.optString("startupCommand").takeIf {
                         !value.isNull("startupCommand") && it.isNotBlank()
                     }),
+                    imageUploadDestination = value.optString("imageUploadDestination")
+                        .takeIf { !value.isNull("imageUploadDestination") }
+                        ?.let { name -> ImageUploadDestinationMode.entries.firstOrNull { it.name == name } },
                 ))
             }
         }

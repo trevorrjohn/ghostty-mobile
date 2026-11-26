@@ -748,7 +748,7 @@ enum TerminalQuickDirection: String, CaseIterable, Identifiable {
 
 enum TerminalQuickAction {
     static let builtIns: [(id: String, label: String)] = [
-        ("select", "Select here"), ("paste", "Paste"), ("search", "Search"),
+        ("select", "Select here"), ("paste", "Paste"), ("search", "Search"), ("upload-image", "Upload image"),
         ("next-session", "Next session"), ("choose-session", "Choose session"),
     ]
     static let defaults: [TerminalQuickDirection: String] = [

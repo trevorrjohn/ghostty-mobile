@@ -258,6 +258,19 @@ final class TerminalSessionModel: ObservableObject {
         enqueueWrite(data, transport: transport, attemptID: attemptID, destination: destination)
     }
 
+    /// Opens an image-upload channel on this session's own SSH connection, or throws when it is not connected.
+    func openRemoteImageFiles() async throws -> any RemoteImageFiles {
+        guard state == .connected, let provider = transport as? any RemoteImageFilesProviding else {
+            throw ImageUploadError.notConnected
+        }
+        return try await provider.openRemoteImageFiles()
+    }
+
+    /// The directory the shell last reported through OSC 7, when it is usable as a remote path.
+    var reportedWorkingDirectory: String? {
+        terminalDirectoryPath(snapshot?.workingDirectory)
+    }
+
     func isPasteSafe(_ text: String) -> Bool {
         engine?.isPasteSafe(text) ?? false
     }

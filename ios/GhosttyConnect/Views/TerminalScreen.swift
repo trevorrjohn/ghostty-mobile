@@ -1,3 +1,4 @@
+import PhotosUI
 import SwiftUI
 import UIKit
 
@@ -7,6 +8,7 @@ struct TerminalScreen: View {
     let switchSession: (UUID) -> Void
     @EnvironmentObject private var model: AppModel
     @EnvironmentObject private var sessions: TerminalSessionRegistry
+    @EnvironmentObject private var imageUploads: ImageUploadCoordinator
     @Environment(\.dismiss) private var dismiss
     @Environment(\.displayScale) private var displayScale
     @Environment(\.openURL) private var openURL
@@ -33,6 +35,9 @@ struct TerminalScreen: View {
     @State private var showingQuickNavigation = false
     @State private var quickNavigationAction: (() -> Void)?
     @State private var filesInitialPath: String?
+    @State private var photoSelection: [PhotosPickerItem] = []
+    @State private var showingCamera = false
+    @State private var showingPhotoPicker = false
 
     private var host: Host { record.host }
     private var session: TerminalSessionModel { record.session }
@@ -69,6 +74,7 @@ struct TerminalScreen: View {
                             },
                             onMagnify: updateFontSize(_:commit:),
                             onQuickNavigation: snapshot.hasSelection ? nil : { showingQuickNavigation = true },
+                            onUploadImage: session.state == .connected ? { showingPhotoPicker = true } : nil,
                             quickActionLabels: model.keyboardBarConfig.quickActionsEnabled && !snapshot.hasSelection && session.state == .connected ? quickActionLabels : [:],
                             onQuickAction: { direction, column, row in
                                 performQuickAction(direction, column: column, row: row, selectionSnapshot: snapshot)
@@ -253,6 +259,16 @@ struct TerminalScreen: View {
             }
         }
         .sheet(isPresented: $record.showingSettings) { sessionSettings }
+        .fullScreenCover(isPresented: $showingCamera) {
+            CameraPicker { data in imageUploads.submit(data: [data], source: .camera, to: record) }
+                .ignoresSafeArea()
+        }
+        .photosPicker(isPresented: $showingPhotoPicker, selection: $photoSelection, maxSelectionCount: ShareInbox.maximumImages, matching: .images)
+        .onChange(of: photoSelection) { _, items in
+            guard !items.isEmpty else { return }
+            photoSelection = []
+            uploadSelectedPhotos(items)
+        }
         .confirmationDialog("Input mode", isPresented: $showingInputModes, titleVisibility: .visible) {
             Button(record.textMode ? "Direct input" : "Direct input ✓") { setTextMode(false) }
             Button(record.textMode ? "Text mode ✓" : "Text mode") { setTextMode(true) }
@@ -398,6 +414,7 @@ struct TerminalScreen: View {
             contextualSelection = session.contextualSelection(column: column, row: row)
         case "paste": requestPaste()
         case "search": openHistorySearch()
+        case "upload-image": showingPhotoPicker = true
         case "choose-session": showingQuickNavigation = true
         case "next-session":
             guard let candidate = sessions.nextRecord(after: record.id) else { return }
@@ -438,6 +455,14 @@ struct TerminalScreen: View {
             HStack(spacing: 12) {
                 quickSwitchAction("Files", symbol: "folder") { finishQuickNavigation { openFiles() } }
                 quickSwitchAction("Hosts", symbol: "server.rack") { finishQuickNavigation { goToHosts() } }
+            }
+            HStack(spacing: 12) {
+                quickSwitchAction("Photo", symbol: "photo") { finishQuickNavigation { showingPhotoPicker = true } }
+                    .disabled(session.state != .connected)
+                if CameraPicker.isAvailable {
+                    quickSwitchAction("Camera", symbol: "camera") { finishQuickNavigation { showingCamera = true } }
+                        .disabled(session.state != .connected)
+                }
             }
             HStack {
                 Button(record.textMode ? "Direct input" : "Text mode") { finishQuickNavigation { setTextMode(!record.textMode) } }
@@ -573,6 +598,16 @@ struct TerminalScreen: View {
                         Button("Clear Selection") { session.clearSelection() }
                     }
                 }
+                Section("Images") {
+                    PhotosPicker(selection: $photoSelection, maxSelectionCount: ShareInbox.maximumImages, matching: .images) {
+                        Label("Upload image", systemImage: "photo")
+                    }
+                    .disabled(session.state != .connected)
+                    if CameraPicker.isAvailable {
+                        Button { openCamera() } label: { Label("Take photo", systemImage: "camera") }
+                            .disabled(session.state != .connected)
+                    }
+                }
                 Section {
                     Button("Browse files") { record.showingSettings = false; openFiles() }
                     Button("Disconnect", role: .destructive) {
@@ -616,6 +651,28 @@ struct TerminalScreen: View {
             .accessibilityLabel(record.textMode ? "Text mode. Switch to Direct input" : "Direct input. Switch to Text mode")
             .accessibilityValue(record.textMode ? "Text mode on" : "Text mode off")
             .accessibilityAddTraits(record.textMode ? .isSelected : [])
+    }
+
+    private func uploadSelectedPhotos(_ items: [PhotosPickerItem]) {
+        record.showingSettings = false
+        Task {
+            var datas: [Data] = []
+            for item in items {
+                if let data = try? await item.loadTransferable(type: Data.self) { datas.append(data) }
+            }
+            // Let the settings sheet finish dismissing before the destination sheet can appear.
+            try? await Task.sleep(for: .milliseconds(400))
+            if datas.isEmpty { model.alertMessage = ImageUploadError.unsupportedImage.localizedDescription }
+            else { imageUploads.submit(data: datas, source: .library, to: record) }
+        }
+    }
+
+    private func openCamera() {
+        record.showingSettings = false
+        Task {
+            try? await Task.sleep(for: .milliseconds(400))
+            showingCamera = true
+        }
     }
 
     private func openFiles() {

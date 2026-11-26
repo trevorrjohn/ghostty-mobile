@@ -3,6 +3,7 @@ import SwiftUI
 struct HostsView: View {
     @EnvironmentObject private var model: AppModel
     @EnvironmentObject private var sessions: TerminalSessionRegistry
+    @EnvironmentObject private var imageUploads: ImageUploadCoordinator
     @State private var editedHost: Host?
     @State private var duplicatingHost = false
     @State private var showingKeyImport = false
@@ -101,6 +102,11 @@ struct HostsView: View {
                 Button("Cancel", role: .cancel) {}
             } message: {
                 Text("Choose a saved host.")
+            }
+            .onChange(of: imageUploads.requestedSessionID) { _, id in
+                guard let id else { return }
+                path = [id]
+                imageUploads.requestedSessionID = nil
             }
             .onChange(of: model.quickConnectRequest) { _, request in
                 guard request != nil else { return }

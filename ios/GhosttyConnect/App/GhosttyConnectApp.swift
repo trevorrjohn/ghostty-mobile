@@ -56,6 +56,7 @@ struct GhosttyConnectApp: App {
     private let notificationDelegate: RemoteNotificationDelegate
     @StateObject private var appModel: AppModel
     @StateObject private var sessions: TerminalSessionRegistry
+    @StateObject private var imageUploads = ImageUploadCoordinator()
     @Environment(\.scenePhase) private var scenePhase
     @State private var backgroundGrace = BackgroundGrace()
 
@@ -102,14 +103,30 @@ struct GhosttyConnectApp: App {
             RootView()
                 .environmentObject(appModel)
                 .environmentObject(sessions)
+                .environmentObject(imageUploads)
                 .preferredColorScheme(.dark)
-                .onOpenURL(perform: appModel.handle)
+                .onAppear {
+                    imageUploads.appModel = appModel
+                    imageUploads.sessions = sessions
+                }
+                .onOpenURL { url in
+                    if url.scheme == ShareInbox.urlScheme, url.host == ShareInbox.uploadURLHost {
+                        imageUploads.appModel = appModel
+                        imageUploads.sessions = sessions
+                        let id = URLComponents(url: url, resolvingAgainstBaseURL: false)?
+                            .queryItems?.first { $0.name == "id" }?.value.flatMap(UUID.init)
+                        imageUploads.receiveSharedImages(batchID: id)
+                    } else {
+                        appModel.handle(url: url)
+                    }
+                }
                 .onChange(of: scenePhase) { _, phase in
                     if phase == .background {
                         backgroundGrace.begin { sessions.disconnectForBackground() }
                     } else if phase == .active {
                         backgroundGrace.cancel()
                         sessions.cancelBackgroundDisconnect()
+                        imageUploads.receiveSharedImages()
                     }
                 }
         }

@@ -74,7 +74,7 @@ final class TerminalQuickActionTests: XCTestCase {
             scrollMultiplier: overlay.scrollMultiplier, cellWidth: 10, cellHeight: 20, columns: 40, rows: 25,
             selectionEndpoints: nil, onTap: {}, onDoubleTap: { _, _ in }, onScrollRows: { _ in },
             onSelectWord: overlay.onSelectWord, onSelectionEndpointChanged: { _, _, _ in }, onSelectionFinished: {},
-            onMagnify: { _, _ in }, onQuickNavigation: nil, quickActionLabels: [:], onQuickAction: overlay.onQuickAction,
+            onMagnify: { _, _ in }, onQuickNavigation: nil, onUploadImage: nil, quickActionLabels: [:], onQuickAction: overlay.onQuickAction,
             interactionID: nil
         )
         let coordinator = overlay.makeCoordinator()
@@ -93,7 +93,7 @@ final class TerminalQuickActionTests: XCTestCase {
             scrollMultiplier: 1, cellWidth: 10, cellHeight: 20, columns: 40, rows: 25,
             selectionEndpoints: nil, onTap: {}, onDoubleTap: { _, _ in }, onScrollRows: { _ in XCTFail("Must not scroll") },
             onSelectWord: { _, _ in onSelect() }, onSelectionEndpointChanged: { _, _, _ in }, onSelectionFinished: {},
-            onMagnify: { _, _ in }, onQuickNavigation: {},
+            onMagnify: { _, _ in }, onQuickNavigation: {}, onUploadImage: nil,
             quickActionLabels: [.up: "Search", .right: "Paste", .down: "Escape", .left: "Next session"],
             onQuickAction: action, interactionID: nil
         )

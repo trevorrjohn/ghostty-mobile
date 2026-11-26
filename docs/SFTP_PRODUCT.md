@@ -124,6 +124,18 @@ Cancellation or interruption removes the temporary remote file when the connecti
 
 The app does not persist access to a selected local document beyond what is needed for the user-approved transfer.
 
+## Image Upload From the Terminal
+
+Image upload is the one exception to the rule that SFTP never reuses a terminal's connection, recorded in [ADR 0013](decisions/0013-upload-images-over-the-live-ssh-session.md). It sends a screenshot or photo to the host and types its path into the terminal without a separate file-browser session.
+
+- Entry points are the terminal menu (photo library or camera) and the system share sheet.
+- A per-host setting chooses the destination: **Ask every time**, **Current directory**, or **Uploads folder** (`~/.seance/uploads`, mode `0700`). The terminal menu defaults to Current directory; a share-in defaults to Ask.
+- The current directory is the terminal's reported directory when the image is picked. If it is unknown or unusable, the upload goes to the uploads folder and says so.
+- File names are generated, so no replace or rename prompt appears. The temporary-file-then-rename rule still applies.
+- The absolute path is pasted into the terminal, shell-quoted only when needed, and never followed by Enter.
+- Images are size-capped, stripped of location and camera metadata, and converted from HEIC.
+- The Files browser keeps its own independent connection and all rules above.
+
 ## Remote Changes
 
 ### Create Directory

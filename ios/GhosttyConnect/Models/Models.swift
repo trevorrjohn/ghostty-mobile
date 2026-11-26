@@ -39,6 +39,7 @@ struct Host: Codable, Identifiable, Hashable {
     var remoteClipboard = RemotePermission.ask
     var remoteNotifications = RemotePermission.ask
     var allowSftpDelete: Bool?
+    var imageUploadMode: ImageUploadDestinationMode?
     var retryEnabled = true
     var retryMaxAttempts = 5
     var retryBackoff = RetryBackoff.balanced
@@ -58,6 +59,7 @@ struct Host: Codable, Identifiable, Hashable {
         remoteClipboard: RemotePermission = .ask,
         remoteNotifications: RemotePermission = .ask,
         allowSftpDelete: Bool? = nil,
+        imageUploadMode: ImageUploadDestinationMode? = nil,
         retryEnabled: Bool = true,
         retryMaxAttempts: Int = 5,
         retryBackoff: RetryBackoff = .balanced,
@@ -73,6 +75,7 @@ struct Host: Codable, Identifiable, Hashable {
         self.remoteClipboard = remoteClipboard
         self.remoteNotifications = remoteNotifications
         self.allowSftpDelete = allowSftpDelete
+        self.imageUploadMode = imageUploadMode
         self.retryEnabled = retryEnabled
         self.retryMaxAttempts = min(10, max(1, retryMaxAttempts))
         self.retryBackoff = retryBackoff
@@ -81,7 +84,7 @@ struct Host: Codable, Identifiable, Hashable {
 
     private enum CodingKeys: String, CodingKey {
         case id, alias, hostname, port, username, authenticationType, identityID, keyName
-        case remoteClipboard, remoteNotifications, allowSftpDelete
+        case remoteClipboard, remoteNotifications, allowSftpDelete, imageUploadMode
         case retryEnabled, retryMaxAttempts, retryBackoff
         case startupCommand
     }
@@ -99,6 +102,7 @@ struct Host: Codable, Identifiable, Hashable {
         remoteClipboard = try values.decodeIfPresent(RemotePermission.self, forKey: .remoteClipboard) ?? .ask
         remoteNotifications = try values.decodeIfPresent(RemotePermission.self, forKey: .remoteNotifications) ?? .ask
         allowSftpDelete = try values.decodeIfPresent(Bool.self, forKey: .allowSftpDelete)
+        imageUploadMode = (try? values.decodeIfPresent(ImageUploadDestinationMode.self, forKey: .imageUploadMode)) ?? nil
         retryEnabled = try values.decodeIfPresent(Bool.self, forKey: .retryEnabled) ?? true
         retryMaxAttempts = min(10, max(1, try values.decodeIfPresent(Int.self, forKey: .retryMaxAttempts) ?? 5))
         retryBackoff = try values.decodeIfPresent(RetryBackoff.self, forKey: .retryBackoff) ?? .balanced
@@ -119,6 +123,7 @@ struct Host: Codable, Identifiable, Hashable {
         try values.encode(remoteClipboard, forKey: .remoteClipboard)
         try values.encode(remoteNotifications, forKey: .remoteNotifications)
         try values.encodeIfPresent(allowSftpDelete, forKey: .allowSftpDelete)
+        try values.encodeIfPresent(imageUploadMode, forKey: .imageUploadMode)
         try values.encode(retryEnabled, forKey: .retryEnabled)
         try values.encode(retryMaxAttempts, forKey: .retryMaxAttempts)
         try values.encode(retryBackoff, forKey: .retryBackoff)

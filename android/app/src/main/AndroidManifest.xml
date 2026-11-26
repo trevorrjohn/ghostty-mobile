@@ -19,11 +19,22 @@
         <activity
             android:name=".MainActivity"
             android:exported="true"
+            android:launchMode="singleTop"
             android:screenOrientation="unspecified"
             android:windowSoftInputMode="adjustResize">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="image/*" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.SEND_MULTIPLE" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="image/*" />
             </intent-filter>
         </activity>
         <service
@@ -49,6 +60,11 @@
         <provider
             android:name=".sftp.SftpPreviewProvider"
             android:authorities="${applicationId}.sftp-previews"
+            android:exported="false"
+            android:grantUriPermissions="true" />
+        <provider
+            android:name=".sftp.CameraCaptureProvider"
+            android:authorities="${applicationId}.camera-capture"
             android:exported="false"
             android:grantUriPermissions="true" />
     </application>
