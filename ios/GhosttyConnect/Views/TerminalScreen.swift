@@ -37,6 +37,7 @@ struct TerminalScreen: View {
     @State private var filesInitialPath: String?
     @State private var photoSelection: [PhotosPickerItem] = []
     @State private var showingCamera = false
+    @State private var showingPhotoPicker = false
 
     private var host: Host { record.host }
     private var session: TerminalSessionModel { record.session }
@@ -261,6 +262,7 @@ struct TerminalScreen: View {
             CameraPicker { data in imageUploads.submit(data: [data], source: .camera, to: record) }
                 .ignoresSafeArea()
         }
+        .photosPicker(isPresented: $showingPhotoPicker, selection: $photoSelection, maxSelectionCount: ShareInbox.maximumImages, matching: .images)
         .onChange(of: photoSelection) { _, items in
             guard !items.isEmpty else { return }
             photoSelection = []
@@ -451,6 +453,14 @@ struct TerminalScreen: View {
             HStack(spacing: 12) {
                 quickSwitchAction("Files", symbol: "folder") { finishQuickNavigation { openFiles() } }
                 quickSwitchAction("Hosts", symbol: "server.rack") { finishQuickNavigation { goToHosts() } }
+            }
+            HStack(spacing: 12) {
+                quickSwitchAction("Photo", symbol: "photo") { finishQuickNavigation { showingPhotoPicker = true } }
+                    .disabled(session.state != .connected)
+                if CameraPicker.isAvailable {
+                    quickSwitchAction("Camera", symbol: "camera") { finishQuickNavigation { showingCamera = true } }
+                        .disabled(session.state != .connected)
+                }
             }
             HStack {
                 Button(record.textMode ? "Direct input" : "Text mode") { finishQuickNavigation { setTextMode(!record.textMode) } }

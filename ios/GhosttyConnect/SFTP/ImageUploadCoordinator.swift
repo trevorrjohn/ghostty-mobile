@@ -310,7 +310,7 @@ final class ImageUploadCoordinator: ObservableObject {
             await channel?.close()
         } catch {
             await channel?.close()
-            activity?.phase = .failed(error.localizedDescription)
+            activity?.phase = .failed(CitadelRemoteImageFiles.failureDescription(error))
         }
     }
 

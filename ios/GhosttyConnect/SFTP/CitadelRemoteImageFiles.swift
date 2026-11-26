@@ -21,7 +21,7 @@ final class CitadelRemoteImageFiles: RemoteImageFiles {
             let permissions = try await sftp.getAttributes(at: canonical).permissions
             guard let permissions, permissions & 0o170000 == 0o040000 else { return nil }
             return canonical
-        } catch let SFTPError.errorStatus(status) where Self.directoryFallbackCodes.contains(status.errorCode) {
+        } catch where Self.status(error).map({ Self.directoryFallbackCodes.contains($0.errorCode) }) == true {
             return nil
         }
     }
@@ -29,7 +29,7 @@ final class CitadelRemoteImageFiles: RemoteImageFiles {
     func ensurePrivateDirectory(_ path: String) async throws {
         do {
             _ = try await sftp.getAttributes(at: path)
-        } catch let SFTPError.errorStatus(status) where status.errorCode == .noSuchFile {
+        } catch where Self.status(error)?.errorCode == .noSuchFile {
             try await sftp.createDirectory(atPath: path, attributes: Self.privateDirectoryAttributes)
             // The server's umask can only remove bits, but set the mode explicitly so 0700 never depends on it.
             try await sftp.setAttributes(at: path, to: Self.privateDirectoryAttributes)
@@ -48,7 +48,7 @@ final class CitadelRemoteImageFiles: RemoteImageFiles {
         let remote: SFTPFile
         do {
             remote = try await sftp.openFile(filePath: temporaryPath, flags: [.write, .create, .forceCreate])
-        } catch let SFTPError.errorStatus(status) where Self.directoryFallbackCodes.contains(status.errorCode) {
+        } catch where Self.status(error).map({ Self.directoryFallbackCodes.contains($0.errorCode) }) == true {
             throw ImageUploadError.destinationUnusable
         }
         let local: FileHandle
@@ -80,6 +80,32 @@ final class CitadelRemoteImageFiles: RemoteImageFiles {
 
     func close() async {
         try? await sftp.close()
+    }
+
+    /// Citadel throws a status either bare or wrapped in `SFTPError.errorStatus`, depending on the call.
+    static func status(_ error: Error) -> SFTPMessage.Status? {
+        if let status = error as? SFTPMessage.Status { return status }
+        if case SFTPError.errorStatus(let status) = error { return status }
+        return nil
+    }
+
+    /// A readable failure for the upload chip, including the server's own reason when it gave one.
+    static func failureDescription(_ error: Error) -> String {
+        guard let status = status(error) else {
+            if let error = error as? LocalizedError, let text = error.errorDescription { return text }
+            return "The upload failed (\(type(of: error)))."
+        }
+        let reason: String
+        switch status.errorCode {
+        case .permissionDenied: reason = "permission denied"
+        case .noSuchFile: reason = "path not found"
+        case .failure: reason = "the server reported a failure"
+        case .unsupportedOperation: reason = "the server does not support this SFTP operation"
+        case .connectionLost, .noConnection: reason = "the connection was lost"
+        default: reason = "SFTP status \(status.errorCode.rawValue)"
+        }
+        let detail = status.message.trimmingCharacters(in: .whitespacesAndNewlines)
+        return detail.isEmpty ? "The server refused the upload: \(reason)." : "The server refused the upload: \(reason) (\(detail))."
     }
 
     private static var privateDirectoryAttributes: SFTPFileAttributes {
