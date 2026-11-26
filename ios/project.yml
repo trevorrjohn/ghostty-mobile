@@ -33,6 +33,7 @@ targets:
           UIApplicationSupportsMultipleScenes: false
         ITSAppUsesNonExemptEncryption: false
         NSLocalNetworkUsageDescription: Seance Shell connects to SSH servers on your local network when you choose a local host.
+        NSCameraUsageDescription: Seance Shell uses the camera only when you choose Take photo to upload a picture to your host.
         UIRequiresFullScreen: false
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
@@ -46,6 +47,12 @@ targets:
         UILaunchScreen: {}
     sources:
       - GhosttyConnect
+      - Shared
+    entitlements:
+      path: GhosttyConnect/GhosttyConnect.entitlements
+      properties:
+        com.apple.security.application-groups:
+          - group.fail.founder.terminal
     dependencies:
       - framework: Vendor/ghostty-vt.xcframework
         embed: false
@@ -53,6 +60,8 @@ targets:
         embed: false
       - package: Citadel
       - target: GhosttyConnectControl
+        embed: true
+      - target: GhosttyConnectShare
         embed: true
     settings:
       base:
@@ -83,6 +92,38 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: fail.founder.terminal.quick-connect
         PRODUCT_NAME: Quick Connect
         PRODUCT_MODULE_NAME: GhosttyConnectControl
+        CURRENT_PROJECT_VERSION: 14
+        MARKETING_VERSION: 0.1.0
+        SKIP_INSTALL: YES
+        "EXCLUDED_ARCHS[sdk=iphonesimulator*]": x86_64
+  GhosttyConnectShare:
+    type: app-extension
+    platform: iOS
+    sources:
+      - GhosttyConnectShare
+      - Shared
+    entitlements:
+      path: GhosttyConnectShare/GhosttyConnectShare.entitlements
+      properties:
+        com.apple.security.application-groups:
+          - group.fail.founder.terminal
+    info:
+      path: GhosttyConnectShare/Info.plist
+      properties:
+        CFBundleDisplayName: Seance Shell
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.share-services
+          NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).ShareViewController
+          NSExtensionAttributes:
+            NSExtensionActivationRule:
+              NSExtensionActivationSupportsImageWithMaxCount: 10
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: fail.founder.terminal.share
+        PRODUCT_NAME: Share to Seance Shell
+        PRODUCT_MODULE_NAME: GhosttyConnectShare
         CURRENT_PROJECT_VERSION: 14
         MARKETING_VERSION: 0.1.0
         SKIP_INSTALL: YES

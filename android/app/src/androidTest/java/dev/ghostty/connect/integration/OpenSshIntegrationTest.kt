@@ -175,6 +175,48 @@ class OpenSshIntegrationTest {
     }
 
     @Test
+    fun sftpImageUploadUsesTerminalDirectoryThenFallsBackToPrivateUploadsFolder() {
+        val connection = SftpConnection(context, RecordingAuthenticationCallbacks(approveHostKey = true))
+        try {
+            val home = connection.connect(fixture.host(), fixture.password.toCharArray())
+            val payload = ByteArray(64 * 1024) { (it % 241).toByte() }
+            fun upload(directory: String?, name: String, canceled: AtomicBoolean = AtomicBoolean(false)) =
+                connection.uploadImage(directory, name, ByteArrayInputStream(payload), payload.size.toLong(), canceled) { _, _ -> }
+
+            val current = upload("$home/files", "current.png")
+            assertEquals("$home/files/current.png", current.remotePath)
+            assertFalse(current.fellBackToUploadsFolder)
+            assertTrue(connection.exists("$home/files", "current.png"))
+
+            val unwritable = upload("/", "unwritable.png")
+            assertEquals("$home/.seance/uploads/unwritable.png", unwritable.remotePath)
+            assertTrue(unwritable.fellBackToUploadsFolder)
+
+            val missing = upload("/no-such-directory-${UUID.randomUUID()}", "missing.png")
+            assertEquals("$home/.seance/uploads/missing.png", missing.remotePath)
+            assertTrue(missing.fellBackToUploadsFolder)
+
+            val none = upload(null, "none.png")
+            assertEquals("$home/.seance/uploads/none.png", none.remotePath)
+            assertFalse(none.fellBackToUploadsFolder)
+
+            assertEquals("0700", connection.list(home).single { it.name == ".seance" }.permissions)
+            assertEquals("0700", connection.list("$home/.seance").single { it.name == "uploads" }.permissions)
+
+            val canceled = AtomicBoolean(false)
+            assertThrows(IllegalStateException::class.java) {
+                connection.uploadImage("$home/files", "canceled.png", ByteArrayInputStream(payload), payload.size.toLong(), canceled) { _, _ ->
+                    canceled.set(true)
+                }
+            }
+            assertFalse(connection.exists("$home/files", "canceled.png"))
+            assertFalse(connection.list("$home/files").any { it.name.startsWith(".seance-shell-upload-") })
+        } finally {
+            connection.disconnect()
+        }
+    }
+
+    @Test
     fun sftpLiveDirectoryOperationsRoundTrip() {
         val connection = SftpConnection(context, RecordingAuthenticationCallbacks(approveHostKey = true))
         try {

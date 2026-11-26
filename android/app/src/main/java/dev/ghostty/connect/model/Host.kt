@@ -1,5 +1,7 @@
 package dev.ghostty.connect.model
 
+import dev.ghostty.connect.sftp.ImageUploadDestinationMode
+
 enum class AuthenticationType {
     PASSWORD,
     SSH_KEY,
@@ -27,6 +29,7 @@ data class Host(
     val retryMaxAttempts: Int = DEFAULT_RETRY_ATTEMPTS,
     val retryBackoff: RetryBackoff = RetryBackoff.BALANCED,
     val startupCommand: String? = null,
+    val imageUploadDestination: ImageUploadDestinationMode? = null,
 ) {
     init {
         require(retryMaxAttempts in MIN_RETRY_ATTEMPTS..MAX_RETRY_ATTEMPTS) {

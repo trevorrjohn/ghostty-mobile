@@ -11,6 +11,7 @@ struct RootView: View {
                 .tabItem { Label("Settings", systemImage: "slider.horizontal.3") }
         }
         .tint(.ghosttyAccent)
+        .imageUploadPresentation()
         .alert("Seance Shell", isPresented: Binding(
             get: { model.alertMessage != nil },
             set: { if !$0 { model.alertMessage = nil } }

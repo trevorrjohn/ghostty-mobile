@@ -35,6 +35,7 @@ import android.os.IBinder
 import android.os.Build
 import android.os.Looper
 import android.content.pm.PackageManager
+import android.provider.MediaStore
 import android.provider.OpenableColumns
 import android.provider.Settings
 import android.text.InputType
@@ -113,6 +114,19 @@ import dev.ghostty.connect.model.TrustedHost
 import dev.ghostty.connect.model.SshIdentity
 import dev.ghostty.connect.model.SshDestination
 import dev.ghostty.connect.model.normalizeStartupCommand
+import dev.ghostty.connect.sftp.CameraCaptureProvider
+import dev.ghostty.connect.sftp.IMAGE_UPLOADS_FOLDER
+import dev.ghostty.connect.sftp.ImageUploadDestinationMode
+import dev.ghostty.connect.sftp.ImageUploadManager
+import dev.ghostty.connect.sftp.ImageUploadOutcome
+import dev.ghostty.connect.sftp.ImageUploadSource
+import dev.ghostty.connect.sftp.ImageUploadUiState
+import dev.ghostty.connect.sftp.StagedImage
+import dev.ghostty.connect.sftp.pastedUploadPaths
+import dev.ghostty.connect.sftp.resolveImageUploadMode
+import dev.ghostty.connect.sftp.shareInGoesToSingleSession
+import dev.ghostty.connect.sftp.shouldPromptForImageDestination
+import dev.ghostty.connect.sftp.imageUploadTerminalDirectory
 import dev.ghostty.connect.sftp.SftpBrowserService
 import dev.ghostty.connect.sftp.SftpBrowserState
 import dev.ghostty.connect.sftp.SftpEntry
@@ -303,6 +317,12 @@ class MainActivity : Activity() {
     private val accent = Color.rgb(139, 233, 179)
     private val sessionListener = object : SshSessionService.Listener {
         override fun onSessionStatus(sessionId: String, status: String) {
+            if (status == "Connected") ImageUploadManager.awaitingHost?.let { (hostId, images) ->
+                if (sessionService?.host(sessionId)?.id == hostId && sessionId == selectedSessionId) {
+                    ImageUploadManager.awaitingHost = null
+                    window.decorView.post { beginImageUpload(sessionId, images, shared = true) }
+                }
+            }
             if (refreshHostSessionRow(sessionId)) return
             if (sessionId != selectedSessionId) return
             val service = sessionService ?: return
@@ -413,6 +433,7 @@ class MainActivity : Activity() {
         }
 
         override fun onSessionClosed(sessionId: String, error: String?) {
+            ImageUploadManager.sessionEnded(sessionId)
             if (refreshHostSessionRow(sessionId)) return
             if (sessionId != selectedSessionId) return
             val retryable = sessionService?.summaries()?.firstOrNull { it.sessionId == sessionId }?.canRetry == true
@@ -507,6 +528,8 @@ class MainActivity : Activity() {
             sessionBinding = false
             sessionBound = true
             service.attach(sessionListener, selectedSessionId)
+            ImageUploadManager.attach(imageUploadListener)
+            window.decorView.post(::consumeStagedShare)
             pendingConnection?.let { pending ->
                 pendingConnection = null
                 service.connect(pending.sessionId, pending.host, pending.credential, pending.unlockedPrivateKey)
@@ -625,6 +648,10 @@ class MainActivity : Activity() {
         sftpRecentFolderStore = SftpRecentFolderStore(this)
         appSettings = getSharedPreferences(APP_SETTINGS_NAME, Context.MODE_PRIVATE)
         if (savedInstanceState == null) SftpPreviewProvider.clearCache(this)
+        if (savedInstanceState == null) {
+            ImageUploadManager.clearCache(this)
+            handleShareIntent(intent)
+        }
         keyboardBarConfig = keyboardBarStore.load()
         val savedScreen = savedInstanceState?.getString(STATE_SCREEN)
         val requestedSessionId = intent?.takeIf {
@@ -739,6 +766,10 @@ class MainActivity : Activity() {
     override fun onNewIntent(intent: Intent?) {
         super.onNewIntent(intent)
         setIntent(intent)
+        if (intent?.action == Intent.ACTION_SEND || intent?.action == Intent.ACTION_SEND_MULTIPLE) {
+            handleShareIntent(intent)
+            return
+        }
         if (intent?.action == ACTION_QUICK_CONNECT) {
             showQuickConnect()
             return
@@ -759,6 +790,7 @@ class MainActivity : Activity() {
     }
 
     override fun onStop() {
+        ImageUploadManager.detach(imageUploadListener)
         if (sessionBound || sessionBinding) {
             if (sessionBound) sessionService?.detach(sessionListener)
             unbindService(serviceConnection)
@@ -1191,6 +1223,22 @@ class MainActivity : Activity() {
             12f,
             secondary,
         ).margins(bottom = 12))
+        root.addView(label("Image upload destination", 13f, secondary).margins(top = 10, bottom = 4))
+        val imageUploadChoices = listOf("Default", "Ask every time", "Current directory", "Uploads folder")
+        val imageUploadModes = listOf<ImageUploadDestinationMode?>(
+            null, ImageUploadDestinationMode.ASK, ImageUploadDestinationMode.CURRENT_DIRECTORY, ImageUploadDestinationMode.UPLOADS_FOLDER,
+        )
+        val imageUploadDestination = Spinner(this).apply {
+            adapter = ArrayAdapter(this@MainActivity, android.R.layout.simple_spinner_dropdown_item, imageUploadChoices)
+            setBackgroundColor(raised)
+            setSelection(imageUploadModes.indexOf(existing?.imageUploadDestination).coerceAtLeast(0))
+            root.addView(this.margins(bottom = 4))
+        }
+        root.addView(label(
+            "Default asks where to put images shared from other apps and uploads menu images to the terminal's current directory. Without a known directory, images go to ~/$IMAGE_UPLOADS_FOLDER.",
+            12f,
+            secondary,
+        ).margins(bottom = 12))
         fun selectedPolicy(spinner: Spinner): Boolean? = when (spinner.selectedItemPosition) {
             1 -> true
             2 -> false
@@ -1243,6 +1291,7 @@ class MainActivity : Activity() {
                 retryMaxAttempts = retryAttempts.selectedItemPosition + MIN_RETRY_ATTEMPTS,
                 retryBackoff = retryBackoffs[retryBackoff.selectedItemPosition],
                 startupCommand = normalizedStartupCommand,
+                imageUploadDestination = imageUploadModes[imageUploadDestination.selectedItemPosition],
             ))
             editingHostId = null
             showHosts()
@@ -1391,6 +1440,7 @@ class MainActivity : Activity() {
     @Deprecated("Activity result callback retained without an AndroidX dependency")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
+        if (handleImageUploadResult(requestCode, resultCode, data)) return
         if (requestCode == REQUEST_APK_INSTALL_PERMISSION) {
             val pending = pendingApkInstall
             pendingApkInstall = null
@@ -3955,12 +4005,13 @@ class MainActivity : Activity() {
                 .create()
             val selectionAction = if (terminalView?.isLocalSelectionMode == true) "Done selecting" else "Select text"
             val actions = listOf(
-                selectionAction, "Hosts", "Input mode", "Duplicate session", "Browse files",
+                selectionAction, "Hosts", "Input mode", "Duplicate session", "Browse files", "Upload image",
                 "Export encrypted archive", "Disconnect", "Paste", "Search scrollback",
                 "Record feedback", "Send interrupt signal", "Send terminate signal",
             )
             actions.forEach { action ->
-                content.addView(compactButton(action, action != selectionAction || terminalView?.isEnabled == true) {
+                content.addView(compactButton(action, (action != selectionAction || terminalView?.isEnabled == true) &&
+                (action != "Upload image" || service.status(sessionId) == "Connected")) {
                     dialog.dismiss()
                     // Modal actions must never target a replacement or another selected session.
                     if (selectedSessionId != sessionId || sessionService !== service ||
@@ -3981,6 +4032,7 @@ class MainActivity : Activity() {
                         "Input mode" -> showInputModeChooser(sessionId)
                         "Duplicate session" -> requestCredentialAndConnect(host)
                         "Browse files" -> browseFiles()
+                        "Upload image" -> showImageUploadSources(sessionId)
                         "Export encrypted archive" -> showTerminalArchiveDialog(sessionId)
                         "Disconnect" -> {
                             service.disconnect(sessionId)
@@ -5117,6 +5169,8 @@ class MainActivity : Activity() {
     }
 
     override fun onDestroy() {
+        imageUploadChip?.let { (window.decorView as? FrameLayout)?.removeView(it) }
+        imageUploadChip = null
         cancelTerminalChromeFade()
         cancelBiometricPrompt()
         if (!isChangingConfigurations) {
@@ -5423,6 +5477,291 @@ class MainActivity : Activity() {
     }
     private fun dp(value: Int) = (value * resources.displayMetrics.density).toInt()
 
+    private var imageUploadChip: LinearLayout? = null
+
+    private val imageUploadListener = object : ImageUploadManager.Listener {
+        override fun onImageUploadState(state: ImageUploadUiState) = renderImageUploadChip(state)
+        override fun onImageUploadFinished(outcome: ImageUploadOutcome) = deliverImageUpload(outcome)
+    }
+
+    private fun showImageUploadSources(sessionId: String) {
+        if (ImageUploadManager.busy) {
+            toast("Wait for the current image upload to finish.")
+            return
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Upload image")
+            .setItems(arrayOf("Choose from photos", "Take photo")) { _, which ->
+                ImageUploadManager.pickerSessionId = sessionId
+                runCatching { if (which == 0) launchPhotoPicker() else launchCamera() }.onFailure {
+                    ImageUploadManager.pickerSessionId = null
+                    toast(if (which == 0) "No photo picker is available." else "No camera app is available.")
+                }
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun launchPhotoPicker() {
+        val intent = if (Build.VERSION.SDK_INT >= 33) {
+            Intent(MediaStore.ACTION_PICK_IMAGES).putExtra(MediaStore.EXTRA_PICK_IMAGES_MAX, 10)
+        } else {
+            Intent(Intent.ACTION_GET_CONTENT).setType("image/*").addCategory(Intent.CATEGORY_OPENABLE)
+                .putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
+        }
+        startActivityForResult(intent, PICK_UPLOAD_IMAGES)
+    }
+
+    private fun launchCamera() {
+        val file = ImageUploadManager.newCameraFile(this)
+        val uri = CameraCaptureProvider.uriFor(file)
+        ImageUploadManager.cameraFile = file
+        startActivityForResult(
+            Intent(MediaStore.ACTION_IMAGE_CAPTURE).putExtra(MediaStore.EXTRA_OUTPUT, uri).apply {
+                clipData = android.content.ClipData.newRawUri("", uri)
+                addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION or Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            },
+            CAPTURE_UPLOAD_IMAGE,
+        )
+    }
+
+    private fun handleImageUploadResult(requestCode: Int, resultCode: Int, data: Intent?): Boolean {
+        if (requestCode != PICK_UPLOAD_IMAGES && requestCode != CAPTURE_UPLOAD_IMAGE) return false
+        val sessionId = ImageUploadManager.pickerSessionId
+        ImageUploadManager.pickerSessionId = null
+        if (requestCode == CAPTURE_UPLOAD_IMAGE) {
+            val file = ImageUploadManager.cameraFile
+            ImageUploadManager.cameraFile = null
+            if (resultCode != RESULT_OK || sessionId == null || file == null || !file.exists() || file.length() == 0L) {
+                file?.delete()
+                return true
+            }
+            beginImageUpload(sessionId, listOf(StagedImage(file, "image/jpeg", ImageUploadSource.CAMERA)), shared = false)
+            return true
+        }
+        if (resultCode != RESULT_OK || sessionId == null) return true
+        val uris = buildList {
+            data?.data?.let(::add)
+            data?.clipData?.let { clip -> for (index in 0 until clip.itemCount) clip.getItemAt(index).uri?.let(::add) }
+        }.distinct()
+        ImageUploadManager.stage(this, uris, ImageUploadSource.LIBRARY) { staged, problem ->
+            problem?.let(::toast)
+            if (staged.isEmpty()) return@stage
+            if (isDestroyed) ImageUploadManager.discard(staged) else beginImageUpload(sessionId, staged, shared = false)
+        }
+        return true
+    }
+
+    /** Reads the terminal's directory now, then asks or uploads according to the host's destination setting. */
+    private fun beginImageUpload(sessionId: String, images: List<StagedImage>, shared: Boolean) {
+        val service = sessionService
+        val host = service?.host(sessionId)
+        val terminal = service?.terminal(sessionId)
+        if (service == null || host == null || terminal == null || service.status(sessionId) != "Connected") {
+            ImageUploadManager.discard(images)
+            toast("Connect to the host before uploading an image.")
+            return
+        }
+        val directory = terminalDirectoryPath(terminal.snapshot().pwd)
+        val mode = resolveImageUploadMode(host.imageUploadDestination, shared)
+        if (directory != null && shouldPromptForImageDestination(mode, directory)) {
+            showImageDestinationSheet(host, sessionId, images, directory)
+        } else {
+            ImageUploadManager.start(this, sessionId, images, imageUploadTerminalDirectory(mode, directory)) {
+                service.liveClient(sessionId)
+            }
+        }
+    }
+
+    private fun showImageDestinationSheet(host: Host, sessionId: String, images: List<StagedImage>, directory: String) {
+        val content = vertical(16)
+        runCatching {
+            val bounds = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            android.graphics.BitmapFactory.decodeFile(images.first().file.path, bounds)
+            val options = android.graphics.BitmapFactory.Options().apply {
+                inSampleSize = maxOf(1, maxOf(bounds.outWidth, bounds.outHeight) / 256)
+            }
+            android.graphics.BitmapFactory.decodeFile(images.first().file.path, options)
+        }.getOrNull()?.let { bitmap ->
+            content.addView(ImageView(this).apply {
+                setImageBitmap(bitmap)
+                adjustViewBounds = true
+                scaleType = ImageView.ScaleType.CENTER_CROP
+                contentDescription = "Preview of the image to upload"
+            }, LinearLayout.LayoutParams(dp(96), dp(96)).apply { bottomMargin = dp(12) })
+        }
+        content.addView(label(
+            if (images.size == 1) "Upload this image to" else "Upload ${images.size} images to",
+            16f, primary, Typeface.BOLD,
+        ))
+        val dontAsk = CheckBox(this).apply {
+            text = "Don't ask again for ${host.name}"
+            setTextColor(primary)
+        }
+        var chosen = false
+        var dialog: AlertDialog? = null
+        fun choose(mode: ImageUploadDestinationMode, terminalDirectory: String?) {
+            chosen = true
+            if (dontAsk.isChecked) {
+                hostStore.loadAll().firstOrNull { it.id == host.id }
+                    ?.let { hostStore.save(it.copy(imageUploadDestination = mode)) }
+            }
+            dialog?.dismiss()
+            val service = sessionService?.takeIf { it.host(sessionId) != null }
+            if (service == null) {
+                ImageUploadManager.discard(images)
+                toast("The SSH session ended before the image was uploaded.")
+            } else {
+                ImageUploadManager.start(this, sessionId, images, terminalDirectory) { service.liveClient(sessionId) }
+            }
+        }
+        content.addView(button("Current directory") { choose(ImageUploadDestinationMode.CURRENT_DIRECTORY, directory) }
+            .margins(top = 12))
+        content.addView(label(directory, 12f, secondary).margins(top = 4, bottom = 8))
+        content.addView(compactButton("Uploads folder (~/$IMAGE_UPLOADS_FOLDER)") {
+            choose(ImageUploadDestinationMode.UPLOADS_FOLDER, null)
+        }, LinearLayout.LayoutParams(-1, dp(48)))
+        content.addView(dontAsk)
+        dialog = AlertDialog.Builder(this)
+            .setTitle("Upload destination")
+            .setView(scroll(content))
+            .setNegativeButton("Cancel", null)
+            .setOnDismissListener { if (!chosen) ImageUploadManager.discard(images) }
+            .create()
+        dialog.window?.setGravity(Gravity.BOTTOM)
+        dialog.show()
+    }
+
+    private fun renderImageUploadChip(state: ImageUploadUiState) {
+        val decor = window.decorView as? FrameLayout ?: return
+        if (state is ImageUploadUiState.Idle) {
+            imageUploadChip?.let(decor::removeView)
+            imageUploadChip = null
+            return
+        }
+        val chip = imageUploadChip ?: LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            background = roundedBackground(raised, 16)
+            setPadding(dp(14), dp(6), dp(6), dp(6))
+            elevation = dp(6).toFloat()
+            isClickable = true
+            accessibilityLiveRegion = View.ACCESSIBILITY_LIVE_REGION_POLITE
+            decor.addView(this, FrameLayout.LayoutParams(-2, -2, Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL).apply {
+                bottomMargin = dp(88)
+            })
+            imageUploadChip = this
+        }
+        chip.removeAllViews()
+        val text = when (state) {
+            is ImageUploadUiState.Running -> if (state.name.isBlank()) "Preparing image…" else {
+                val percent = state.total?.takeIf { it > 0 }?.let { " · ${state.transferred * 100 / it}%" }.orEmpty()
+                val position = if (state.count > 1) "${state.index + 1}/${state.count} · " else ""
+                "Uploading $position${state.name}$percent"
+            }
+            is ImageUploadUiState.Failed -> state.message
+            ImageUploadUiState.Idle -> ""
+        }
+        chip.addView(label(text, 13f, primary).apply { maxWidth = dp(240); maxLines = 2 })
+        when (state) {
+            is ImageUploadUiState.Running -> chip.addView(compactButton("Cancel") { ImageUploadManager.cancel() })
+            is ImageUploadUiState.Failed -> {
+                if (state.canRetry) chip.addView(compactButton("Retry") { ImageUploadManager.retry(this) })
+                chip.addView(compactButton("Dismiss") { ImageUploadManager.dismiss() })
+            }
+            ImageUploadUiState.Idle -> Unit
+        }
+    }
+
+    /** Types the uploaded paths into the session as paste input. It never sends Enter. */
+    private fun deliverImageUpload(outcome: ImageUploadOutcome) {
+        outcome.note?.let(::toast)
+        val service = sessionService
+        val terminal = service?.terminal(outcome.sessionId)
+        if (service == null || terminal == null) {
+            toast("Uploaded to ${outcome.remotePaths.first()}. The session ended, so nothing was pasted.")
+            return
+        }
+        val text = pastedUploadPaths(outcome.remotePaths)
+        if (!terminal.isPasteSafe(text)) {
+            toast("Uploaded to ${outcome.remotePaths.first()}. The path was not pasted because it contains control characters.")
+            return
+        }
+        service.send(outcome.sessionId, terminal.encodePaste(text))
+        if (outcome.note == null) toast(if (outcome.remotePaths.size == 1) "Image uploaded. Path pasted." else "Images uploaded. Paths pasted.")
+    }
+
+    @Suppress("DEPRECATION")
+    private fun handleShareIntent(intent: Intent?) {
+        val action = intent?.action ?: return
+        if (action != Intent.ACTION_SEND && action != Intent.ACTION_SEND_MULTIPLE) return
+        if (intent.flags and Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY != 0) return
+        val uris = if (action == Intent.ACTION_SEND) {
+            listOfNotNull(
+                if (Build.VERSION.SDK_INT >= 33) intent.getParcelableExtra(Intent.EXTRA_STREAM, Uri::class.java)
+                else intent.getParcelableExtra<Uri>(Intent.EXTRA_STREAM),
+            )
+        } else {
+            (if (Build.VERSION.SDK_INT >= 33) intent.getParcelableArrayListExtra(Intent.EXTRA_STREAM, Uri::class.java)
+            else intent.getParcelableArrayListExtra<Uri>(Intent.EXTRA_STREAM)).orEmpty()
+        }
+        setIntent(Intent())
+        if (ImageUploadManager.busy) {
+            toast("Wait for the current image upload to finish.")
+            return
+        }
+        ImageUploadManager.stage(this, uris, ImageUploadSource.SHARE) { staged, problem ->
+            problem?.let(::toast)
+            if (staged.isEmpty()) return@stage
+            ImageUploadManager.discard(ImageUploadManager.stagedShare)
+            ImageUploadManager.awaitingHost?.second?.let(ImageUploadManager::discard)
+            ImageUploadManager.awaitingHost = null
+            ImageUploadManager.stagedShare = staged
+            consumeStagedShare()
+        }
+    }
+
+    /** A lone live session takes shared images directly; otherwise the user picks a session or saved host. */
+    private fun consumeStagedShare() {
+        val images = ImageUploadManager.stagedShare
+        if (images.isEmpty() || isDestroyed) return
+        // The bind callback calls this again once the running session service is available.
+        if (SshSessionService.active && sessionService == null) return
+        val service = sessionService
+        val live = service?.summaries().orEmpty().filter { it.status == "Connected" }
+        ImageUploadManager.stagedShare = emptyList()
+        if (shareInGoesToSingleSession(live.size)) {
+            beginImageUpload(live.single().sessionId, images, shared = true)
+            return
+        }
+        val hosts = runCatching { hostStore.loadAll() }.getOrDefault(emptyList())
+        if (live.isEmpty() && hosts.isEmpty()) {
+            ImageUploadManager.discard(images)
+            toast("Add a host before sharing images to Seance Shell.")
+            return
+        }
+        val labels = live.map { summary ->
+            val directory = service?.terminal(summary.sessionId)?.snapshot()?.pwd?.let(::terminalDirectoryPath)
+            "${summary.hostName} · ${directory ?: "directory unknown"}"
+        } + hosts.map { "${it.name} · new session" }
+        var chosen = false
+        AlertDialog.Builder(this)
+            .setTitle(if (images.size == 1) "Upload image to…" else "Upload ${images.size} images to…")
+            .setItems(labels.toTypedArray()) { _, index ->
+                chosen = true
+                if (index < live.size) {
+                    beginImageUpload(live[index].sessionId, images, shared = true)
+                } else {
+                    val host = hosts[index - live.size]
+                    ImageUploadManager.awaitingHost = host.id to images
+                    requestCredentialAndConnect(host)
+                }
+            }
+            .setNegativeButton("Cancel", null)
+            .setOnDismissListener { if (!chosen) ImageUploadManager.discard(images) }
+            .show()
+    }
+
     companion object {
         const val ACTION_QUICK_CONNECT = "dev.ghostty.connect.action.QUICK_CONNECT"
         const val IMPORT_KEY = 1001
@@ -5431,6 +5770,8 @@ class MainActivity : Activity() {
         const val OPEN_UPLOAD_DOCUMENT = 1004
         const val REQUEST_APK_INSTALL_PERMISSION = 1005
         const val CREATE_TERMINAL_ARCHIVE = 1006
+        const val PICK_UPLOAD_IMAGES = 1007
+        const val CAPTURE_UPLOAD_IMAGE = 1008
         const val GHOSTTY_MOD_SHIFT = 1 shl 0
         const val GHOSTTY_MOD_CTRL = 1 shl 1
         const val GHOSTTY_MOD_ALT = 1 shl 2

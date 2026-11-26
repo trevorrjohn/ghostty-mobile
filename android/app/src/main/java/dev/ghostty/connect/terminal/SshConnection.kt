@@ -287,6 +287,12 @@ class SshConnection internal constructor(
         closeResources()
     }
 
+    /**
+     * The live, authenticated SSH client for opening an extra channel (such as SFTP image upload)
+     * without a new connection or credential prompt. Null once the session is stopping or closed.
+     */
+    internal fun liveClient(): SSHClient? = synchronized(resourceLock) { if (stopping) null else client }
+
     private fun ownClient(value: SSHClient) = synchronized(resourceLock) {
         if (stopping) throw CancellationException("SSH connection was cancelled")
         client = value

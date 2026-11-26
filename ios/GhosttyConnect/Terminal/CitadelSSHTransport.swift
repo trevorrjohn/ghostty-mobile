@@ -26,7 +26,7 @@ enum SSHTransportError: LocalizedError {
     }
 }
 
-actor CitadelSSHTransport: SSHTransport {
+actor CitadelSSHTransport: SSHTransport, RemoteImageFilesProviding {
     nonisolated let output: AsyncThrowingStream<Data, Error>
     nonisolated let hostTrustRequests: AsyncStream<HostTrustRequest>
 
@@ -161,6 +161,13 @@ actor CitadelSSHTransport: SSHTransport {
             try? await client.close()
             throw error
         }
+    }
+
+    /// Opens an extra SFTP channel on the live, already-authenticated connection (ADR 0013). The channel
+    /// owns nothing but itself: closing it never closes the terminal session.
+    func openRemoteImageFiles() async throws -> any RemoteImageFiles {
+        guard let client, client.isConnected, !disconnectRequested else { throw ImageUploadError.notConnected }
+        return CitadelRemoteImageFiles(sftp: try await client.openSFTP())
     }
 
     func write(_ data: Data) async throws {

@@ -1,3 +1,4 @@
+import PhotosUI
 import SwiftUI
 import UIKit
 
@@ -7,6 +8,7 @@ struct TerminalScreen: View {
     let switchSession: (UUID) -> Void
     @EnvironmentObject private var model: AppModel
     @EnvironmentObject private var sessions: TerminalSessionRegistry
+    @EnvironmentObject private var imageUploads: ImageUploadCoordinator
     @Environment(\.dismiss) private var dismiss
     @Environment(\.displayScale) private var displayScale
     @Environment(\.openURL) private var openURL
@@ -33,6 +35,8 @@ struct TerminalScreen: View {
     @State private var showingQuickNavigation = false
     @State private var quickNavigationAction: (() -> Void)?
     @State private var filesInitialPath: String?
+    @State private var photoSelection: [PhotosPickerItem] = []
+    @State private var showingCamera = false
 
     private var host: Host { record.host }
     private var session: TerminalSessionModel { record.session }
@@ -253,6 +257,15 @@ struct TerminalScreen: View {
             }
         }
         .sheet(isPresented: $record.showingSettings) { sessionSettings }
+        .fullScreenCover(isPresented: $showingCamera) {
+            CameraPicker { data in imageUploads.submit(data: [data], source: .camera, to: record) }
+                .ignoresSafeArea()
+        }
+        .onChange(of: photoSelection) { _, items in
+            guard !items.isEmpty else { return }
+            photoSelection = []
+            uploadSelectedPhotos(items)
+        }
         .confirmationDialog("Input mode", isPresented: $showingInputModes, titleVisibility: .visible) {
             Button(record.textMode ? "Direct input" : "Direct input ✓") { setTextMode(false) }
             Button(record.textMode ? "Text mode ✓" : "Text mode") { setTextMode(true) }
@@ -573,6 +586,16 @@ struct TerminalScreen: View {
                         Button("Clear Selection") { session.clearSelection() }
                     }
                 }
+                Section("Images") {
+                    PhotosPicker(selection: $photoSelection, maxSelectionCount: ShareInbox.maximumImages, matching: .images) {
+                        Label("Upload image", systemImage: "photo")
+                    }
+                    .disabled(session.state != .connected)
+                    if CameraPicker.isAvailable {
+                        Button { openCamera() } label: { Label("Take photo", systemImage: "camera") }
+                            .disabled(session.state != .connected)
+                    }
+                }
                 Section {
                     Button("Browse files") { record.showingSettings = false; openFiles() }
                     Button("Disconnect", role: .destructive) {
@@ -616,6 +639,28 @@ struct TerminalScreen: View {
             .accessibilityLabel(record.textMode ? "Text mode. Switch to Direct input" : "Direct input. Switch to Text mode")
             .accessibilityValue(record.textMode ? "Text mode on" : "Text mode off")
             .accessibilityAddTraits(record.textMode ? .isSelected : [])
+    }
+
+    private func uploadSelectedPhotos(_ items: [PhotosPickerItem]) {
+        record.showingSettings = false
+        Task {
+            var datas: [Data] = []
+            for item in items {
+                if let data = try? await item.loadTransferable(type: Data.self) { datas.append(data) }
+            }
+            // Let the settings sheet finish dismissing before the destination sheet can appear.
+            try? await Task.sleep(for: .milliseconds(400))
+            if datas.isEmpty { model.alertMessage = ImageUploadError.unsupportedImage.localizedDescription }
+            else { imageUploads.submit(data: datas, source: .library, to: record) }
+        }
+    }
+
+    private func openCamera() {
+        record.showingSettings = false
+        Task {
+            try? await Task.sleep(for: .milliseconds(400))
+            showingCamera = true
+        }
     }
 
     private func openFiles() {

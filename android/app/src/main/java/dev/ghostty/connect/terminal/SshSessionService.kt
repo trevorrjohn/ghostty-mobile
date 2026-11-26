@@ -365,6 +365,11 @@ class SshSessionService : Service() {
 
     fun status(sessionId: String): String? = onServiceMainResult { sessions[sessionId]?.status }
 
+    /** The session's authenticated SSH client for opening extra channels, or null when it is not connected. */
+    fun liveClient(sessionId: String): net.schmizz.sshj.SSHClient? = onServiceMainResult {
+        sessions[sessionId]?.takeIf { it.connected }?.connection?.liveClient()
+    }
+
     fun send(sessionId: String, text: String) = onServiceMain {
         sessions[sessionId]?.takeIf { it.connected }?.connection?.send(text)
     }
