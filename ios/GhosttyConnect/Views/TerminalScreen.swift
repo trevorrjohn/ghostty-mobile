@@ -74,6 +74,7 @@ struct TerminalScreen: View {
                             },
                             onMagnify: updateFontSize(_:commit:),
                             onQuickNavigation: snapshot.hasSelection ? nil : { showingQuickNavigation = true },
+                            onUploadImage: session.state == .connected ? { showingPhotoPicker = true } : nil,
                             quickActionLabels: model.keyboardBarConfig.quickActionsEnabled && !snapshot.hasSelection && session.state == .connected ? quickActionLabels : [:],
                             onQuickAction: { direction, column, row in
                                 performQuickAction(direction, column: column, row: row, selectionSnapshot: snapshot)
@@ -413,6 +414,7 @@ struct TerminalScreen: View {
             contextualSelection = session.contextualSelection(column: column, row: row)
         case "paste": requestPaste()
         case "search": openHistorySearch()
+        case "upload-image": showingPhotoPicker = true
         case "choose-session": showingQuickNavigation = true
         case "next-session":
             guard let candidate = sessions.nextRecord(after: record.id) else { return }

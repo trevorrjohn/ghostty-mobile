@@ -13,6 +13,7 @@ struct TerminalGridView: View {
     let onSelectionFinished: () -> Void
     let onMagnify: (Double, Bool) -> Void
     let onQuickNavigation: (() -> Void)?
+    let onUploadImage: (() -> Void)?
     let quickActionLabels: [TerminalQuickDirection: String]
     let onQuickAction: (TerminalQuickDirection, Int, Int) -> Void
     let interactionID: UUID?
@@ -35,6 +36,7 @@ struct TerminalGridView: View {
         onSelectionFinished: @escaping () -> Void = {},
         onMagnify: @escaping (Double, Bool) -> Void = { _, _ in },
         onQuickNavigation: (() -> Void)? = nil,
+        onUploadImage: (() -> Void)? = nil,
         quickActionLabels: [TerminalQuickDirection: String] = [:],
         onQuickAction: @escaping (TerminalQuickDirection, Int, Int) -> Void = { _, _, _ in },
         interactionID: UUID? = nil
@@ -50,6 +52,7 @@ struct TerminalGridView: View {
         self.onSelectionFinished = onSelectionFinished
         self.onMagnify = onMagnify
         self.onQuickNavigation = onQuickNavigation
+        self.onUploadImage = onUploadImage
         self.quickActionLabels = quickActionLabels
         self.onQuickAction = onQuickAction
         self.interactionID = interactionID
@@ -83,6 +86,7 @@ struct TerminalGridView: View {
                 onSelectionFinished: onSelectionFinished,
                 onMagnify: onMagnify,
                 onQuickNavigation: onQuickNavigation,
+                onUploadImage: onUploadImage,
                 quickActionLabels: quickActionLabels,
                 onQuickAction: onQuickAction,
                 interactionID: interactionID
@@ -294,6 +298,7 @@ struct TerminalInteractionOverlay: UIViewRepresentable {
     let onSelectionFinished: () -> Void
     let onMagnify: (Double, Bool) -> Void
     let onQuickNavigation: (() -> Void)?
+    let onUploadImage: (() -> Void)?
     let quickActionLabels: [TerminalQuickDirection: String]
     let onQuickAction: (TerminalQuickDirection, Int, Int) -> Void
     let interactionID: UUID?
@@ -547,6 +552,12 @@ struct TerminalInteractionOverlay: UIViewRepresentable {
                 let action = self?.heldNavigation
                 self?.dismissQuickActions()
                 action?()
+            }
+            if let upload = parent.onUploadImage {
+                _ = button("Photo", column: 0, row: 0) { [weak self] in
+                    self?.dismissQuickActions()
+                    upload()
+                }
             }
             _ = button("Cancel", column: 2, row: 0) { [weak self] in self?.dismissQuickActions() }
             view.addSubview(panel)
